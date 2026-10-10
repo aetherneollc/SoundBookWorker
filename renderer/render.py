@@ -72,7 +72,7 @@ def render(manifest_path: Path, out: Path) -> None:
             filters.append(f"[{i}:a]adelay={delay}:all=1,volume={volume:.3f}[{label}]")
             labels.append(f"[{label}]")
         if labels:
-            filters.append("".join(labels)+f"amix=inputs={len(labels)}:duration=longest:dropout_transition=0[mix]")
+            filters.append("".join(labels)+f"amix=inputs={len(labels)}:duration=longest:dropout_transition=0:normalize=0,alimiter=limit=0.95[mix]")
             run(["ffmpeg","-y","-i",str(silent),*audio_args,"-filter_complex",";".join(filters),
                  "-map","0:v:0","-map","[mix]","-c:v","copy","-c:a","aac","-b:a","192k","-shortest",str(out)])
         else:
