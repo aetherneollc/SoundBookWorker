@@ -45,7 +45,7 @@ jobs:
           doc=json.loads(Path('manifest.json').read_text())
           Path('media').mkdir(exist_ok=True)
           n=0
-          for group in [doc.get('shots',[]), [doc['audio']] if doc.get('audio') else [], [doc['subtitle']] if doc.get('subtitle') else []]:
+          for group in [doc.get('shots',[]), [doc['audio']] if doc.get('audio') else [], doc.get('audio_tracks',[]), [doc['subtitle']] if doc.get('subtitle') else []]:
               for item in group:
                   key=item.get('key')
                   if key:

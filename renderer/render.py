@@ -43,11 +43,26 @@ def render(manifest_path: Path, out: Path) -> None:
         concat.write_text("".join(f"file '{p.as_posix()}'\n" for p in segments), encoding="utf-8")
         silent=work/"silent.mp4"
         run(["ffmpeg","-y","-f","concat","-safe","0","-i",str(concat),"-c","copy",str(silent)])
-        audio=doc.get("audio")
-        if audio:
-            ap=Path(audio["file"]).resolve()
+        audio_inputs=[]
+        if doc.get("audio"):
+            audio_inputs.append({**doc["audio"], "start_ms": 0, "volume": 1.0})
+        audio_inputs.extend(doc.get("audio_tracks", []))
+        audio_args=[]
+        filters=[]
+        labels=[]
+        for i, track in enumerate(audio_inputs, start=1):
+            ap=Path(track["file"]).resolve()
             if not ap.is_file(): raise FileNotFoundError(ap)
-            run(["ffmpeg","-y","-i",str(silent),"-i",str(ap),"-map","0:v:0","-map","1:a:0","-c:v","copy","-c:a","aac","-b:a","192k","-shortest",str(out)])
+            audio_args += ["-i", str(ap)]
+            delay=max(0, int(track.get("start_ms", 0)))
+            volume=max(0.0, min(4.0, float(track.get("volume", 1.0))))
+            label=f"a{i}"
+            filters.append(f"[{i}:a]adelay={delay}:all=1,volume={volume:.3f}[{label}]")
+            labels.append(f"[{label}]")
+        if labels:
+            filters.append("".join(labels)+f"amix=inputs={len(labels)}:duration=longest:dropout_transition=0[mix]")
+            run(["ffmpeg","-y","-i",str(silent),*audio_args,"-filter_complex",";".join(filters),
+                 "-map","0:v:0","-map","[mix]","-c:v","copy","-c:a","aac","-b:a","192k","-shortest",str(out)])
         else:
             run(["ffmpeg","-y","-i",str(silent),"-c","copy",str(out)])
         subtitle=doc.get("subtitle")
