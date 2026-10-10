@@ -32,11 +32,21 @@ def render(manifest_path: Path, out: Path) -> None:
             is_image = src.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}
             args=["ffmpeg", "-y"]
             args += ["-loop", "1", "-i", str(src)] if is_image else ["-stream_loop", "-1", "-i", str(src)]
-            # Gentle Ken Burns push; each shot gets a deterministic direction.
+            # Respect the shot's camera direction using FFmpeg's zoompan filter.
             frames=max(1, round(duration*fps))
-            zoom = "min(zoom+0.0005,1.08)" if i % 2 == 0 else "if(eq(on,0),1.08,max(zoom-0.0005,1.0))"
+            camera = str(shot.get("camera", "")).lower()
+            if any(word in camera for word in ("静", "固定", "static")):
+                zoom, x, y = "1", "0", "0"
+            elif any(word in camera for word in ("拉远", "后退", "pull", "zoom out")):
+                zoom, x, y = "if(eq(on,0),1.08,max(zoom-0.0005,1.0))", "iw/2-iw/zoom/2", "ih/2-ih/zoom/2"
+            elif any(word in camera for word in ("左移", "向左", "pan left")):
+                zoom, x, y = "1.08", f"(iw-iw/zoom)*on/{max(1,frames-1)}", "ih/2-ih/zoom/2"
+            elif any(word in camera for word in ("右移", "向右", "pan right")):
+                zoom, x, y = "1.08", f"(iw-iw/zoom)*(1-on/{max(1,frames-1)})", "ih/2-ih/zoom/2"
+            else:
+                zoom, x, y = "min(zoom+0.0005,1.08)", "iw/2-iw/zoom/2", "ih/2-ih/zoom/2"
             vf=(f"scale={width*2}:{height*2}:force_original_aspect_ratio=increase,crop={width*2}:{height*2},"
-                f"zoompan=z='{zoom}':d={frames}:s={width}x{height}:fps={fps},format=yuv420p")
+                f"zoompan=z='{zoom}':x='{x}':y='{y}':d={frames}:s={width}x{height}:fps={fps},format=yuv420p")
             run(args+["-t",f"{duration:.3f}","-vf",vf,"-an","-c:v","libx264","-preset","veryfast","-crf","22","-pix_fmt","yuv420p",str(seg)])
             segments.append(seg)
         concat=work/"concat.txt"
