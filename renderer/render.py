@@ -63,6 +63,8 @@ def render(manifest_path: Path, out: Path) -> None:
         for i, track in enumerate(audio_inputs, start=1):
             ap=Path(track["file"]).resolve()
             if not ap.is_file(): raise FileNotFoundError(ap)
+            if track.get("loop"):
+                audio_args += ["-stream_loop", "-1"]
             audio_args += ["-i", str(ap)]
             delay=max(0, int(track.get("start_ms", 0)))
             volume=max(0.0, min(4.0, float(track.get("volume", 1.0))))
