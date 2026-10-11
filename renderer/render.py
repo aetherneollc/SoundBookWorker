@@ -4,6 +4,9 @@ from __future__ import annotations
 import argparse, json, os, subprocess, tempfile
 from pathlib import Path
 
+FONT_BOLD = "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc"
+FONT_REGULAR = "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"
+
 
 def run(args: list[str]) -> None:
     proc = subprocess.run(args, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -47,6 +50,22 @@ def render(manifest_path: Path, out: Path) -> None:
                 zoom, x, y = "min(zoom+0.0005,1.08)", "iw/2-iw/zoom/2", "ih/2-ih/zoom/2"
             vf=(f"scale={width*2}:{height*2}:force_original_aspect_ratio=increase,crop={width*2}:{height*2},"
                 f"zoompan=z='{zoom}':x='{x}':y='{y}':d={frames}:s={width}x{height}:fps={fps},format=yuv420p")
+            label = str(shot.get("label", "")).strip()
+            section = str(shot.get("section", "")).strip()
+            if label:
+                # A consistent creator-style chapter bug and section marker make
+                # each still feel like part of an edited explainer, not a slideshow.
+                label_file = work / f"label-{i:04d}.txt"
+                section_file = work / f"section-{i:04d}.txt"
+                label_file.write_text(label.replace("\n", " "), encoding="utf-8")
+                section_file.write_text(section.replace("\n", " "), encoding="utf-8")
+                vf += (
+                    f",drawbox=x=38:y=38:w=8:h=78:color=0xFF6B35@1:t=fill"
+                    f",drawtext=fontfile={FONT_BOLD}:textfile={section_file.as_posix()}:"
+                    "x=64:y=35:fontsize=17:fontcolor=0xFFD64F"
+                    f",drawtext=fontfile={FONT_BOLD}:textfile={label_file.as_posix()}:"
+                    "x=64:y=61:fontsize=31:fontcolor=white:box=1:boxcolor=0x111827@0.82:boxborderw=10"
+                )
             run(args+["-t",f"{duration:.3f}","-vf",vf,"-an","-c:v","libx264","-preset","veryfast","-crf","22","-pix_fmt","yuv420p",str(seg)])
             segments.append(seg)
         concat=work/"concat.txt"
@@ -81,7 +100,12 @@ def render(manifest_path: Path, out: Path) -> None:
         if subtitle:
             sp=Path(subtitle["file"]).resolve()
             tmp=out.with_suffix(".subbed.mp4")
-            run(["ffmpeg","-y","-i",str(out),"-vf",f"subtitles={sp.as_posix()}","-c:v","libx264","-preset","veryfast","-crf","22","-c:a","copy",str(tmp)])
+            subtitle_style = (
+                "FontName=Noto Sans CJK SC,FontSize=27,Bold=1,"
+                "PrimaryColour=&H00FFFFFF,OutlineColour=&HCC101820,"
+                "BorderStyle=1,Outline=3,Shadow=0,Alignment=2,MarginV=42"
+            )
+            run(["ffmpeg","-y","-i",str(out),"-vf",f"subtitles={sp.as_posix()}:force_style='{subtitle_style}'","-c:v","libx264","-preset","veryfast","-crf","22","-c:a","copy",str(tmp)])
             tmp.replace(out)
 
 if __name__ == "__main__":
