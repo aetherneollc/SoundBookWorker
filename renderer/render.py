@@ -101,9 +101,9 @@ def render(manifest_path: Path, out: Path) -> None:
             sp=Path(subtitle["file"]).resolve()
             tmp=out.with_suffix(".subbed.mp4")
             subtitle_style = (
-                "FontName=Noto Sans CJK SC,FontSize=27,Bold=1,"
-                "PrimaryColour=&H00FFFFFF,OutlineColour=&HCC101820,"
-                "BorderStyle=1,Outline=3,Shadow=0,Alignment=2,MarginV=42"
+                "FontName=Noto Sans CJK SC,FontSize=25,Bold=1,"
+                "PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,"
+                "BorderStyle=1,Outline=2,Shadow=1,Alignment=2,MarginV=48"
             )
             run(["ffmpeg","-y","-i",str(out),"-vf",f"subtitles={sp.as_posix()}:force_style='{subtitle_style}'","-c:v","libx264","-preset","veryfast","-crf","22","-c:a","copy",str(tmp)])
             tmp.replace(out)
