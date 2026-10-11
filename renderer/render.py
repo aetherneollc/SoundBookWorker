@@ -14,6 +14,40 @@ def run(args: list[str]) -> None:
         raise RuntimeError(proc.stderr[-4000:])
 
 
+def media_duration(path: Path) -> float:
+    proc = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                           "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
+                          text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if proc.returncode:
+        raise RuntimeError(f"Unable to read media duration: {proc.stderr[-1000:]}")
+    return max(.05, float(proc.stdout.strip()))
+
+
+def subtitle_chunks(text: str, speaker: str) -> list[str]:
+    text = text.strip()
+    if not text:
+        return []
+    if any("\u3040" <= c <= "\u30ff" or "\u4e00" <= c <= "\u9fff" or "\uac00" <= c <= "\ud7af" for c in text):
+        size = 18
+        return [text[i:i + size] for i in range(0, len(text), size)]
+    words = text.split()
+    if len(words) <= 8:
+        return [text]
+    result=[]; current=[]
+    for word in words:
+        current.append(word)
+        if len(current) >= 8:
+            result.append(" ".join(current)); current=[]
+    if current:
+        result.append(" ".join(current))
+    return result
+
+
+def srt_time(seconds: float) -> str:
+    ms=max(0, round(seconds * 1000))
+    return f"{ms // 3_600_000:02d}:{(ms // 60_000) % 60:02d}:{(ms // 1000) % 60:02d},{ms % 1000:03d}"
+
+
 def render(manifest_path: Path, out: Path) -> None:
     doc = json.loads(manifest_path.read_text(encoding="utf-8"))
     if doc.get("version") != 1:
@@ -27,6 +61,49 @@ def render(manifest_path: Path, out: Path) -> None:
     out.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="soundbook-") as td:
         work = Path(td); segments=[]
+        audio_inputs=[]
+        if doc.get("audio"):
+            audio_inputs.append({**doc["audio"], "start_ms": 0, "volume": 1.0})
+        audio_inputs.extend(doc.get("audio_tracks", []))
+        voice_locked = doc.get("timeline_mode") == "voice_locked"
+        subtitle_cues=[]
+        if voice_locked:
+            scene_order=[]
+            for shot in doc["shots"]:
+                scene_no=int(shot.get("scene_number", 0))
+                if scene_no not in scene_order:
+                    scene_order.append(scene_no)
+            voices=sorted((t for t in audio_inputs if t.get("scene_number") is not None and not t.get("loop")),
+                          key=lambda t:(int(t.get("scene_number", 0)), int(t.get("dialogue_number", 0))))
+            for track in voices:
+                track["_duration"]=media_duration(Path(track["file"]).resolve())
+            cursor=0.0
+            for scene_no in scene_order:
+                scene_voices=[t for t in voices if int(t.get("scene_number", 0)) == scene_no]
+                planned=[s for s in doc["shots"] if int(s.get("scene_number", 0)) == scene_no]
+                if not scene_voices:
+                    continue
+                local=0.0
+                for track in scene_voices:
+                    duration=track["_duration"]
+                    track["start_ms"]=round((cursor + local) * 1000)
+                    chunks=subtitle_chunks(str(track.get("caption_text", "")), str(track.get("speaker", "")))
+                    char_total=sum(max(1, len(chunk.replace(" ", ""))) for chunk in chunks)
+                    offset=0.0
+                    for chunk in chunks:
+                        share=max(1, len(chunk.replace(" ", ""))) / char_total if char_total else 1
+                        cue_duration=duration * share
+                        subtitle_cues.append((cursor + local + offset, cursor + local + offset + cue_duration, chunk))
+                        offset += cue_duration
+                    local += duration + .08
+                scene_duration=max(.25, local - .08)
+                planned_total=sum(max(.25, float(s.get("duration", 4))) for s in planned) or 1.0
+                for shot in planned:
+                    original=max(.25, float(shot.get("duration", 4)))
+                    shot["duration"]=max(.25, scene_duration * original / planned_total)
+                cursor += scene_duration
+            voice_locked_subtitle=out.with_suffix(".voice-locked.srt")
+            voice_locked_subtitle.write_text("\n".join(f"{i}\n{srt_time(start)} --> {srt_time(end)}\n{text}\n" for i,(start,end,text) in enumerate(subtitle_cues, 1)), encoding="utf-8")
         for i, shot in enumerate(shots):
             src = Path(shot["file"]).resolve()
             if not src.is_file(): raise FileNotFoundError(src)
@@ -72,10 +149,6 @@ def render(manifest_path: Path, out: Path) -> None:
         concat.write_text("".join(f"file '{p.as_posix()}'\n" for p in segments), encoding="utf-8")
         silent=work/"silent.mp4"
         run(["ffmpeg","-y","-f","concat","-safe","0","-i",str(concat),"-c","copy",str(silent)])
-        audio_inputs=[]
-        if doc.get("audio"):
-            audio_inputs.append({**doc["audio"], "start_ms": 0, "volume": 1.0})
-        audio_inputs.extend(doc.get("audio_tracks", []))
         audio_args=[]
         filters=[]
         labels=[]
@@ -96,7 +169,7 @@ def render(manifest_path: Path, out: Path) -> None:
                  "-map","0:v:0","-map","[mix]","-c:v","copy","-c:a","aac","-b:a","192k","-shortest",str(out)])
         else:
             run(["ffmpeg","-y","-i",str(silent),"-c","copy",str(out)])
-        subtitle=doc.get("subtitle")
+        subtitle={"file": str(voice_locked_subtitle)} if voice_locked and subtitle_cues else doc.get("subtitle")
         if subtitle:
             sp=Path(subtitle["file"]).resolve()
             tmp=out.with_suffix(".subbed.mp4")
@@ -107,6 +180,8 @@ def render(manifest_path: Path, out: Path) -> None:
             )
             run(["ffmpeg","-y","-i",str(out),"-vf",f"subtitles={sp.as_posix()}:force_style='{subtitle_style}'","-c:v","libx264","-preset","veryfast","-crf","22","-c:a","copy",str(tmp)])
             tmp.replace(out)
+            if voice_locked:
+                sp.unlink(missing_ok=True)
 
 if __name__ == "__main__":
     p=argparse.ArgumentParser(); p.add_argument("manifest",type=Path); p.add_argument("output",type=Path)
