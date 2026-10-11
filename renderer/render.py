@@ -28,7 +28,7 @@ def subtitle_chunks(text: str, speaker: str) -> list[str]:
     if not text:
         return []
     if any("\u3040" <= c <= "\u30ff" or "\u4e00" <= c <= "\u9fff" or "\uac00" <= c <= "\ud7af" for c in text):
-        size = 18
+        size = 38
         return [text[i:i + size] for i in range(0, len(text), size)]
     words = text.split()
     if len(words) <= 8:
