@@ -6,6 +6,10 @@ from pathlib import Path
 
 FONT_BOLD = "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc"
 FONT_REGULAR = "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"
+if not Path(FONT_BOLD).is_file():
+    FONT_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+if not Path(FONT_REGULAR).is_file():
+    FONT_REGULAR = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 
 
 def run(args: list[str]) -> None:
@@ -61,6 +65,31 @@ def render(manifest_path: Path, out: Path) -> None:
     out.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="soundbook-") as td:
         work = Path(td); segments=[]
+        intro_duration = 2.8 if doc.get("episode_title") else 0.0
+        if intro_duration:
+            language = str(doc.get("language", "zh"))
+            episode_number = max(1, int(doc.get("episode_number") or 1))
+            marker = {
+                "zh": f"第 {episode_number} 集", "en": f"EPISODE {episode_number}",
+                "ja": f"第 {episode_number} 話", "ko": f"제 {episode_number} 화",
+            }.get(language, f"EPISODE {episode_number}")
+            title = str(doc["episode_title"]).strip()[:80]
+            marker_file = work / "episode-number.txt"
+            title_file = work / "episode-title.txt"
+            marker_file.write_text(marker, encoding="utf-8")
+            title_file.write_text(title, encoding="utf-8")
+            title_size = 58 if len(title) <= 22 else 43 if len(title) <= 38 else 31
+            intro = work / "intro.mp4"
+            intro_filter = (
+                f"drawbox=x=0:y=0:w=iw:h=ih:color=0x123B65@1:t=fill,"
+                f"drawbox=x=0:y=0:w=iw:h={round(height*.055)}:color=0xFFCC62@1:t=fill,"
+                f"drawbox=x={round(width*.08)}:y={round(height*.24)}:w={round(width*.84)}:h={round(height*.58)}:color=0x0B2747@1:t=fill,"
+                f"drawtext=fontfile={FONT_BOLD}:textfile={marker_file}:x=(w-text_w)/2:y=h*0.31:fontsize={max(22,round(height*.047))}:fontcolor=0xFFCC62,"
+                f"drawtext=fontfile={FONT_BOLD}:textfile={title_file}:x=(w-text_w)/2:y=(h-text_h)/2+40:fontsize={max(24,round(title_size*height/720))}:fontcolor=white"
+            )
+            run(["ffmpeg","-y","-f","lavfi","-i",f"color=c=0x123B65:s={width}x{height}:r={fps}:d={intro_duration}",
+                 "-vf",intro_filter,"-t",str(intro_duration),"-an","-c:v","libx264","-preset","veryfast","-crf","22","-pix_fmt","yuv420p",str(intro)])
+            segments.append(intro)
         audio_inputs=[]
         if doc.get("audio"):
             audio_inputs.append({**doc["audio"], "start_ms": 0, "volume": 1.0})
@@ -77,7 +106,7 @@ def render(manifest_path: Path, out: Path) -> None:
                           key=lambda t:(int(t.get("scene_number", 0)), int(t.get("dialogue_number", 0))))
             for track in voices:
                 track["_duration"]=media_duration(Path(track["file"]).resolve())
-            cursor=0.0
+            cursor=intro_duration
             for scene_no in scene_order:
                 scene_voices=[t for t in voices if int(t.get("scene_number", 0)) == scene_no]
                 planned=[s for s in doc["shots"] if int(s.get("scene_number", 0)) == scene_no]
@@ -95,8 +124,9 @@ def render(manifest_path: Path, out: Path) -> None:
                         cue_duration=duration * share
                         subtitle_cues.append((cursor + local + offset, cursor + local + offset + cue_duration, chunk))
                         offset += cue_duration
-                    local += duration + .08
-                scene_duration=max(.25, local - .08)
+                    local += duration + .28
+                # Leave a real breath after speech, including the final AAC packet.
+                scene_duration=max(.25, local - .28 + .65)
                 planned_total=sum(max(.25, float(s.get("duration", 4))) for s in planned) or 1.0
                 for shot in planned:
                     original=max(.25, float(shot.get("duration", 4)))
@@ -164,9 +194,9 @@ def render(manifest_path: Path, out: Path) -> None:
             filters.append(f"[{i}:a]adelay={delay}:all=1,volume={volume:.3f}[{label}]")
             labels.append(f"[{label}]")
         if labels:
-            filters.append("".join(labels)+f"amix=inputs={len(labels)}:duration=longest:dropout_transition=0:normalize=0,alimiter=limit=0.95[mix]")
+            filters.append("".join(labels)+f"amix=inputs={len(labels)}:duration=longest:dropout_transition=0:normalize=0,alimiter=limit=0.95,apad=pad_dur=1[mix]")
             run(["ffmpeg","-y","-i",str(silent),*audio_args,"-filter_complex",";".join(filters),
-                 "-map","0:v:0","-map","[mix]","-c:v","copy","-c:a","aac","-b:a","192k","-shortest",str(out)])
+                 "-map","0:v:0","-map","[mix]","-c:v","copy","-c:a","aac","-b:a","192k","-t",f"{media_duration(silent):.3f}",str(out)])
         else:
             run(["ffmpeg","-y","-i",str(silent),"-c","copy",str(out)])
         subtitle={"file": str(voice_locked_subtitle)} if voice_locked and subtitle_cues else doc.get("subtitle")

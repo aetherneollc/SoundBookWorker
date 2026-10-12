@@ -55,6 +55,32 @@ jobs:
                       item['file']=name
           Path('manifest.json').write_text(json.dumps(doc))
           PY
+      - name: Cache MOSS models
+        if: ${{ hashFiles('manifest.json') != '' }}
+        uses: actions/cache@v4
+        with:
+          path: moss-tts-nano/models
+          key: moss-nano-onnx-v1-${{ runner.os }}
+      - name: Install MOSS CPU runtime
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          doc=json.loads(Path('manifest.json').read_text())
+          Path('needs-moss').write_text('yes' if doc.get('tts_engine')=='moss' else 'no')
+          PY
+          if [ "$(cat needs-moss)" = yes ]; then
+            git clone https://github.com/OpenMOSS/MOSS-TTS-Nano.git moss-tts-nano
+            git -C moss-tts-nano checkout 8b7bcc9341b3b4ef3a3a58ba1338a7d85ff133eb
+            python -m pip install torch==2.7.0 torchaudio==2.7.0 --index-url https://download.pytorch.org/whl/cpu
+            python -m pip install onnxruntime sentencepiece soundfile huggingface_hub transformers==4.57.1
+            python -m pip install --no-deps -e moss-tts-nano
+          fi
+      - name: Generate MOSS speech
+        run: |
+          if [ "$(cat needs-moss)" = yes ]; then
+            python renderer/synthesize.py manifest.json
+          fi
       - name: Mark running
         env:
           CALLBACK_URL: ${{ secrets.CALLBACK_URL }}
