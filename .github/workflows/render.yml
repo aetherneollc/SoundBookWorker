@@ -70,8 +70,10 @@ jobs:
           Path('needs-moss').write_text('yes' if doc.get('tts_engine')=='moss' else 'no')
           PY
           if [ "$(cat needs-moss)" = yes ]; then
-            git clone https://github.com/OpenMOSS/MOSS-TTS-Nano.git moss-tts-nano
-            git -C moss-tts-nano checkout 8b7bcc9341b3b4ef3a3a58ba1338a7d85ff133eb
+            git clone https://github.com/OpenMOSS/MOSS-TTS-Nano.git moss-tts-source
+            git -C moss-tts-source checkout 8b7bcc9341b3b4ef3a3a58ba1338a7d85ff133eb
+            mkdir -p moss-tts-nano
+            cp -a moss-tts-source/. moss-tts-nano/
             python -m pip install torch==2.7.0 torchaudio==2.7.0 --index-url https://download.pytorch.org/whl/cpu
             python -m pip install onnxruntime sentencepiece soundfile huggingface_hub transformers==4.57.1
             python -m pip install --no-deps -e moss-tts-nano
