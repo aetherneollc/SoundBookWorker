@@ -177,6 +177,10 @@ def render(manifest_path: Path, out: Path) -> None:
                 f"zoompan=z='{zoom}':x='{x}':y='{y}':d={frames}:s={width}x{height}:fps={fps},format=yuv420p")
             label = str(shot.get("label", "")).strip()
             section = str(shot.get("section", "")).strip()
+            if label or shot.get("fact_card"):
+                # Reserve a readable subtitle lane and cover provider corner marks.
+                subtitle_top = round(height * .84)
+                vf += f",drawbox=x=0:y={subtitle_top}:w=iw:h=ih-{subtitle_top}:color=0x101C30@0.94:t=fill"
             if label:
                 # A consistent creator-style chapter bug and section marker make
                 # each still feel like part of an edited explainer, not a slideshow.
