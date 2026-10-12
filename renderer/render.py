@@ -52,6 +52,24 @@ def srt_time(seconds: float) -> str:
     return f"{ms // 3_600_000:02d}:{(ms // 60_000) % 60:02d}:{(ms // 1000) % 60:02d},{ms % 1000:03d}"
 
 
+def wrap_fact(text: str) -> str:
+    text = " ".join(text.split())
+    if any("\u4e00" <= char <= "\u9fff" or "\uac00" <= char <= "\ud7af" for char in text):
+        if len(text) <= 27:
+            return text
+        split = max(12, max(text.rfind(mark, 12, 29) for mark in "，；：、。"))
+        if split <= 12:
+            split = 27
+        return text[:split].strip() + "\n" + text[split:54].strip()
+    words = text.split()
+    line = ""
+    for index, word in enumerate(words):
+        if len(line) + len(word) + 1 > 54:
+            return line + "\n" + " ".join(words[index:])[:54]
+        line = f"{line} {word}".strip()
+    return line
+
+
 def render(manifest_path: Path, out: Path) -> None:
     doc = json.loads(manifest_path.read_text(encoding="utf-8"))
     if doc.get("version") != 1:
@@ -172,6 +190,20 @@ def render(manifest_path: Path, out: Path) -> None:
                     "x=64:y=35:fontsize=17:fontcolor=0xFFD64F"
                     f",drawtext=fontfile={FONT_BOLD}:textfile={label_file.as_posix()}:"
                     "x=64:y=61:fontsize=31:fontcolor=white:box=1:boxcolor=0x111827@0.82:boxborderw=10"
+                )
+            fact_card = str(shot.get("fact_card", "")).strip()
+            if fact_card:
+                fact_file = work / f"fact-{i:04d}.txt"
+                fact_file.write_text(wrap_fact(fact_card), encoding="utf-8")
+                # Keep the evidence card above the subtitle safe area.
+                panel_top = round(height * .66)
+                panel_height = round(height * .15)
+                font_size = max(17, round(height * .033))
+                vf += (
+                    f",drawbox=x=0:y={panel_top}:w=iw:h={panel_height}:color=0x101C30@0.88:t=fill"
+                    f",drawtext=fontfile={FONT_BOLD}:textfile={fact_file.as_posix()}:"
+                    f"x=(w-text_w)/2:y={panel_top}+({panel_height}-text_h)/2:"
+                    f"fontsize={font_size}:fontcolor=white:line_spacing=6"
                 )
             run(args+["-t",f"{duration:.3f}","-vf",vf,"-an","-c:v","libx264","-preset","veryfast","-crf","22","-pix_fmt","yuv420p",str(seg)])
             segments.append(seg)
