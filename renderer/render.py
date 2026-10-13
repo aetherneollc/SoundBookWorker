@@ -32,7 +32,7 @@ def subtitle_chunks(text: str, speaker: str) -> list[str]:
     if not text:
         return []
     if any("\u3040" <= c <= "\u30ff" or "\u4e00" <= c <= "\u9fff" or "\uac00" <= c <= "\ud7af" for c in text):
-        size = 38
+        size = 24
         return [text[i:i + size] for i in range(0, len(text), size)]
     words = text.split()
     if len(words) <= 8:
@@ -233,9 +233,9 @@ def render(manifest_path: Path, out: Path) -> None:
                 fact_file = work / f"fact-{i:04d}.txt"
                 fact_file.write_text(wrap_fact(fact_card), encoding="utf-8")
                 # Keep the evidence card above the subtitle safe area.
-                panel_top = round(height * .66)
-                panel_height = round(height * .15)
-                font_size = max(17, round(height * .033))
+                panel_top = round(height * .59)
+                panel_height = round(height * .12)
+                font_size = max(17, round(height * .026))
                 vf += (
                     f",drawbox=x=0:y={panel_top}:w=iw:h={panel_height}:color=0x101C30@0.88:t=fill"
                     f",drawtext=fontfile={FONT_BOLD}:textfile={fact_file.as_posix()}:"
@@ -273,9 +273,9 @@ def render(manifest_path: Path, out: Path) -> None:
             sp=Path(subtitle["file"]).resolve()
             tmp=out.with_suffix(".subbed.mp4")
             subtitle_style = (
-                "FontName=Noto Sans CJK SC,FontSize=25,Bold=1,"
+                "FontName=Noto Sans CJK SC,FontSize=20,Bold=1,"
                 "PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,"
-                "BorderStyle=1,Outline=2,Shadow=1,Alignment=2,MarginV=48"
+                "BorderStyle=1,Outline=2,Shadow=1,Alignment=2,MarginV=38"
             )
             run(["ffmpeg","-y","-i",str(out),"-vf",f"subtitles={sp.as_posix()}:force_style='{subtitle_style}'","-c:v","libx264","-preset","veryfast","-crf","22","-c:a","copy",str(tmp)])
             tmp.replace(out)
