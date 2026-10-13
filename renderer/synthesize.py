@@ -8,11 +8,7 @@ import sys
 from pathlib import Path
 
 
-VOICES = {
-    "Junhao", "Zhiming", "Weiguo", "Xiaoyu", "Yuewen", "Lingyu",
-    "Ava", "Bella", "Adam", "Nathan", "Sakura", "Yui", "Aoi", "Hina", "Mei",
-}
-DEFAULT_VOICE = {"zh": "Weiguo", "en": "Nathan", "ja": "Sakura", "ko": "Junhao"}
+DEFAULT_VOICE = {"zh": "Weiguo", "en": "Nathan", "ja": "Saki", "ko": "Junhao"}
 
 
 def synthesize(manifest_path: Path) -> None:
@@ -27,13 +23,19 @@ def synthesize(manifest_path: Path) -> None:
         model_dir=moss_dir / "models", thread_count=4, max_new_frames=500,
         execution_provider="cpu",
     )
+    voice_rows = runtime.list_builtin_voices()
+    available_voices = {str(row["voice"]) for row in voice_rows}
+    if not voice_rows:
+        raise RuntimeError("MOSS model has no built-in voices")
     default_voice = DEFAULT_VOICE.get(str(doc.get("language")), "Weiguo")
+    if default_voice not in available_voices:
+        default_voice = str(voice_rows[0]["voice"])
     output_dir = Path("media/moss")
     output_dir.mkdir(parents=True, exist_ok=True)
     intro_text = str(doc.get("intro_tts_text") or "").strip()
     if intro_text:
         intro_voice = str(doc.get("intro_tts_voice") or default_voice)
-        if intro_voice not in VOICES:
+        if intro_voice not in available_voices:
             intro_voice = default_voice
         intro_output = output_dir / "intro.wav"
         intro_result = runtime.synthesize(
@@ -53,7 +55,7 @@ def synthesize(manifest_path: Path) -> None:
             continue
         count += 1
         voice = str(track.get("tts_voice") or default_voice)
-        if voice not in VOICES:
+        if voice not in available_voices:
             voice = default_voice
         output = output_dir / f"line-{count:04d}.wav"
         result = runtime.synthesize(
