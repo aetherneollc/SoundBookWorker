@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Render a SoundBook v1 manifest with FFmpeg."""
 from __future__ import annotations
-import argparse, json, os, subprocess, tempfile
+import argparse, json, math, os, struct, subprocess, tempfile, wave
 from pathlib import Path
 
 FONT_BOLD = "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc"
@@ -70,6 +70,28 @@ def wrap_fact(text: str) -> str:
     return line
 
 
+def write_intro_chime(path: Path) -> None:
+    """A short original three-note signal; no external audio asset is used."""
+    rate = 44100
+    notes = [(0.0, .15, 523.25), (.15, .16, 659.25), (.31, .38, 783.99)]
+    with wave.open(str(path), "wb") as output:
+        output.setnchannels(1)
+        output.setsampwidth(2)
+        output.setframerate(rate)
+        for frame in range(round(rate * .82)):
+            time = frame / rate
+            sample = 0.0
+            for start, length, frequency in notes:
+                position = time - start
+                if 0 <= position < length:
+                    envelope = min(1.0, position / .015) * (1.0 - position / length) ** 1.2
+                    sample += .22 * envelope * (
+                        math.sin(2 * math.pi * frequency * position) +
+                        .26 * math.sin(4 * math.pi * frequency * position)
+                    )
+            output.writeframes(struct.pack("<h", int(max(-1, min(1, sample)) * 32767)))
+
+
 def render(manifest_path: Path, out: Path) -> None:
     doc = json.loads(manifest_path.read_text(encoding="utf-8"))
     if doc.get("version") != 1:
@@ -83,7 +105,8 @@ def render(manifest_path: Path, out: Path) -> None:
     out.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="soundbook-") as td:
         work = Path(td); segments=[]
-        intro_duration = 2.8 if doc.get("episode_title") else 0.0
+        intro_voice = Path(str(doc["intro_voice_file"])).resolve() if doc.get("intro_voice_file") else None
+        intro_duration = max(2.8, media_duration(intro_voice) + .65) if doc.get("episode_title") and intro_voice else (2.8 if doc.get("episode_title") else 0.0)
         if intro_duration:
             language = str(doc.get("language", "zh"))
             episode_number = max(1, int(doc.get("episode_number") or 1))
@@ -103,15 +126,25 @@ def render(manifest_path: Path, out: Path) -> None:
                 f"drawbox=x=0:y=0:w=iw:h={round(height*.055)}:color=0xFFCC62@1:t=fill,"
                 f"drawbox=x={round(width*.08)}:y={round(height*.24)}:w={round(width*.84)}:h={round(height*.58)}:color=0x0B2747@1:t=fill,"
                 f"drawtext=fontfile={FONT_BOLD}:textfile={marker_file}:x=(w-text_w)/2:y=h*0.31:fontsize={max(22,round(height*.047))}:fontcolor=0xFFCC62,"
-                f"drawtext=fontfile={FONT_BOLD}:textfile={title_file}:x=(w-text_w)/2:y=(h-text_h)/2+40:fontsize={max(24,round(title_size*height/720))}:fontcolor=white"
+                f"drawtext=fontfile={FONT_BOLD}:textfile={title_file}:x=(w-text_w)/2:y=(h-text_h)/2+40:fontsize={max(24,round(title_size*height/720))}:fontcolor=white,"
+                f"fade=t=in:st=0:d=0.18,fade=t=out:st={max(.1,intro_duration-.2):.3f}:d=0.18"
             )
             run(["ffmpeg","-y","-f","lavfi","-i",f"color=c=0x123B65:s={width}x{height}:r={fps}:d={intro_duration}",
                  "-vf",intro_filter,"-t",str(intro_duration),"-an","-c:v","libx264","-preset","veryfast","-crf","22","-pix_fmt","yuv420p",str(intro)])
             segments.append(intro)
         audio_inputs=[]
+        if intro_duration:
+            chime = work / "intro-chime.wav"
+            write_intro_chime(chime)
+            audio_inputs.append({"file": str(chime), "start_ms": 0, "volume": .72})
+            if intro_voice:
+                audio_inputs.append({"file": str(intro_voice), "start_ms": 220, "volume": 1.0})
         if doc.get("audio"):
             audio_inputs.append({**doc["audio"], "start_ms": 0, "volume": 1.0})
         audio_inputs.extend(doc.get("audio_tracks", []))
+        for track in audio_inputs:
+            if track.get("loop") and intro_duration:
+                track["start_ms"] = round(intro_duration * 1000)
         voice_locked = doc.get("timeline_mode") == "voice_locked"
         subtitle_cues=[]
         if voice_locked:

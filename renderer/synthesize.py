@@ -30,6 +30,22 @@ def synthesize(manifest_path: Path) -> None:
     default_voice = DEFAULT_VOICE.get(str(doc.get("language")), "Weiguo")
     output_dir = Path("media/moss")
     output_dir.mkdir(parents=True, exist_ok=True)
+    intro_text = str(doc.get("intro_tts_text") or "").strip()
+    if intro_text:
+        intro_voice = str(doc.get("intro_tts_voice") or default_voice)
+        if intro_voice not in VOICES:
+            intro_voice = default_voice
+        intro_output = output_dir / "intro.wav"
+        intro_result = runtime.synthesize(
+            text=intro_text, voice=intro_voice, output_audio_path=intro_output,
+            sample_mode="fixed", do_sample=True, streaming=False,
+            max_new_frames=500, voice_clone_max_text_tokens=65,
+            enable_wetext=False, enable_normalize_tts_text=True,
+        )
+        if not intro_output.exists() or intro_output.stat().st_size < 4096 or not intro_result["text_chunks"]:
+            raise RuntimeError("MOSS could not synthesize the episode announcement")
+        doc["intro_voice_file"] = str(intro_output)
+        print(f"MOSS intro: {len(intro_text)} characters, voice {intro_voice}", flush=True)
     count = 0
     for track in doc.get("audio_tracks", []):
         text = str(track.get("tts_text") or "").strip()
