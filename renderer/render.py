@@ -178,10 +178,16 @@ def render(manifest_path: Path, out: Path) -> None:
                     local += duration + .28
                 # Leave a real breath after speech, including the final AAC packet.
                 scene_duration=max(.25, local - .28 + .65)
-                planned_total=sum(max(.25, float(s.get("duration", 4))) for s in planned) or 1.0
-                for shot in planned:
-                    original=max(.25, float(shot.get("duration", 4)))
-                    shot["duration"]=max(.25, scene_duration * original / planned_total)
+                if len(scene_voices) == len(planned) and len(planned) > 1:
+                    # A spoken instruction per shot keeps on-screen step cards
+                    # aligned with the corresponding narration and subtitles.
+                    for index, (shot, track) in enumerate(zip(planned, scene_voices)):
+                        shot["duration"] = track["_duration"] + (.65 if index == len(planned) - 1 else .28)
+                else:
+                    planned_total=sum(max(.25, float(s.get("duration", 4))) for s in planned) or 1.0
+                    for shot in planned:
+                        original=max(.25, float(shot.get("duration", 4)))
+                        shot["duration"]=max(.25, scene_duration * original / planned_total)
                 cursor += scene_duration
             voice_locked_subtitle=out.with_suffix(".voice-locked.srt")
             voice_locked_subtitle.write_text("\n".join(f"{i}\n{srt_time(start)} --> {srt_time(end)}\n{text}\n" for i,(start,end,text) in enumerate(subtitle_cues, 1)), encoding="utf-8")
