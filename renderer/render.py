@@ -244,6 +244,32 @@ def render(manifest_path: Path, out: Path) -> None:
                 )
             run(args+["-t",f"{duration:.3f}","-vf",vf,"-an","-c:v","libx264","-preset","veryfast","-crf","22","-pix_fmt","yuv420p",str(seg)])
             segments.append(seg)
+        cta = doc.get("cta_card")
+        if isinstance(cta, dict) and str(cta.get("name", "")).strip():
+            card = work / "cta-card.mp4"
+            name_file = work / "cta-name.txt"
+            tagline_file = work / "cta-tagline.txt"
+            name_file.write_text(str(cta["name"]).strip()[:24], encoding="utf-8")
+            tagline_file.write_text(str(cta.get("tagline", "")).strip()[:60], encoding="utf-8")
+            card_filter = (
+                f"drawbox=x=0:y=0:w=iw:h=ih:color=0x102B49@1:t=fill,"
+                f"drawbox=x=0:y=0:w=iw:h={round(height*.055)}:color=0xFFCC62@1:t=fill,"
+                f"drawtext=fontfile={FONT_BOLD}:textfile={name_file}:x=(w-text_w)/2:y=h*0.28:fontsize={round(height*.09)}:fontcolor=white,"
+                f"drawtext=fontfile={FONT_REGULAR}:textfile={tagline_file}:x=(w-text_w)/2:y=h*0.47:fontsize={round(height*.04)}:fontcolor=0xFFCC62,"
+                "fade=t=in:st=0:d=0.18,fade=t=out:st=3.6:d=0.2"
+            )
+            card_args = ["ffmpeg", "-y", "-f", "lavfi", "-i", f"color=c=0x102B49:s={width}x{height}:r={fps}:d=3.8"]
+            url = str(cta.get("url", "")).strip()
+            if url.startswith("https://"):
+                import qrcode
+                qr_file = work / "cta-qr.png"
+                qrcode.make(url, border=2).save(qr_file)
+                card_args += ["-loop", "1", "-i", str(qr_file)]
+                card_args += ["-filter_complex", f"[0:v]{card_filter}[base];[1:v]scale={round(height*.25)}:{round(height*.25)}[qr];[base][qr]overlay=(W-w)/2:H*0.65[v]", "-map", "[v]"]
+            else:
+                card_args += ["-vf", card_filter]
+            run(card_args + ["-t", "3.8", "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "22", "-pix_fmt", "yuv420p", str(card)])
+            segments.append(card)
         concat=work/"concat.txt"
         concat.write_text("".join(f"file '{p.as_posix()}'\n" for p in segments), encoding="utf-8")
         silent=work/"silent.mp4"
