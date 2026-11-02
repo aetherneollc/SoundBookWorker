@@ -4,11 +4,27 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
 
 DEFAULT_VOICE = {"zh": "Weiguo", "en": "Nathan", "ja": "Saki", "ko": "Junhao"}
+
+
+def tighten_pacing(path: Path, language: str) -> None:
+    """Short-video pacing without changing pitch or cutting any words."""
+    speed = {"en": 1.14, "zh": 1.06, "ja": 1.05, "ko": 1.06}.get(language, 1.0)
+    if speed == 1.0:
+        return
+    adjusted = path.with_name(f"{path.stem}-paced.wav")
+    proc = subprocess.run(
+        ["ffmpeg", "-y", "-loglevel", "error", "-i", str(path), "-filter:a", f"atempo={speed}", str(adjusted)],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    if proc.returncode or not adjusted.exists() or adjusted.stat().st_size < 4096:
+        raise RuntimeError(f"Could not adjust speech pacing: {proc.stderr[-500:]}")
+    adjusted.replace(path)
 
 
 def synthesize(manifest_path: Path) -> None:
@@ -27,7 +43,8 @@ def synthesize(manifest_path: Path) -> None:
     available_voices = {str(row["voice"]) for row in voice_rows}
     if not voice_rows:
         raise RuntimeError("MOSS model has no built-in voices")
-    default_voice = DEFAULT_VOICE.get(str(doc.get("language")), "Weiguo")
+    language = str(doc.get("language"))
+    default_voice = DEFAULT_VOICE.get(language, "Weiguo")
     if default_voice not in available_voices:
         default_voice = str(voice_rows[0]["voice"])
     output_dir = Path("media/moss")
@@ -46,6 +63,7 @@ def synthesize(manifest_path: Path) -> None:
         )
         if not intro_output.exists() or intro_output.stat().st_size < 4096 or not intro_result["text_chunks"]:
             raise RuntimeError("MOSS could not synthesize the episode announcement")
+        tighten_pacing(intro_output, language)
         doc["intro_voice_file"] = str(intro_output)
         print(f"MOSS intro: {len(intro_text)} characters, voice {intro_voice}", flush=True)
     count = 0
@@ -66,6 +84,7 @@ def synthesize(manifest_path: Path) -> None:
         )
         if not output.exists() or output.stat().st_size < 4096 or not result["text_chunks"]:
             raise RuntimeError(f"MOSS could not synthesize line {count}")
+        tighten_pacing(output, language)
         track["file"] = str(output)
         print(f"MOSS speech {count}: {len(text)} characters, voice {voice}, {output.stat().st_size} bytes", flush=True)
     if count == 0:
