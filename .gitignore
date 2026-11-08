@@ -4,3 +4,7 @@ __pycache__/
 output.mp4
 manifest.json
 media/
+node_modules/
+public/media/
+remotion-props.json
+*.voice-locked.srt

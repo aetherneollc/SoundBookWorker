@@ -1,0 +1,21 @@
+{
+  "name": "soundbook-remotion-renderer",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "render": "remotion render remotion/index.tsx SoundBook output.mp4 --props=remotion-props.json --codec=h264 --pixel-format=yuv420p --concurrency=2"
+  },
+  "dependencies": {
+    "@remotion/cli": "4.0.541",
+    "@remotion/media": "4.0.541",
+    "@remotion/google-fonts": "4.0.541",
+    "react": "19.1.1",
+    "react-dom": "19.1.1",
+    "remotion": "4.0.541"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3",
+    "@types/react": "19.1.13",
+    "@types/react-dom": "19.1.9"
+  }
+}

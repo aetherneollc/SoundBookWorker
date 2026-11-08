@@ -24,6 +24,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
       - name: Install FFmpeg
         run: sudo apt-get update && sudo apt-get install -y ffmpeg fonts-noto-cjk
       - name: Install S3 client
@@ -90,8 +94,12 @@ jobs:
           JOB_ID: ${{ inputs.job_id }}
         run: |
           curl --fail-with-body -sS -X POST "$CALLBACK_URL" -H "Authorization: Bearer $CALLBACK_TOKEN" -H 'Content-Type: application/json' -d "{\"job_id\":\"$JOB_ID\",\"status\":\"running\"}"
-      - name: Render MP4
-        run: python renderer/render.py manifest.json output.mp4
+      - name: Install Remotion
+        run: npm ci
+      - name: Prepare frame-accurate timeline
+        run: python renderer/prepare_remotion.py manifest.json remotion-props.json
+      - name: Render MP4 with Remotion
+        run: npm run render
       - name: Upload result
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}

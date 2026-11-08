@@ -1,6 +1,6 @@
-# SoundBook FFmpeg renderer
+# SoundBook Remotion renderer
 
-Public GitHub Actions repository for CPU based FFmpeg composition only. It contains no story-generation, LLM, image-generation, or speech-generation runtime and no application credentials. The Cloudflare control plane dispatches `render.yml` with a unique `job_id` and a private R2 `manifest_key`; the runner downloads the already-generated media and uploads `renders/<job_id>/output.mp4`.
+Public GitHub Actions repository for Remotion video composition and MOSS speech synthesis. It contains no story-generation, LLM, image-generation runtime, or application credentials. The Cloudflare control plane dispatches `render.yml` with a unique `job_id` and a private R2 `manifest_key`; the runner downloads the already-generated media and uploads `renders/<job_id>/output.mp4`. Remotion handles the moving camera planes, animated diagrams, title and end cards, captions, and synchronized audio.
 
 ## R2 object manifest (v1)
 
@@ -19,8 +19,8 @@ Public GitHub Actions repository for CPU based FFmpeg composition only. It conta
 }
 ```
 
-`audio` remains supported as a single full-length audio track. `audio_tracks` allows the studio to place individual TTS dialogue clips on the timeline; FFmpeg delays and mixes those clips while composing the episode.
+`audio` remains supported as a single full-length audio track. `audio_tracks` allows the studio to place individual dialogue clips on the timeline. The Python preparation step measures the final speech files, locks the image durations to them, and passes that timeline to Remotion. FFmpeg remains a dependency for probing and speech pacing.
 
 Add repository Actions secrets `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_ENDPOINT` (`https://<account-id>.r2.cloudflarestorage.com`), `R2_BUCKET`, `CALLBACK_URL` (the Worker URL ending in `/api/callback`) and `CALLBACK_TOKEN` (matching the Cloudflare Worker secret). Keep the bucket private and grant the key access only to this bucket. A manifest path is a path inside the runner only after the workflow downloads it.
 
-The renderer can also run locally with `python renderer/render.py manifest.json output.mp4`; local manifests use `file` paths. GitHub-hosted runners install FFmpeg per job and have no persistent local state.
+The renderer can also run locally with `python renderer/prepare_remotion.py manifest.json remotion-props.json` followed by `npm run render`; local manifests use `file` paths. GitHub-hosted runners have no persistent local state.
