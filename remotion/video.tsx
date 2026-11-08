@@ -2,8 +2,10 @@ import React from 'react';
 import {AbsoluteFill, Img, Sequence, interpolate, spring, staticFile, useCurrentFrame, useVideoConfig} from 'remotion';
 import {Audio} from '@remotion/media';
 
+type LayerSet = {background: string; body: string; head?: string; subject_x: number; subject_y: number;
+  head_pivot_x?: number; head_pivot_y?: number};
 type Shot = {src: string; from: number; duration: number; index: number; camera?: string;
-  label?: string; fact_card?: string; section?: string};
+  label?: string; fact_card?: string; section?: string; layers?: LayerSet};
 type Track = {src: string; from: number; volume: number; loop: boolean};
 type Caption = {from: number; to: number; text: string};
 type Card = {name: string; tagline?: string; url?: string; qr?: string};
@@ -72,13 +74,31 @@ const MotionShot = ({shot, width, height}: {shot: Shot; width: number; height: n
   const exit = lerp(frame, shot.duration - Math.round(fps * .22), shot.duration, 1, 0);
   const flash = Math.max(0, 1 - frame / 6) * .35;
   const accent = shot.index % 2 === 0 ? '#81d6f0' : '#f3d184';
+  const layers = shot.layers;
+  const subjectSide = layers && layers.subject_x < .5 ? -1 : 1;
+  const alive = spring({fps, frame, config: {damping: 19, stiffness: 90}});
+  const breath = Math.sin(frame / (fps * .9) + shot.index * 1.3);
+  const bodyX = subjectSide * (1 - alive) * 18 + Math.sin(frame / (fps * 1.7)) * 7;
+  const bodyY = (1 - alive) * 12 + breath * 3;
+  const headNod = Math.sin(frame / (fps * 1.35) + shot.index) * .9;
+  const headY = Math.sin(frame / (fps * 1.35) + shot.index) * 2.5;
+  const imageStyle = {position: 'absolute' as const, inset: 0, width: '100%', height: '100%', objectFit: 'cover' as const,
+    filter: 'contrast(1.08) saturate(1.1)'};
   return <AbsoluteFill style={{overflow: 'hidden', backgroundColor: '#101827', color: 'white', fontFamily: font}}>
-    <Img src={staticFile(shot.src)} style={{position: 'absolute', width: '110%', height: '110%',
+    <Img src={staticFile(layers?.background || shot.src)} style={{position: 'absolute', width: '110%', height: '110%',
       top: '-5%', left: '-5%', objectFit: 'cover', transform: `scale(${scale}) translate(${panX * .35}px,${panY * .35}px)`,
       filter: 'blur(17px) brightness(.57) saturate(.9)'}} />
-    <Img src={staticFile(shot.src)} style={{position: 'absolute', inset: 0, width: '100%', height: '100%',
-      objectFit: 'cover', transform: `scale(${scale}) translate(${panX}px,${panY}px)`,
-      filter: 'contrast(1.08) saturate(1.1)'}} />
+    {layers ? <>
+      <Img src={staticFile(layers.background)} style={{...imageStyle,
+        transform: `scale(${scale}) translate(${panX * .58}px,${panY * .58}px)`}} />
+      <Img src={staticFile(layers.body)} style={{...imageStyle,
+        transformOrigin: `${layers.subject_x * 100}% ${layers.subject_y * 100}%`,
+        transform: `scale(${scale}) translate(${panX + bodyX}px,${panY + bodyY}px) scaleY(${1 + breath * .003})`}} />
+      {layers.head && <Img src={staticFile(layers.head)} style={{...imageStyle,
+        transformOrigin: `${(layers.head_pivot_x || layers.subject_x) * 100}% ${(layers.head_pivot_y || layers.subject_y) * 100}%`,
+        transform: `scale(${scale}) translate(${panX + bodyX}px,${panY + bodyY + headY}px) rotate(${headNod}deg)`}} />}
+    </> : <Img src={staticFile(shot.src)} style={{...imageStyle,
+      transform: `scale(${scale}) translate(${panX}px,${panY}px)`}} />}
     <div style={{position: 'absolute', inset: 0,
       background: 'linear-gradient(90deg,#0814268a,transparent 35%,transparent 70%,#07121e45),linear-gradient(0deg,#07111dc7,transparent 29%)'}} />
     {/* A scanning beam, technical grid and connected markers animate as part of the world. */}

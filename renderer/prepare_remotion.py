@@ -91,8 +91,16 @@ def prepare(manifest: Path, output: Path) -> None:
     timeline = []; cursor_frame = intro_frames
     for i, shot in enumerate(shots):
         duration_frames = max(1, frame(min(300, max(.25, float(shot.get('duration', 4)))), fps))
-        timeline.append({**shot, 'src': source(shot, public), 'from': cursor_frame,
-                         'duration': duration_frames, 'index': i})
+        prepared = {**shot, 'src': source(shot, public), 'from': cursor_frame,
+                    'duration': duration_frames, 'index': i}
+        if isinstance(shot.get('character_layers'), dict):
+            layers = dict(shot['character_layers'])
+            if all(layers.get(k) and Path(layers[k]).is_file() for k in ('background_file', 'body_file')):
+                for file_key, src_key in [('background_file', 'background'), ('body_file', 'body'), ('head_file', 'head')]:
+                    if layers.get(file_key) and Path(layers[file_key]).is_file():
+                        layers[src_key] = source({'file': layers[file_key]}, public)
+                prepared['layers'] = {k: v for k, v in layers.items() if not k.endswith('_file')}
+        timeline.append(prepared)
         cursor_frame += duration_frames
     audio = []
     if intro_frames:

@@ -87,6 +87,18 @@ jobs:
           if [ "$(cat needs-moss)" = yes ]; then
             python renderer/synthesize.py manifest.json
           fi
+      - name: Cache anime segmentation model
+        uses: actions/cache@v4
+        with:
+          path: character-model
+          key: isnet-anime-onnx-v1-${{ runner.os }}
+      - name: Install character layer runtime
+        continue-on-error: true
+        run: python -m pip install 'rembg[cpu]==2.0.67' 'opencv-python-headless==4.12.0.88'
+      - name: Extract character layers
+        env:
+          U2NET_HOME: character-model
+        run: python renderer/layer_shots.py manifest.json || echo 'Character masking unavailable; using original shots'
       - name: Mark running
         env:
           CALLBACK_URL: ${{ secrets.CALLBACK_URL }}

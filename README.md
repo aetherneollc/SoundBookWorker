@@ -1,6 +1,6 @@
 # SoundBook Remotion renderer
 
-Public GitHub Actions repository for Remotion video composition and MOSS speech synthesis. It contains no story-generation, LLM, image-generation runtime, or application credentials. The Cloudflare control plane dispatches `render.yml` with a unique `job_id` and a private R2 `manifest_key`; the runner downloads the already-generated media and uploads `renders/<job_id>/output.mp4`. Remotion handles the moving camera planes, animated diagrams, title and end cards, captions, and synchronized audio.
+Public GitHub Actions repository for Remotion video composition and MOSS speech synthesis. It contains no story-generation, LLM, image-generation runtime, or application credentials. The Cloudflare control plane dispatches `render.yml` with a unique `job_id` and a private R2 `manifest_key`; the runner downloads the already-generated media and uploads `renders/<job_id>/output.mp4`. Remotion handles the moving camera planes, animated diagrams, title and end cards, captions, and synchronized audio. For story shots, an optional CPU anime segmentation step cuts out a clear single character, repairs the covered background, and moves the character independently of the camera. Uncertain masks keep the original image.
 
 ## R2 object manifest (v1)
 
