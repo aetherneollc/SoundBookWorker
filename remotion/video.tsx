@@ -31,6 +31,8 @@ const Ambient = ({frame, width, height}: {frame: number; width: number; height: 
 const Intro = ({props}: {props: SoundBookProps}) => {
   const frame = useCurrentFrame(), {fps, width, height} = useVideoConfig();
   const enter = spring({fps, frame, config: {damping: 18, stiffness: 105}});
+  const title = props.title.replace(/^第\s*\d+\s*[集話话]\s*[｜|·:：\-—]?\s*/u, '')
+    .replace(/^Episode\s+\d+\s*[｜|·:：\-—]?\s*/iu, '') || props.title;
   const episode = ({zh: `第 ${props.episodeNumber} 集`, en: `EPISODE ${props.episodeNumber}`,
     ja: `第 ${props.episodeNumber} 話`, ko: `제 ${props.episodeNumber} 화`} as Record<string, string>)[props.language] || `EPISODE ${props.episodeNumber}`;
   return <AbsoluteFill style={{overflow: 'hidden', color: 'white', fontFamily: font}}>
@@ -48,9 +50,9 @@ const Intro = ({props}: {props: SoundBookProps}) => {
       transform: `translateY(${(1 - enter) * 100}px) scale(${.9 + .1 * enter})`, opacity: enter}}>
       <div style={{fontSize: height * .055, fontWeight: 800, color: '#f6d27d', letterSpacing: 4}}>{episode}</div>
       <div style={{width: width * .32, height: 3, background: '#f6d27d', margin: '27px 0'}} />
-      <div style={{fontSize: Math.min(height * .078, width * .75 / Math.max(8, props.title.length) * 1.5),
+      <div style={{fontSize: Math.min(height * .078, width * .75 / Math.max(8, title.length) * 1.5),
         fontWeight: 900, maxWidth: '82%', textAlign: 'center', lineHeight: 1.35,
-        textShadow: '0 4px 15px #000b'}}>{props.title}</div>
+        textShadow: '0 4px 15px #000b'}}>{title}</div>
     </div>
     <div style={{position: 'absolute', left: 0, bottom: 0, width: `${lerp(frame, 0, props.introFrames, 0, 100)}%`,
       height: 8, background: '#f6d27d'}} />
@@ -77,13 +79,6 @@ const MotionShot = ({shot, width, height}: {shot: Shot; width: number; height: n
     <Img src={staticFile(shot.src)} style={{position: 'absolute', inset: 0, width: '100%', height: '100%',
       objectFit: 'cover', transform: `scale(${scale}) translate(${panX}px,${panY}px)`,
       filter: 'contrast(1.08) saturate(1.1)'}} />
-    {/* A broad, feathered foreground plane moves at a different speed from the camera. */}
-    <div style={{position: 'absolute', inset: 0, overflow: 'hidden',
-      maskImage: 'linear-gradient(120deg, transparent 0%, transparent 61%, black 85%)',
-      WebkitMaskImage: 'linear-gradient(120deg, transparent 0%, transparent 61%, black 85%)', opacity: .48}}>
-      <Img src={staticFile(shot.src)} style={{width: '100%', height: '100%', objectFit: 'cover',
-        transform: `scale(${scale * 1.07}) translate(${panX * 1.8}px,${panY * 1.5}px)`}} />
-    </div>
     <div style={{position: 'absolute', inset: 0,
       background: 'linear-gradient(90deg,#0814268a,transparent 35%,transparent 70%,#07121e45),linear-gradient(0deg,#07111dc7,transparent 29%)'}} />
     {/* A scanning beam, technical grid and connected markers animate as part of the world. */}
