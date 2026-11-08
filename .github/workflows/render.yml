@@ -93,7 +93,7 @@ jobs:
           CALLBACK_TOKEN: ${{ secrets.CALLBACK_TOKEN }}
           JOB_ID: ${{ inputs.job_id }}
         run: |
-          curl --fail-with-body -sS -X POST "$CALLBACK_URL" -H "Authorization: Bearer $CALLBACK_TOKEN" -H 'Content-Type: application/json' -d "{\"job_id\":\"$JOB_ID\",\"status\":\"running\"}"
+          curl --fail-with-body --retry 5 --retry-all-errors --retry-delay 3 -sS -X POST "$CALLBACK_URL" -H "Authorization: Bearer $CALLBACK_TOKEN" -H 'Content-Type: application/json' -d "{\"job_id\":\"$JOB_ID\",\"status\":\"running\"}" || echo 'Running status callback failed; continuing with render'
       - name: Install Remotion
         run: npm ci
       - name: Prepare frame-accurate timeline
@@ -121,7 +121,7 @@ jobs:
           JOB_ID: ${{ inputs.job_id }}
           OUTPUT_KEY: renders/${{ inputs.job_id }}/output.mp4
         run: |
-          curl --fail-with-body -sS -X POST "$CALLBACK_URL" -H "Authorization: Bearer $CALLBACK_TOKEN" -H 'Content-Type: application/json' -d "{\"job_id\":\"$JOB_ID\",\"status\":\"succeeded\",\"output_key\":\"$OUTPUT_KEY\"}"
+          curl --fail-with-body --retry 5 --retry-all-errors --retry-delay 3 -sS -X POST "$CALLBACK_URL" -H "Authorization: Bearer $CALLBACK_TOKEN" -H 'Content-Type: application/json' -d "{\"job_id\":\"$JOB_ID\",\"status\":\"succeeded\",\"output_key\":\"$OUTPUT_KEY\"}"
       - name: Mark failed
         if: failure()
         env:
@@ -129,4 +129,4 @@ jobs:
           CALLBACK_TOKEN: ${{ secrets.CALLBACK_TOKEN }}
           JOB_ID: ${{ inputs.job_id }}
         run: |
-          curl -sS -X POST "$CALLBACK_URL" -H "Authorization: Bearer $CALLBACK_TOKEN" -H 'Content-Type: application/json' -d "{\"job_id\":\"$JOB_ID\",\"status\":\"failed\",\"error\":\"workflow failed; inspect GitHub Actions logs\"}" || true
+          curl --retry 5 --retry-all-errors --retry-delay 3 -sS -X POST "$CALLBACK_URL" -H "Authorization: Bearer $CALLBACK_TOKEN" -H 'Content-Type: application/json' -d "{\"job_id\":\"$JOB_ID\",\"status\":\"failed\",\"error\":\"workflow failed; inspect GitHub Actions logs\"}" || true
