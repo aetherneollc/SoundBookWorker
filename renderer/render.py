@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Render a SoundBook v1 manifest with FFmpeg."""
 from __future__ import annotations
-import argparse, json, math, os, struct, subprocess, tempfile, wave
+import argparse, json, math, os, re, shutil, struct, subprocess, tempfile, wave
 from pathlib import Path
 
 FONT_BOLD = "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc"
@@ -19,12 +19,24 @@ def run(args: list[str]) -> None:
 
 
 def media_duration(path: Path) -> float:
-    proc = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
-                           "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
+    if path.suffix.lower() == '.wav':
+        try:
+            with wave.open(str(path), 'rb') as audio:
+                return max(.05, audio.getnframes() / audio.getframerate())
+        except wave.Error:
+            pass
+    if shutil.which('ffprobe'):
+        proc = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                               "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
+                              text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if proc.returncode == 0:
+            return max(.05, float(proc.stdout.strip()))
+    proc = subprocess.run(['ffmpeg', '-hide_banner', '-i', str(path)],
                           text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    if proc.returncode:
+    match = re.search(r'Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)', proc.stderr)
+    if not match:
         raise RuntimeError(f"Unable to read media duration: {proc.stderr[-1000:]}")
-    return max(.05, float(proc.stdout.strip()))
+    return max(.05, int(match[1]) * 3600 + int(match[2]) * 60 + float(match[3]))
 
 
 def subtitle_chunks(text: str, speaker: str) -> list[str]:
