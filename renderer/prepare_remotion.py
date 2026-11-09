@@ -130,7 +130,7 @@ def prepare(manifest: Path, output: Path) -> None:
         audio.append({'src': source(track, public), 'from': frame(start, fps),
                       'volume': max(0, min(4, float(track.get('volume', 1)))), 'loop': bool(track.get('loop'))})
         if not track.get('loop') and track.get('scene_number') is not None and track.get('speaker') and int(track['scene_number']) in animated_scenes:
-            for cue in speech_cues(Path(track['file']), str(track.get('caption_text', ''))):
+            for cue in speech_cues(Path(track['file']), str(track.get('caption_text', '')), str(doc.get('language') or 'zh')):
                 speech.append({'from': frame(start + cue['start'], fps),
                                'to': frame(start + cue['end'], fps),
                                'value': cue['value'], 'speaker': str(track['speaker']),

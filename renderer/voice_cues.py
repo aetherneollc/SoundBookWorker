@@ -10,7 +10,7 @@ import tempfile
 from pathlib import Path
 
 
-def _rhubarb(path: Path, text: str) -> list[dict] | None:
+def _rhubarb(path: Path, text: str, language: str) -> list[dict] | None:
     binary = os.environ.get('RHUBARB_BIN') or shutil.which('rhubarb')
     if not binary:
         return None
@@ -21,7 +21,8 @@ def _rhubarb(path: Path, text: str) -> list[dict] | None:
             output = root / 'mouth.json'
             subprocess.run(['ffmpeg', '-nostdin', '-v', 'error', '-y', '-i', str(path),
                             '-ac', '1', '-ar', '16000', str(wav)], check=True, timeout=90)
-            command = [binary, '-r', 'phonetic', '-f', 'json', '-o', str(output)]
+            recognizer = 'pocketSphinx' if language.lower().startswith('en') else 'phonetic'
+            command = [binary, '-r', recognizer, '-f', 'json', '-o', str(output)]
             if text:
                 script = root / 'script.txt'
                 script.write_text(text, encoding='utf-8')
@@ -70,6 +71,6 @@ def _energy(path: Path) -> list[dict]:
     return cues
 
 
-def speech_cues(path: Path, text: str = '') -> list[dict]:
-    cues = _rhubarb(path, text)
+def speech_cues(path: Path, text: str = '', language: str = 'zh') -> list[dict]:
+    cues = _rhubarb(path, text, language)
     return cues if cues is not None else _energy(path)
