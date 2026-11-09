@@ -114,7 +114,7 @@ def prepare(manifest: Path, output: Path) -> None:
     if intro_frames:
         chime = Path('media/intro-chime.wav'); chime.parent.mkdir(exist_ok=True)
         write_intro_chime(chime)
-        audio.append({'src': source({'file': str(chime)}, public), 'from': 0, 'volume': .72, 'loop': False})
+        audio.append({'src': source({'file': str(chime)}, public), 'from': 0, 'volume': .5, 'loop': False})
         if intro_voice:
             audio.append({'src': source({'file': str(intro_voice)}, public), 'from': frame(.22, fps), 'volume': 1, 'loop': False})
     animated_scenes = {int(shot.get('scene_number', 0)) for shot in timeline

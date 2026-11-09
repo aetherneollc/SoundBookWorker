@@ -14,12 +14,11 @@ DEFAULT_VOICE = {"zh": "Weiguo", "en": "Nathan", "ja": "Saki", "ko": "Junhao"}
 
 def tighten_pacing(path: Path, language: str) -> None:
     """Short-video pacing without changing pitch or cutting any words."""
-    speed = {"en": 1.14, "zh": 1.06, "ja": 1.05, "ko": 1.06}.get(language, 1.0)
-    if speed == 1.0:
-        return
+    speed = {"en": 1.14, "zh": 1.12, "ja": 1.08, "ko": 1.08}.get(language, 1.0)
     adjusted = path.with_name(f"{path.stem}-paced.wav")
     proc = subprocess.run(
-        ["ffmpeg", "-y", "-loglevel", "error", "-i", str(path), "-filter:a", f"atempo={speed}", str(adjusted)],
+        ["ffmpeg", "-y", "-loglevel", "error", "-i", str(path), "-filter:a",
+         f"atempo={speed},loudnorm=I=-18:TP=-2:LRA=8", str(adjusted)],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
     )
     if proc.returncode or not adjusted.exists() or adjusted.stat().st_size < 4096:
