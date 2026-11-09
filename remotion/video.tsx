@@ -1,6 +1,7 @@
 import React from 'react';
 import {AbsoluteFill, Img, Sequence, interpolate, spring, staticFile, useCurrentFrame, useVideoConfig} from 'remotion';
 import {Audio} from '@remotion/media';
+import {Rover, type RoverAction} from './rover';
 
 type LayerSet = {background: string; body: string; head?: string; arm_left?: string; arm_right?: string;
   subject_x: number; subject_y: number; character?: string;
@@ -10,7 +11,7 @@ type LayerSet = {background: string; body: string; head?: string; arm_left?: str
   action?: 'idle' | 'talk' | 'wave'};
 type Shot = {src: string; from: number; duration: number; index: number; camera?: string;
   label?: string; fact_card?: string; section?: string; layers?: LayerSet; scene_number?: number;
-  technical_overlay?: boolean};
+  technical_overlay?: boolean; rover?: {action: RoverAction; speaker: string}};
 type Track = {src: string; from: number; volume: number; loop: boolean};
 type Caption = {from: number; to: number; text: string};
 type Speech = {from: number; to: number; value: string; speaker: string; scene_number: number};
@@ -88,8 +89,9 @@ const MotionShot = ({shot, width, height, speech}: {shot: Shot; width: number; h
   const bodyY = (1 - alive) * 12 + breath * 3;
   const headNod = Math.sin(frame / (fps * 1.35) + shot.index) * .9;
   const headY = Math.sin(frame / (fps * 1.35) + shot.index) * 2.5;
+  const actor = layers?.character || shot.rover?.speaker;
   const activeSpeech = speech.find(c => frame + shot.from >= c.from && frame + shot.from < c.to &&
-    (!layers?.character || c.speaker === layers.character) && c.scene_number === Number(shot.scene_number || 0));
+    (!actor || c.speaker === actor) && c.scene_number === Number(shot.scene_number || 0));
   const speaking = activeSpeech && activeSpeech.value !== 'X' && activeSpeech.value !== 'A';
   const mouthShape = activeSpeech?.value || 'X';
   const mouthSprite = layers?.mouth?.[mouthShape] || layers?.mouth?.[speaking ? 'D' : 'X'];
@@ -136,6 +138,8 @@ const MotionShot = ({shot, width, height, speech}: {shot: Shot; width: number; h
         </div>}
     </> : <Img src={staticFile(shot.src)} style={{...imageStyle,
       transform: `scale(${scale}) translate(${panX}px,${panY}px)`}} />}
+    {shot.rover && <Rover frame={frame} fps={fps} duration={shot.duration} action={shot.rover.action}
+      speaking={Boolean(speaking)} width={width * .56} height={height * .67} />}
     <div style={{position: 'absolute', inset: 0,
       background: 'linear-gradient(90deg,#0814268a,transparent 35%,transparent 70%,#07121e45),linear-gradient(0deg,#07111dc7,transparent 29%)'}} />
     {/* A scanning beam, technical grid and connected markers animate as part of the world. */}

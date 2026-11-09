@@ -10,6 +10,11 @@ on:
         description: R2 object key for manifest JSON
         required: true
         type: string
+      qa_mode:
+        description: Render an isolated QA artifact without updating a studio episode
+        required: false
+        default: false
+        type: boolean
 permissions:
   contents: read
 concurrency:
@@ -126,8 +131,8 @@ jobs:
           import json
           from pathlib import Path
           shots=json.loads(Path('manifest.json').read_text()).get('shots', [])
-          if not any(isinstance(s.get('character_layers'), dict) and
-                     (s['character_layers'].get('mouth_files') or s['character_layers'].get('mouth_mode') == 'led') for s in shots):
+          if not any(s.get('rover') or (isinstance(s.get('character_layers'), dict) and
+                     (s['character_layers'].get('mouth_files') or s['character_layers'].get('mouth_mode') == 'led')) for s in shots):
               raise SystemExit(1)
           PY
           then
@@ -137,6 +142,7 @@ jobs:
             echo "RHUBARB_BIN=$PWD/rhubarb-runtime/Rhubarb-Lip-Sync-1.14.0-Linux/rhubarb" >> "$GITHUB_ENV"
           fi
       - name: Mark running
+        if: ${{ !inputs.qa_mode }}
         env:
           CALLBACK_URL: ${{ secrets.CALLBACK_URL }}
           CALLBACK_TOKEN: ${{ secrets.CALLBACK_TOKEN }}
@@ -150,6 +156,7 @@ jobs:
       - name: Render MP4 with Remotion
         run: npm run render
       - name: Upload result
+        if: ${{ !inputs.qa_mode }}
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
@@ -163,7 +170,7 @@ jobs:
           s3.upload_file('output.mp4',os.environ['R2_BUCKET'],os.environ['OUTPUT_KEY'],ExtraArgs={'ContentType':'video/mp4'})
           PY
       - name: Mark succeeded
-        if: success()
+        if: ${{ success() && !inputs.qa_mode }}
         env:
           CALLBACK_URL: ${{ secrets.CALLBACK_URL }}
           CALLBACK_TOKEN: ${{ secrets.CALLBACK_TOKEN }}
@@ -172,10 +179,17 @@ jobs:
         run: |
           curl --fail-with-body --retry 5 --retry-all-errors --retry-delay 3 -sS -X POST "$CALLBACK_URL" -H "Authorization: Bearer $CALLBACK_TOKEN" -H 'Content-Type: application/json' -d "{\"job_id\":\"$JOB_ID\",\"status\":\"succeeded\",\"output_key\":\"$OUTPUT_KEY\"}"
       - name: Mark failed
-        if: failure()
+        if: ${{ failure() && !inputs.qa_mode }}
         env:
           CALLBACK_URL: ${{ secrets.CALLBACK_URL }}
           CALLBACK_TOKEN: ${{ secrets.CALLBACK_TOKEN }}
           JOB_ID: ${{ inputs.job_id }}
         run: |
           curl --retry 5 --retry-all-errors --retry-delay 3 -sS -X POST "$CALLBACK_URL" -H "Authorization: Bearer $CALLBACK_TOKEN" -H 'Content-Type: application/json' -d "{\"job_id\":\"$JOB_ID\",\"status\":\"failed\",\"error\":\"workflow failed; inspect GitHub Actions logs\"}" || true
+      - name: Upload QA preview
+        if: ${{ success() && inputs.qa_mode }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: qa-${{ inputs.job_id }}
+          path: output.mp4
+          retention-days: 7

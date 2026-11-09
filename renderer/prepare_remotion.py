@@ -118,8 +118,8 @@ def prepare(manifest: Path, output: Path) -> None:
         if intro_voice:
             audio.append({'src': source({'file': str(intro_voice)}, public), 'from': frame(.22, fps), 'volume': 1, 'loop': False})
     animated_scenes = {int(shot.get('scene_number', 0)) for shot in timeline
-                       if isinstance(shot.get('layers'), dict) and
-                       (shot['layers'].get('mouth') or shot['layers'].get('mouth_mode') == 'led')}
+                       if shot.get('rover') or (isinstance(shot.get('layers'), dict) and
+                       (shot['layers'].get('mouth') or shot['layers'].get('mouth_mode') == 'led'))}
     speech = []
     for track in tracks:
         if not track.get('file'):
