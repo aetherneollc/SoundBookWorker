@@ -16,6 +16,9 @@ def layer_shot(shot: dict, index: int, session, output_dir: Path) -> bool:
     from PIL import Image
     from rembg import remove
 
+    # A supplied rig has deliberate pivots and sprites; never replace it with a whole-body mask.
+    if isinstance(shot.get('character_layers'), dict) and shot['character_layers'].get('body_file'):
+        return False
     source = Path(str(shot.get('file', '')))
     if source.suffix.lower() not in {'.png', '.jpg', '.jpeg', '.webp'} or not source.is_file():
         return False
@@ -80,7 +83,8 @@ def process(manifest_path: Path) -> None:
     doc = json.loads(manifest_path.read_text(encoding='utf-8'))
     shots = doc.get('shots', [])
     candidates = [shot for shot in shots if Path(str(shot.get('file', ''))).suffix.lower()
-                  in {'.png', '.jpg', '.jpeg', '.webp'} and not shot.get('fact_card') and not shot.get('label')]
+                  in {'.png', '.jpg', '.jpeg', '.webp'} and not shot.get('fact_card') and not shot.get('label')
+                  and not (isinstance(shot.get('character_layers'), dict) and shot['character_layers'].get('body_file'))]
     if not candidates:
         return
     from rembg import new_session

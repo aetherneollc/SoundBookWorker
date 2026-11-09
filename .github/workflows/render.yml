@@ -57,6 +57,27 @@ jobs:
                       name=f"media/{n:05d}-{Path(key).name}"
                       s3.download_file(bucket,key,name)
                       item['file']=name
+          # A character rig is a reusable set of R2 sprites, not a single image.
+          for shot in doc.get('shots', []):
+              layers=shot.get('character_layers')
+              if not isinstance(layers, dict):
+                  continue
+              for part in ('background','body','head','arm_left','arm_right'):
+                  key=layers.get(f'{part}_key')
+                  if key:
+                      n+=1
+                      name=f"media/{n:05d}-{Path(key).name}"
+                      s3.download_file(bucket,key,name)
+                      layers[f'{part}_file']=name
+              if isinstance(layers.get('mouth_keys'), dict):
+                  layers['mouth_files']={}
+                  for shape,key in layers['mouth_keys'].items():
+                      if shape not in 'ABCDEFGHX' or not key:
+                          continue
+                      n+=1
+                      name=f"media/{n:05d}-{Path(key).name}"
+                      s3.download_file(bucket,key,name)
+                      layers['mouth_files'][shape]=name
           Path('manifest.json').write_text(json.dumps(doc))
           PY
       - name: Cache MOSS models
@@ -99,6 +120,22 @@ jobs:
         env:
           U2NET_HOME: character-model
         run: python renderer/layer_shots.py manifest.json || echo 'Character masking unavailable; using original shots'
+      - name: Install phonetic lip sync when character mouth assets are present
+        run: |
+          if python - <<'PY'
+          import json
+          from pathlib import Path
+          shots=json.loads(Path('manifest.json').read_text()).get('shots', [])
+          if not any(isinstance(s.get('character_layers'), dict) and
+                     (s['character_layers'].get('mouth_files') or s['character_layers'].get('mouth_mode') == 'led') for s in shots):
+              raise SystemExit(1)
+          PY
+          then
+            curl -fsSL --retry 3 https://github.com/DanielSWolf/rhubarb-lip-sync/releases/download/v1.14.0/Rhubarb-Lip-Sync-1.14.0-Linux.zip -o rhubarb.zip
+            echo 'a9a9074862cff47b2d59b8bf399a678a3b0b74f9452ad6ad94cb292913dd8667  rhubarb.zip' | sha256sum -c -
+            unzip -q rhubarb.zip -d rhubarb-runtime
+            echo "RHUBARB_BIN=$PWD/rhubarb-runtime/Rhubarb-Lip-Sync-1.14.0-Linux/rhubarb" >> "$GITHUB_ENV"
+          fi
       - name: Mark running
         env:
           CALLBACK_URL: ${{ secrets.CALLBACK_URL }}

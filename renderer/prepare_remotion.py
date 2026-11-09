@@ -4,6 +4,7 @@ from __future__ import annotations
 import json, math, re, shutil, subprocess, sys
 from pathlib import Path
 from render import media_duration, subtitle_chunks, write_intro_chime
+from voice_cues import speech_cues
 
 
 def frame(seconds: float, fps: int) -> int:
@@ -96,10 +97,17 @@ def prepare(manifest: Path, output: Path) -> None:
         if isinstance(shot.get('character_layers'), dict):
             layers = dict(shot['character_layers'])
             if all(layers.get(k) and Path(layers[k]).is_file() for k in ('background_file', 'body_file')):
-                for file_key, src_key in [('background_file', 'background'), ('body_file', 'body'), ('head_file', 'head')]:
+                for file_key, src_key in [('background_file', 'background'), ('body_file', 'body'), ('head_file', 'head'),
+                                          ('arm_left_file', 'arm_left'), ('arm_right_file', 'arm_right')]:
                     if layers.get(file_key) and Path(layers[file_key]).is_file():
                         layers[src_key] = source({'file': layers[file_key]}, public)
-                prepared['layers'] = {k: v for k, v in layers.items() if not k.endswith('_file')}
+                if isinstance(layers.get('mouth_files'), dict):
+                    layers['mouth'] = {shape: source({'file': path}, public)
+                                       for shape, path in layers['mouth_files'].items()
+                                       if isinstance(path, str) and Path(path).is_file() and shape in 'ABCDEFGHX'}
+                prepared['layers'] = {k: v for k, v in layers.items()
+                                      if not k.endswith('_file') and k not in ('mouth_files', 'mouth_keys')
+                                      and not k.endswith('_key')}
         timeline.append(prepared)
         cursor_frame += duration_frames
     audio = []
@@ -109,6 +117,10 @@ def prepare(manifest: Path, output: Path) -> None:
         audio.append({'src': source({'file': str(chime)}, public), 'from': 0, 'volume': .72, 'loop': False})
         if intro_voice:
             audio.append({'src': source({'file': str(intro_voice)}, public), 'from': frame(.22, fps), 'volume': 1, 'loop': False})
+    animated_scenes = {int(shot.get('scene_number', 0)) for shot in timeline
+                       if isinstance(shot.get('layers'), dict) and
+                       (shot['layers'].get('mouth') or shot['layers'].get('mouth_mode') == 'led')}
+    speech = []
     for track in tracks:
         if not track.get('file'):
             continue
@@ -117,6 +129,12 @@ def prepare(manifest: Path, output: Path) -> None:
             start = float(track['start_ms']) / 1000 + (0 if doc.get('timeline_mode') == 'voice_locked' or track.get('_full_length') else intro_seconds)
         audio.append({'src': source(track, public), 'from': frame(start, fps),
                       'volume': max(0, min(4, float(track.get('volume', 1)))), 'loop': bool(track.get('loop'))})
+        if not track.get('loop') and track.get('scene_number') is not None and track.get('speaker') and int(track['scene_number']) in animated_scenes:
+            for cue in speech_cues(Path(track['file']), str(track.get('caption_text', ''))):
+                speech.append({'from': frame(start + cue['start'], fps),
+                               'to': frame(start + cue['end'], fps),
+                               'value': cue['value'], 'speaker': str(track['speaker']),
+                               'scene_number': int(track['scene_number'])})
     cta = doc.get('cta_card') if isinstance(doc.get('cta_card'), dict) else None
     cta_frames = frame(3.8, fps) if cta and str(cta.get('name', '')).strip() else 0
     if cta_frames and str(cta.get('url', '')).startswith('https://'):
@@ -125,7 +143,7 @@ def prepare(manifest: Path, output: Path) -> None:
         qrcode.make(str(cta['url']), border=2).save(qr)
         cta = {**cta, 'qr': source({'file': str(qr)}, public)}
     props = {'width': width, 'height': height, 'fps': fps, 'durationInFrames': cursor_frame+cta_frames,
-             'introFrames': intro_frames, 'shots': timeline, 'audio': audio, 'captions': captions,
+             'introFrames': intro_frames, 'shots': timeline, 'audio': audio, 'captions': captions, 'speech': speech,
              'episodeNumber': int(doc.get('episode_number') or 1), 'title': str(doc.get('episode_title') or ''),
              'language': str(doc.get('language') or 'zh'), 'cta': cta if cta_frames else None,
              'ctaFrom': cursor_frame, 'ctaFrames': cta_frames}

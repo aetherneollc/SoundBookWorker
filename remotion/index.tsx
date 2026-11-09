@@ -4,7 +4,7 @@ import {SoundBook, type SoundBookProps} from './video';
 
 const defaults: SoundBookProps = {
   width: 1280, height: 720, fps: 24, durationInFrames: 120,
-  introFrames: 0, shots: [], audio: [], captions: [], episodeNumber: 1,
+  introFrames: 0, shots: [], audio: [], captions: [], speech: [], episodeNumber: 1,
   title: '', language: 'zh', cta: null, ctaFrom: 120, ctaFrames: 0,
 };
 

@@ -2,15 +2,21 @@ import React from 'react';
 import {AbsoluteFill, Img, Sequence, interpolate, spring, staticFile, useCurrentFrame, useVideoConfig} from 'remotion';
 import {Audio} from '@remotion/media';
 
-type LayerSet = {background: string; body: string; head?: string; subject_x: number; subject_y: number;
-  head_pivot_x?: number; head_pivot_y?: number};
+type LayerSet = {background: string; body: string; head?: string; arm_left?: string; arm_right?: string;
+  subject_x: number; subject_y: number; character?: string;
+  head_pivot_x?: number; head_pivot_y?: number; arm_left_pivot_x?: number; arm_left_pivot_y?: number;
+  arm_right_pivot_x?: number; arm_right_pivot_y?: number;
+  mouth?: Record<string, string>; mouth_mode?: 'led'; mouth_x?: number; mouth_y?: number; mouth_width?: number;
+  action?: 'idle' | 'talk' | 'wave'};
 type Shot = {src: string; from: number; duration: number; index: number; camera?: string;
-  label?: string; fact_card?: string; section?: string; layers?: LayerSet};
+  label?: string; fact_card?: string; section?: string; layers?: LayerSet; scene_number?: number;
+  technical_overlay?: boolean};
 type Track = {src: string; from: number; volume: number; loop: boolean};
 type Caption = {from: number; to: number; text: string};
+type Speech = {from: number; to: number; value: string; speaker: string; scene_number: number};
 type Card = {name: string; tagline?: string; url?: string; qr?: string};
 export type SoundBookProps = {width: number; height: number; fps: number; durationInFrames: number;
-  introFrames: number; shots: Shot[]; audio: Track[]; captions: Caption[];
+  introFrames: number; shots: Shot[]; audio: Track[]; captions: Caption[]; speech: Speech[];
   episodeNumber: number; title: string; language: string; cta: Card | null;
   ctaFrom: number; ctaFrames: number};
 
@@ -61,7 +67,7 @@ const Intro = ({props}: {props: SoundBookProps}) => {
   </AbsoluteFill>;
 };
 
-const MotionShot = ({shot, width, height}: {shot: Shot; width: number; height: number}) => {
+const MotionShot = ({shot, width, height, speech}: {shot: Shot; width: number; height: number; speech: Speech[]}) => {
   const frame = useCurrentFrame(), {fps} = useVideoConfig();
   const p = Math.min(1, frame / Math.max(1, shot.duration - 1));
   const camera = (shot.camera || '').toLowerCase();
@@ -82,6 +88,12 @@ const MotionShot = ({shot, width, height}: {shot: Shot; width: number; height: n
   const bodyY = (1 - alive) * 12 + breath * 3;
   const headNod = Math.sin(frame / (fps * 1.35) + shot.index) * .9;
   const headY = Math.sin(frame / (fps * 1.35) + shot.index) * 2.5;
+  const activeSpeech = speech.find(c => frame + shot.from >= c.from && frame + shot.from < c.to &&
+    (!layers?.character || c.speaker === layers.character) && c.scene_number === Number(shot.scene_number || 0));
+  const speaking = activeSpeech && activeSpeech.value !== 'X' && activeSpeech.value !== 'A';
+  const mouthShape = activeSpeech?.value || 'X';
+  const mouthSprite = layers?.mouth?.[mouthShape] || layers?.mouth?.[speaking ? 'D' : 'X'];
+  const mouthSize = width * (layers?.mouth_width || .08);
   const imageStyle = {position: 'absolute' as const, inset: 0, width: '100%', height: '100%', objectFit: 'cover' as const,
     filter: 'contrast(1.08) saturate(1.1)'};
   return <AbsoluteFill style={{overflow: 'hidden', backgroundColor: '#101827', color: 'white', fontFamily: font}}>
@@ -94,18 +106,43 @@ const MotionShot = ({shot, width, height}: {shot: Shot; width: number; height: n
       <Img src={staticFile(layers.body)} style={{...imageStyle,
         transformOrigin: `${layers.subject_x * 100}% ${layers.subject_y * 100}%`,
         transform: `scale(${scale}) translate(${panX + bodyX}px,${panY + bodyY}px) scaleY(${1 + breath * .003})`}} />
+      {(['arm_left', 'arm_right'] as const).map((part, partIndex) => {
+        const src = layers[part];
+        if (!src) return null;
+        const pivotX = part === 'arm_left' ? layers.arm_left_pivot_x : layers.arm_right_pivot_x;
+        const pivotY = part === 'arm_left' ? layers.arm_left_pivot_y : layers.arm_right_pivot_y;
+        const wave = layers.action === 'wave' && part === 'arm_right'
+          ? lerp(frame, 0, fps * .55, 0, -18) + Math.sin(frame / (fps * .25)) * 5 : 0;
+        const talk = speaking && partIndex === 1 ? Math.sin(frame / (fps * .24)) * 3 : 0;
+        return <Img key={part} src={staticFile(src)} style={{...imageStyle,
+          transformOrigin: `${(pivotX || layers.subject_x) * 100}% ${(pivotY || layers.subject_y) * 100}%`,
+          transform: `scale(${scale}) translate(${panX + bodyX}px,${panY + bodyY}px) rotate(${Math.sin(frame / (fps * 1.2) + partIndex * 2) * 2.3 + talk + wave}deg)`}} />;
+      })}
       {layers.head && <Img src={staticFile(layers.head)} style={{...imageStyle,
         transformOrigin: `${(layers.head_pivot_x || layers.subject_x) * 100}% ${(layers.head_pivot_y || layers.subject_y) * 100}%`,
-        transform: `scale(${scale}) translate(${panX + bodyX}px,${panY + bodyY + headY}px) rotate(${headNod}deg)`}} />}
+        transform: `scale(${scale}) translate(${panX + bodyX}px,${panY + bodyY + headY}px) rotate(${headNod + (speaking ? .7 : 0)}deg)`}} />}
+      {mouthSprite && <Img src={staticFile(mouthSprite)} style={{...imageStyle,
+        transformOrigin: `${(layers.head_pivot_x || layers.subject_x) * 100}% ${(layers.head_pivot_y || layers.subject_y) * 100}%`,
+        transform: `scale(${scale}) translate(${panX + bodyX}px,${panY + bodyY + headY}px) rotate(${headNod + (speaking ? .7 : 0)}deg)`}} />}
+      {layers.mouth_mode === 'led' && typeof layers.mouth_x === 'number' && typeof layers.mouth_y === 'number' &&
+        <div style={{position: 'absolute', inset: 0, pointerEvents: 'none',
+          transformOrigin: `${(layers.head_pivot_x || layers.subject_x) * 100}% ${(layers.head_pivot_y || layers.subject_y) * 100}%`,
+          transform: `scale(${scale}) translate(${panX + bodyX}px,${panY + bodyY + headY}px) rotate(${headNod}deg)`}}>
+          <div style={{position: 'absolute', left: layers.mouth_x * width - mouthSize / 2,
+            top: layers.mouth_y * height - mouthSize * .18, width: mouthSize, height: mouthSize * .34,
+            borderRadius: 20, background: speaking ? '#ffbc40' : '#cc6916',
+            opacity: speaking ? .68 : .22, boxShadow: speaking ? '0 0 20px 8px #ff9d35a0' : 'none',
+            transform: `scaleY(${speaking ? mouthShape === 'D' ? 1.7 : .9 : .35})`}} />
+        </div>}
     </> : <Img src={staticFile(shot.src)} style={{...imageStyle,
       transform: `scale(${scale}) translate(${panX}px,${panY}px)`}} />}
     <div style={{position: 'absolute', inset: 0,
       background: 'linear-gradient(90deg,#0814268a,transparent 35%,transparent 70%,#07121e45),linear-gradient(0deg,#07111dc7,transparent 29%)'}} />
     {/* A scanning beam, technical grid and connected markers animate as part of the world. */}
-    <div style={{position: 'absolute', left: `${lerp(p, 0, 1, -20, 110)}%`, top: 0,
+    {shot.technical_overlay !== false && <div style={{position: 'absolute', left: `${lerp(p, 0, 1, -20, 110)}%`, top: 0,
       height: '100%', width: width * .12, transform: 'skewX(-16deg)',
-      background: `linear-gradient(90deg, transparent, ${accent}18, transparent)`, opacity: .75}} />
-    {shot.index % 3 !== 2 && <svg width={width} height={height} style={{position: 'absolute', inset: 0, opacity: .78}}>
+      background: `linear-gradient(90deg, transparent, ${accent}18, transparent)`, opacity: .75}} />}
+    {shot.technical_overlay !== false && shot.index % 3 !== 2 && <svg width={width} height={height} style={{position: 'absolute', inset: 0, opacity: .78}}>
       <path d={`M ${width*.72} ${height*.22} L ${width*.84} ${height*.22} L ${width*.9} ${height*.31}`}
         fill="none" stroke={accent} strokeWidth="2" strokeDasharray="280"
         strokeDashoffset={lerp(frame, 0, fps * .8, 280, 0)} />
@@ -165,7 +202,7 @@ export const SoundBook = (props: SoundBookProps) => {
   return <AbsoluteFill style={{background: '#07101f'}}>
     {props.introFrames > 0 && <Sequence from={0} durationInFrames={props.introFrames}><Intro props={props} /></Sequence>}
     {props.shots.map(shot => <Sequence key={`${shot.index}-${shot.from}`} from={shot.from} durationInFrames={shot.duration}>
-      <MotionShot shot={shot} width={props.width} height={props.height} />
+      <MotionShot shot={shot} width={props.width} height={props.height} speech={props.speech || []} />
     </Sequence>)}
     {props.cta && props.ctaFrames > 0 && <Sequence from={props.ctaFrom} durationInFrames={props.ctaFrames}>
       <EndCard card={props.cta} frames={props.ctaFrames} />
