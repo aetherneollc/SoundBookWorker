@@ -100,7 +100,7 @@ def prepare(manifest: Path, output: Path) -> None:
             cast = []
             for actor in cartoon.get('actors') or []:
                 actor = dict(actor)
-                for part in ('portrait', 'mouth'):
+                for part in ('portrait', 'mouth', 'body'):
                     file = actor.get(f'{part}_file')
                     if file and Path(file).is_file():
                         actor[part] = source({'file': file}, public)

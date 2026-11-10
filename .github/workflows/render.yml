@@ -102,7 +102,7 @@ jobs:
               for actor in cartoon.get('actors', []):
                   if not isinstance(actor, dict):
                       continue
-                  for part in ('portrait','mouth'):
+                  for part in ('portrait','mouth','body'):
                       key=actor.get(f'{part}_key')
                       if not key:
                           continue

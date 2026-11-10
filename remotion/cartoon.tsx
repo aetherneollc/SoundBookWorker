@@ -3,7 +3,7 @@ import {AbsoluteFill, Img, interpolate, spring, staticFile, useCurrentFrame, use
 import {Rover, type RoverAction} from './rover';
 
 export type CartoonAction = 'idle' | 'walk' | 'work' | 'point' | 'talk' | 'react' | 'carry' | 'console';
-export type CartoonActorPlan = {name: string; action: CartoonAction; from_x: number; to_x: number; portrait?: string; mouth?: string};
+export type CartoonActorPlan = {name: string; action: CartoonAction; from_x: number; to_x: number; portrait?: string; mouth?: string; body?: string};
 export type CartoonPlan = {actors: CartoonActorPlan[]; prop?: 'tool' | 'battery' | 'sensor' | 'console' | 'crate' | 'none'; focus?: 'actor' | 'robot' | 'prop' | 'wide'};
 type Cue = {from: number; to: number; value: string; speaker: string; scene_number: number};
 type Stage = {background: string; foreground?: string};
@@ -20,6 +20,31 @@ const appearance = (name: string) => {
   if (/顾承宇|Gu Chengyu/i.test(name)) return {hair: '#222c38', hairLight: '#56657b', suit: '#394b66', trim: '#f3c476', skin: '#d6a087', short: true};
   if (/周岳|Zhou Yue/i.test(name)) return {hair: '#515969', hairLight: '#a8aab0', suit: '#255776', trim: '#e68e66', skin: '#d3a184', short: true};
   return {hair: '#25364a', hairLight: '#69819b', suit: '#31678b', trim: '#f0ae70', skin: '#d8a58c', short: true};
+};
+
+/** A reusable generated full-body sprite, with independently moving legs. */
+const FullBodyPerson = ({actor, frame, fps, duration, width, height, index}: {
+  actor: CartoonActorPlan; frame: number; fps: number; duration: number; width: number; height: number; index: number;
+}) => {
+  const moving = actor.action === 'walk' || Math.abs(actor.to_x - actor.from_x) > .08;
+  const stride = moving ? Math.sin(frame / fps * 9 + index) : 0;
+  const x = interpolate(eased(frame, duration), [0, 1], [actor.from_x, actor.to_x], clamp) * width;
+  const turn = actor.to_x < actor.from_x ? -1 : 1;
+  const sway = actor.action === 'react' ? Math.sin(frame / fps * 11) * 2
+    : actor.action === 'work' || actor.action === 'console' ? Math.sin(frame / fps * 4) * 1.6 : stride * 1.8;
+  const bob = moving ? Math.abs(stride) * 5 : Math.sin(frame / fps * 1.5 + index) * 1.5;
+  const spriteHeight = height * .78;
+  const spriteWidth = spriteHeight;
+  const picture: React.CSSProperties = {position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'contain'};
+  return <div style={{position: 'absolute', left: x-spriteWidth*.5, bottom: height*.075+bob,
+    width: spriteWidth, height: spriteHeight, transform: `scaleX(${turn}) rotate(${sway}deg)`,
+    transformOrigin: '50% 80%', filter: 'drop-shadow(0 10px 7px #07131e88)'}}>
+    <Img src={staticFile(actor.body!)} style={{...picture, clipPath: 'polygon(0 0,100% 0,100% 64%,0 64%)'}} />
+    <Img src={staticFile(actor.body!)} style={{...picture, clipPath: 'polygon(0 63%,50% 63%,50% 100%,0 100%)',
+      transform: `rotate(${stride*11}deg)`, transformOrigin: '44% 64%'}} />
+    <Img src={staticFile(actor.body!)} style={{...picture, clipPath: 'polygon(50% 63%,100% 63%,100% 100%,50% 100%)',
+      transform: `rotate(${-stride*11}deg)`, transformOrigin: '56% 64%'}} />
+  </div>;
 };
 
 /** Reusable side-view game sprite. Every part is redrawn from the same palette and bone positions. */
@@ -148,9 +173,12 @@ export const CartoonShot = ({shot, width, height, speech}: {shot: Shot; width: n
         filter: 'saturate(.67) contrast(.94) brightness(.86) blur(1.4px)'}} />}
       <div style={{position: 'absolute', inset: 0, background: 'linear-gradient(0deg,#0c1a2a66,transparent 42%), #2049701c'}} />
       <Prop kind={shot.cartoon.prop} frame={frame} fps={fps} width={width} height={height} />
-      {shot.cartoon.actors.filter(actor => actor !== closeActor).map((actor, i) => <Person key={`${actor.name}-${i}`} name={actor.name} action={actor.action}
-        frame={motionFrame} fps={fps} duration={motionDuration} fromX={actor.from_x} toX={actor.to_x}
-        speaking={active(actor.name)} width={width} height={height} index={i} />)}
+      {shot.cartoon.actors.filter(actor => actor !== closeActor && !/阿拓|AT-1/i.test(actor.name)).map((actor, i) => actor.body
+        ? <FullBodyPerson key={`${actor.name}-${i}`} actor={actor} frame={motionFrame} fps={fps}
+          duration={motionDuration} width={width} height={height} index={i} />
+        : <Person key={`${actor.name}-${i}`} name={actor.name} action={actor.action}
+          frame={motionFrame} fps={fps} duration={motionDuration} fromX={actor.from_x} toX={actor.to_x}
+          speaking={active(actor.name)} width={width} height={height} index={i} />)}
       {shot.rover && <Rover frame={motionFrame} fps={fps} duration={motionDuration} action={shot.rover.action}
         speaking={active(shot.rover.speaker)} width={width*.50} height={height*.60} left="45%" />}
     </AbsoluteFill>
