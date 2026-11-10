@@ -94,6 +94,27 @@ jobs:
                       name=f"media/{n:05d}-{Path(key).name}"
                       s3.download_file(bucket,key,name)
                       layers['mouth_files'][shape]=name
+          for shot in doc.get('shots', []):
+              stage=shot.get('stage')
+              if not isinstance(stage, dict):
+                  continue
+              for part in ('background','foreground'):
+                  key=stage.get(f'{part}_key')
+                  if key:
+                      n+=1
+                      name=f"media/{n:05d}-{Path(key).name}"
+                      s3.download_file(bucket,key,name)
+                      stage[f'{part}_file']=name
+              for actor in stage.get('cast', []):
+                  if not isinstance(actor, dict) or not isinstance(actor.get('cells'), dict):
+                      continue
+                  for slot,key in list(actor['cells'].items()):
+                      if not key:
+                          continue
+                      n+=1
+                      name=f"media/{n:05d}-{Path(key).name}"
+                      s3.download_file(bucket,key,name)
+                      actor['cells'][slot]=name
           Path('manifest.json').write_text(json.dumps(doc))
           PY
       - name: Cache MOSS models
