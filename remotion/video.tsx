@@ -72,7 +72,7 @@ const Intro = ({props}: {props: SoundBookProps}) => {
   </AbsoluteFill>;
 };
 
-const StageShot = ({shot, width, height}: {shot: Shot; width: number; height: number}) => {
+const StageShot = ({shot, width, height, speech}: {shot: Shot; width: number; height: number; speech: Speech[]}) => {
   const frame = useCurrentFrame(), {fps} = useVideoConfig();
   const stage = shot.stage!;
   const p = Math.min(1, frame / Math.max(1, shot.duration - 1));
@@ -90,9 +90,11 @@ const StageShot = ({shot, width, height}: {shot: Shot; width: number; height: nu
       {stage.actors.map((actor, i) => {
         const base = actor.cells[actor.expression] || actor.cells.neutral;
         if (!base) return null;
-        const flap = actor.talking && !!actor.cells.talk_delta
-          && (actor.expression === 'neutral' || actor.expression === 'talk')
-          && Math.floor(frame / 5) % 2 === 1;
+        const speakingNow = speech.some(cue => cue.scene_number === shot.scene_number
+          && cue.speaker === stage.speaker && cue.value !== 'X'
+          && shot.from + frame >= cue.from && shot.from + frame < cue.to);
+        const flap = actor.talking && speakingNow && !!actor.cells.talk_delta
+          && (actor.expression === 'neutral' || actor.expression === 'talk');
         const breath = Math.sin(frame / (fps * 0.95) + i);
         const boxH = height * 0.64 * actor.scale;
         const boxW = boxH * 0.86;
@@ -270,7 +272,7 @@ export const SoundBook = (props: SoundBookProps) => {
   return <AbsoluteFill style={{background: '#07101f'}}>
     {props.introFrames > 0 && <Sequence from={0} durationInFrames={props.introFrames}><Intro props={props} /></Sequence>}
     {props.shots.map(shot => <Sequence key={`${shot.index}-${shot.from}`} from={shot.from} durationInFrames={shot.duration}>
-      {shot.stage ? <StageShot shot={shot} width={props.width} height={props.height} />
+      {shot.stage ? <StageShot shot={shot} width={props.width} height={props.height} speech={props.speech || []} />
         : <MotionShot shot={shot} width={props.width} height={props.height} speech={props.speech || []} />}
     </Sequence>)}
     {props.cta && props.ctaFrames > 0 && <Sequence from={props.ctaFrom} durationInFrames={props.ctaFrames}>
