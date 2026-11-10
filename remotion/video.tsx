@@ -199,7 +199,8 @@ const StageShot = ({shot, width, height, speech}: {shot: Shot; width: number; he
           </div>
         </div>;
       })}
-      {shot.rover && <Rover frame={frame} fps={fps} duration={shot.duration} action={shot.rover.action}
+      {shot.rover && <Rover frame={frame + (sciencePhase ? shot.duration : 0)} fps={fps}
+        duration={shot.duration * (shot.storyboard_phase === undefined ? 1 : 2)} action={shot.rover.action}
         speaking={speech.some(cue => cue.scene_number === shot.scene_number && cue.speaker === shot.rover?.speaker
           && cue.value !== 'X' && cue.value !== 'A' && shot.from + frame >= cue.from && shot.from + frame < cue.to)}
         width={width * (detailShot ? .58 : .49)} height={height * (detailShot ? .75 : .60)}
