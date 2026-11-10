@@ -142,6 +142,10 @@ def prepare(manifest: Path, output: Path) -> None:
                                       and not k.endswith('_key')}
         timeline.append(prepared)
         cursor_frame += duration_frames
+    if doc.get('motion_policy') == 'majority':
+        moving = [shot for shot in timeline if shot.get('rover') or shot.get('stage') or shot.get('layers')]
+        if len(moving) * 2 < len(timeline):
+            raise ValueError(f'Motion quality gate: only {len(moving)}/{len(timeline)} shots have an articulated subject')
     audio = []
     if intro_frames:
         chime = Path('media/intro-chime.wav'); chime.parent.mkdir(exist_ok=True)

@@ -1,7 +1,7 @@
 import React from 'react';
 import {interpolate} from 'remotion';
 
-export type RoverAction = 'idle' | 'drive' | 'sample' | 'signal';
+export type RoverAction = 'idle' | 'drive' | 'sample' | 'signal' | 'stand' | 'fall' | 'recover' | 'reach';
 
 const bound = {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'} as const;
 
@@ -12,8 +12,14 @@ export const Rover = ({frame, fps, duration, action, speaking, width, height}: {
 }) => {
   const t = frame / fps;
   const drive = action === 'drive';
-  const sample = action === 'sample';
+  const sample = action === 'sample' || action === 'reach';
   const signal = action === 'signal';
+  const posture = action === 'stand' ? interpolate(frame, [0, fps * 2.5], [0, 1], bound)
+    : action === 'fall' ? interpolate(frame, [0, fps * .7, fps * 1.8], [1, 1, .12], bound)
+      : action === 'recover' ? interpolate(frame, [0, fps * .8, fps * 3], [.12, .12, 1], bound) : .72;
+  const hullLift = posture * 65;
+  const hullTilt = action === 'fall' ? interpolate(frame, [0, fps * .7, fps * 1.8], [0, 0, 12], bound)
+    : action === 'recover' ? interpolate(frame, [0, fps * .8, fps * 3], [12, 12, 0], bound) : 0;
   const wheelAngle = drive ? frame * 3.8 : 0;
   const travel = drive ? interpolate(frame, [0, Math.max(1, duration - 1)], [-95, 95], bound) : 0;
   const bodyBob = Math.sin(t * (drive ? 14 : 2.2)) * (drive ? 3.8 : 1.1);
@@ -21,7 +27,7 @@ export const Rover = ({frame, fps, duration, action, speaking, width, height}: {
   const armLift = sample ? interpolate(frame, [0, fps * 1.5, fps * 3], [-18, 26, 36], bound) : -18 + Math.sin(t * 1.1) * 1.2;
   const elbow = sample ? interpolate(frame, [0, fps * 1.6, fps * 3.3], [-8, 39, 57], bound) : -8;
   const pulse = speaking || signal ? .45 + .55 * Math.max(0, Math.sin(t * 11)) : .16;
-  const wheels = [166, 383, 614];
+  const wheels = [153, 302, 489, 634];
   return <svg width={width} height={height} viewBox="0 0 760 480" xmlns="http://www.w3.org/2000/svg"
     style={{position: 'absolute', left: '43%', bottom: '3%', overflow: 'visible',
       transform: `translateX(${travel}px)`, filter: 'drop-shadow(0 13px 12px #050b18a8)'}}>
@@ -35,22 +41,27 @@ export const Rover = ({frame, fps, duration, action, speaking, width, height}: {
     <ellipse cx="390" cy="448" rx="354" ry="22" fill="#06121a" opacity=".52" />
     {drive && Array.from({length: 10}, (_, i) => <circle key={i} cx={125 - ((frame * (2 + i % 3) + i * 41) % 180)}
       cy={398 + (i * 13) % 38} r={1.6 + i % 4} fill="#b5c1c3" opacity={.36 + .35 * Math.sin((frame + i) / 12)} />)}
-    {/* Wheel bogies are below the chassis and remain in contact with the ground. */}
-    <g stroke="#182736" strokeWidth="12" strokeLinecap="round">
-      <path d="M187 320 L166 371 M342 316 L383 383 M557 319 L614 371" fill="none" />
-      <path d="M165 370 L383 382 L614 370" stroke="#4d7088" strokeWidth="13" fill="none" />
-      <path d="M160 368 L383 383 L615 368" stroke="#bad4dc" strokeWidth="4" fill="none" />
-    </g>
-    {wheels.map((cx, i) => <g key={cx} transform={`translate(0 ${i === 1 ? 10 : 0}) rotate(${wheelAngle} ${cx} 395)`}>
-      <circle cx={cx} cy="395" r="61" fill="#091420" stroke="#5f8095" strokeWidth="5" />
-      {Array.from({length: 14}, (_, n) => <path key={n} d={`M ${cx-8} 335 L ${cx+8} 335 L ${cx+10} 343 L ${cx-10} 343 Z`}
-        transform={`rotate(${n * 360 / 14} ${cx} 395)`} fill={n % 2 ? '#537a8e' : '#809ca5'} stroke="#1f3849" strokeWidth="2" />)}
-      <circle cx={cx} cy="395" r="42" fill="url(#at1-dark)" stroke="#a8c4d1" strokeWidth="4" />
-      <circle cx={cx} cy="395" r="27" fill="#133a59" stroke="#67a7ca" strokeWidth="3" />
-      <circle cx={cx} cy="395" r="15" fill="#cbdbe1" stroke="#293e4e" strokeWidth="4" />
-      <circle cx={cx} cy="395" r="5" fill="#ffac4c" />
-    </g>)}
-    <g transform={`translate(0 ${bodyBob})`}>
+    {/* Four articulated wheel-legs keep their feet on the ground as the hull rises. */}
+    {wheels.map((cx, i) => {
+      const hip = [190, 290, 493, 587][i];
+      const kneeX = cx + (i < 2 ? 24 : -24);
+      const kneeY = 348 - hullLift * .42 + bodyBob;
+      return <g key={cx}>
+        <path d={`M ${hip} ${310-hullLift+bodyBob} L ${kneeX} ${kneeY} L ${cx} 397`}
+          fill="none" stroke="#142d40" strokeWidth="31" strokeLinejoin="round" strokeLinecap="round" />
+        <path d={`M ${hip} ${310-hullLift+bodyBob} L ${kneeX} ${kneeY} L ${cx} 397`}
+          fill="none" stroke={i % 2 ? '#7fb4ce' : '#d3e4e6'} strokeWidth="19" strokeLinejoin="round" strokeLinecap="round" />
+        <circle cx={kneeX} cy={kneeY} r="16" fill="#173d58" stroke="#f4a342" strokeWidth="4" />
+        <g transform={`rotate(${wheelAngle} ${cx} 414)`}>
+          <circle cx={cx} cy="414" r="31" fill="#091420" stroke="#80a4b7" strokeWidth="5" />
+          {Array.from({length: 8}, (_, n) => <path key={n} d={`M ${cx-5} 384 L ${cx+5} 384`}
+            transform={`rotate(${n*45} ${cx} 414)`} stroke="#b1d4dd" strokeWidth="4" />)}
+          <circle cx={cx} cy="414" r="16" fill="#163e5a" stroke="#e5edf0" strokeWidth="4" />
+          <circle cx={cx} cy="414" r="5" fill="#ffad45" />
+        </g>
+      </g>;
+    })}
+    <g transform={`translate(0 ${bodyBob-hullLift}) rotate(${hullTilt} 383 270)`}>
       {/* Low, insulated hull with a visible equipment bay and radiator seams. */}
       <path d="M116 236 L205 197 L537 197 L639 236 L656 304 L601 345 L157 345 L105 303 Z" fill="url(#at1-dark)" stroke="#06101b" strokeWidth="7" />
       <path d="M133 229 L211 193 L530 194 L625 233 L616 301 L569 324 L183 324 L131 293 Z" fill="url(#at1-shell)" stroke="#1e3546" strokeWidth="6" />
