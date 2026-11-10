@@ -116,6 +116,10 @@ const StageShot = ({shot, width, height, speech}: {shot: Shot; width: number; he
           </div>
         </div>;
       })}
+      {shot.rover && <Rover frame={frame} fps={fps} duration={shot.duration} action={shot.rover.action}
+        speaking={speech.some(cue => cue.scene_number === shot.scene_number && cue.speaker === shot.rover?.speaker
+          && cue.value !== 'X' && cue.value !== 'A' && shot.from + frame >= cue.from && shot.from + frame < cue.to)}
+        width={width * .50} height={height * .60} />}
       {stage.foreground && <Img src={staticFile(stage.foreground)} style={{position: 'absolute', inset: 0,
         width: '100%', height: '100%', objectFit: 'cover'}} />}
     </AbsoluteFill>
@@ -206,7 +210,7 @@ const MotionShot = ({shot, width, height, speech}: {shot: Shot; width: number; h
     </> : <Img src={staticFile(shot.src)} style={{...imageStyle,
       transform: `scale(${scale}) translate(${panX}px,${panY}px)`}} />}
     {shot.rover && <Rover frame={frame} fps={fps} duration={shot.duration} action={shot.rover.action}
-      speaking={Boolean(speaking)} width={width * .56} height={height * .67} />}
+      speaking={Boolean(speaking)} width={width * .50} height={height * .60} />}
     <div style={{position: 'absolute', inset: 0,
       background: 'linear-gradient(90deg,#0814268a,transparent 35%,transparent 70%,#07121e45),linear-gradient(0deg,#07111dc7,transparent 29%)'}} />
     {/* A scanning beam, technical grid and connected markers animate as part of the world. */}
