@@ -17,7 +17,7 @@ def layer_shot(shot: dict, index: int, session, output_dir: Path) -> bool:
     from rembg import remove
 
     # A supplied rig has deliberate pivots and sprites; never replace it with a whole-body mask.
-    if shot.get('rover') or (isinstance(shot.get('character_layers'), dict) and shot['character_layers'].get('body_file')):
+    if shot.get('rover') or shot.get('stage') or (isinstance(shot.get('character_layers'), dict) and shot['character_layers'].get('body_file')):
         return False
     source = Path(str(shot.get('file', '')))
     if source.suffix.lower() not in {'.png', '.jpg', '.jpeg', '.webp'} or not source.is_file():
@@ -84,7 +84,7 @@ def process(manifest_path: Path) -> None:
     shots = doc.get('shots', [])
     candidates = [shot for shot in shots if Path(str(shot.get('file', ''))).suffix.lower()
                   in {'.png', '.jpg', '.jpeg', '.webp'} and not shot.get('fact_card') and not shot.get('label')
-                  and not shot.get('rover')
+                  and not shot.get('rover') and not shot.get('stage')
                   and not (isinstance(shot.get('character_layers'), dict) and shot['character_layers'].get('body_file'))]
     if not candidates:
         return
