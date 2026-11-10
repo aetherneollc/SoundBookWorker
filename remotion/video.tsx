@@ -212,12 +212,18 @@ const StageShot = ({shot, width, height, speech}: {shot: Shot; width: number; he
       const base = actor.cells[actor.expression] || actor.cells.neutral;
       if (!base) return null;
       const bob = Math.sin(frame / (fps * 1.1)) * 3;
+      const speakingNow = actor.talking && speech.some(cue => cue.scene_number === shot.scene_number
+        && cue.speaker === stage.speaker && cue.value !== 'X' && cue.value !== 'A'
+        && shot.from + frame >= cue.from && shot.from + frame < cue.to);
+      const mouthOpen = speakingNow && !!actor.cells.talk_delta && Math.sin(frame * .48) > -.15;
+      const portrait = {position: 'absolute' as const, left: '5%', bottom: '-15%', width: '90%', height: '116%',
+        objectFit: 'contain' as const, objectPosition: 'center bottom', filter: 'saturate(.76) contrast(1.08)'};
       return <div key={i} style={{position: 'absolute', left: width * (sciencePhase ? .55 : .065), top: height * .25,
         width: width * .38, height: height * .53, overflow: 'hidden',
         border: '5px solid #80b8d1', borderRadius: 16, background: '#11324a',
         boxShadow: '0 18px 50px #03101dba', transform: `translateY(${bob}px)`}}>
-        <Img src={staticFile(base)} style={{position: 'absolute', left: '5%', bottom: '-15%', width: '90%', height: '116%',
-          objectFit: 'contain', objectPosition: 'center bottom', filter: 'saturate(.76) contrast(1.08)'}} />
+        <Img src={staticFile(base)} style={portrait} />
+        {mouthOpen && <Img src={staticFile(actor.cells.talk_delta)} style={portrait} />}
         <div style={{position: 'absolute', inset: 0, pointerEvents: 'none',
           background: 'repeating-linear-gradient(0deg,transparent 0px,transparent 4px,#a2e4ff12 5px)',
           boxShadow: 'inset 0 0 35px #071a2c'}} />
