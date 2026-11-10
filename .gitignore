@@ -8,3 +8,17 @@ node_modules/
 public/media/
 remotion-props.json
 *.voice-locked.srt
+# manju generated renders and library binaries (scripts stay tracked)
+manju/**/*.mp4
+manju/**/remotion-props.json
+manju/**/manifest.json
+manju/atuo/
+manju/demo/kolors/
+manju/demo/cells/
+manju/demo/depth/
+manju/demo/still-*.png
+manju/demo/crop-*.png
+manju/demo/preview-*.jpg
+manju/demo/*-depth.png
+manju/demo/linmo.mp4
+manju/__pycache__/

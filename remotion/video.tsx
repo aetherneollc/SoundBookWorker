@@ -9,8 +9,12 @@ type LayerSet = {background: string; body: string; head?: string; arm_left?: str
   arm_right_pivot_x?: number; arm_right_pivot_y?: number;
   mouth?: Record<string, string>; mouth_mode?: 'led'; mouth_x?: number; mouth_y?: number; mouth_width?: number;
   action?: 'idle' | 'talk' | 'wave'};
+type StageActor = {cells: Record<string, string>; expression: string; talking: boolean;
+  x: number; y: number; scale: number};
+type Stage = {background: string; foreground?: string; camera?: string; enter?: string;
+  speaker?: string; line?: string; actors: StageActor[]};
 type Shot = {src: string; from: number; duration: number; index: number; camera?: string;
-  label?: string; fact_card?: string; section?: string; layers?: LayerSet; scene_number?: number;
+  label?: string; fact_card?: string; section?: string; layers?: LayerSet; stage?: Stage; scene_number?: number;
   technical_overlay?: boolean; rover?: {action: RoverAction; speaker: string}};
 type Track = {src: string; from: number; volume: number; loop: boolean};
 type Caption = {from: number; to: number; text: string};
@@ -65,6 +69,66 @@ const Intro = ({props}: {props: SoundBookProps}) => {
     </div>
     <div style={{position: 'absolute', left: 0, bottom: 0, width: `${lerp(frame, 0, props.introFrames, 0, 100)}%`,
       height: 8, background: '#f6d27d'}} />
+  </AbsoluteFill>;
+};
+
+const StageShot = ({shot, width, height}: {shot: Shot; width: number; height: number}) => {
+  const frame = useCurrentFrame(), {fps} = useVideoConfig();
+  const stage = shot.stage!;
+  const p = Math.min(1, frame / Math.max(1, shot.duration - 1));
+  const push = /push|推|近/.test(stage.camera || '');
+  const cam = push ? lerp(p, 0, 1, 1.02, 1.07) : lerp(p, 0, 1, 1.0, 1.03);
+  const enter = stage.enter === 'slide'
+    ? spring({fps, frame, config: {damping: 16, stiffness: 80}})
+    : 1;
+  const fontFamily = '"Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif';
+  const speaker = stage.actors.find(actor => actor.talking) || stage.actors[0];
+  return <AbsoluteFill style={{overflow: 'hidden', backgroundColor: '#0c1220', fontFamily}}>
+    <AbsoluteFill style={{transform: `scale(${cam})`, transformOrigin: '52% 64%'}}>
+      <Img src={staticFile(stage.background)} style={{width: '100%', height: '100%', objectFit: 'cover',
+        filter: 'brightness(1.08) saturate(1.08)'}} />
+      {stage.actors.map((actor, i) => {
+        const base = actor.cells[actor.expression] || actor.cells.neutral;
+        if (!base) return null;
+        const flap = actor.talking && !!actor.cells.talk_delta
+          && (actor.expression === 'neutral' || actor.expression === 'talk')
+          && Math.floor(frame / 5) % 2 === 1;
+        const breath = Math.sin(frame / (fps * 0.95) + i);
+        const boxH = height * 0.64 * actor.scale;
+        const boxW = boxH * 0.86;
+        const left = width * actor.x - boxW / 2;
+        const top = height * actor.y - boxH + (1 - enter) * 36 + breath * 2.2;
+        const pose = {width: '100%', height: '100%', objectFit: 'contain' as const,
+          objectPosition: 'center bottom', filter: 'brightness(1.08) saturate(1.06)'};
+        return <div key={i}>
+          <div style={{position: 'absolute', left: left + boxW * 0.22, top: top + boxH - 10,
+            width: boxW * 0.5, height: 16, borderRadius: '50%',
+            background: 'radial-gradient(ellipse, rgba(0,0,0,.22), transparent 70%)'}} />
+          <div style={{position: 'absolute', left, top, width: boxW, height: boxH,
+            transform: `scaleY(${1 + breath * 0.006})`, transformOrigin: 'center bottom',
+            maskImage: stage.foreground ? undefined : 'linear-gradient(to bottom, #000 88%, transparent 100%)',
+            WebkitMaskImage: stage.foreground ? undefined : 'linear-gradient(to bottom, #000 88%, transparent 100%)'}}>
+            <Img src={staticFile(base)} style={pose} />
+            {flap && <Img src={staticFile(actor.cells.talk_delta)} style={{...pose, position: 'absolute', inset: 0}} />}
+          </div>
+        </div>;
+      })}
+      {stage.foreground && <Img src={staticFile(stage.foreground)} style={{position: 'absolute', inset: 0,
+        width: '100%', height: '100%', objectFit: 'cover'}} />}
+    </AbsoluteFill>
+    {stage.line && speaker && <div style={{position: 'absolute',
+      left: speaker.x > 0.58 ? width * 0.06 : width * 0.46,
+      top: height * 0.07, width: width * 0.46, background: '#fff', color: '#1b1b1b',
+      border: '4px solid #161616', borderRadius: 16, padding: '18px 22px 16px',
+      boxShadow: '0 10px 24px rgba(0,0,0,.28)'}}>
+      {stage.speaker && <div style={{position: 'absolute', top: -16, left: 18, background: '#161616',
+        color: '#f6d27d', fontSize: 16, fontWeight: 800, letterSpacing: 1,
+        padding: '3px 10px', borderRadius: 8}}>{stage.speaker}</div>}
+      <div style={{fontSize: 32, fontWeight: 850, lineHeight: 1.35, textAlign: 'center'}}>{stage.line}</div>
+      <div style={{position: 'absolute', bottom: -18, left: speaker.x > 0.58 ? '78%' : 42, width: 0, height: 0,
+        borderLeft: '10px solid transparent', borderRight: '10px solid transparent',
+        borderTop: '18px solid #161616'}} />
+    </div>}
   </AbsoluteFill>;
 };
 
@@ -206,7 +270,8 @@ export const SoundBook = (props: SoundBookProps) => {
   return <AbsoluteFill style={{background: '#07101f'}}>
     {props.introFrames > 0 && <Sequence from={0} durationInFrames={props.introFrames}><Intro props={props} /></Sequence>}
     {props.shots.map(shot => <Sequence key={`${shot.index}-${shot.from}`} from={shot.from} durationInFrames={shot.duration}>
-      <MotionShot shot={shot} width={props.width} height={props.height} speech={props.speech || []} />
+      {shot.stage ? <StageShot shot={shot} width={props.width} height={props.height} />
+        : <MotionShot shot={shot} width={props.width} height={props.height} speech={props.speech || []} />}
     </Sequence>)}
     {props.cta && props.ctaFrames > 0 && <Sequence from={props.ctaFrom} durationInFrames={props.ctaFrames}>
       <EndCard card={props.cta} frames={props.ctaFrames} />

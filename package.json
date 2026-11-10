@@ -3,7 +3,8 @@
   "private": true,
   "version": "1.0.0",
   "scripts": {
-    "render": "remotion render remotion/index.tsx SoundBook output.mp4 --props=remotion-props.json --codec=h264 --pixel-format=yuv420p --concurrency=2"
+    "render": "remotion render remotion/index.tsx SoundBook output.mp4 --props=remotion-props.json --codec=h264 --pixel-format=yuv420p --concurrency=2",
+    "render:manju": "remotion render remotion/index.tsx SoundBook manju/demo/linmo.mp4 --props=manju/demo/remotion-props.json --codec=h264 --pixel-format=yuv420p --concurrency=2"
   },
   "dependencies": {
     "@remotion/cli": "4.0.541",

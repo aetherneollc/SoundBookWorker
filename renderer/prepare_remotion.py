@@ -92,8 +92,40 @@ def prepare(manifest: Path, output: Path) -> None:
     timeline = []; cursor_frame = intro_frames
     for i, shot in enumerate(shots):
         duration_frames = max(1, frame(min(300, max(.25, float(shot.get('duration', 4)))), fps))
-        prepared = {**shot, 'src': source(shot, public), 'from': cursor_frame,
+        src = source(shot, public) if shot.get('file') else ''
+        prepared = {**shot, 'src': src, 'from': cursor_frame,
                     'duration': duration_frames, 'index': i}
+        stage = shot.get('stage') if isinstance(shot.get('stage'), dict) else None
+        if stage and stage.get('background_file') and Path(stage['background_file']).is_file():
+            actors = []
+            for actor in stage.get('cast') or []:
+                cells = {}
+                for key, file in (actor.get('cells') or {}).items():
+                    if file and Path(str(file)).is_file():
+                        cells[str(key)] = source({'file': str(file)}, public)
+                if not cells:
+                    continue
+                actors.append({
+                    'cells': cells,
+                    'expression': str(actor.get('expression') or 'neutral'),
+                    'talking': bool(actor.get('talking')),
+                    'x': float(actor.get('x', 0.5)),
+                    'y': float(actor.get('y', 0.94)),
+                    'scale': float(actor.get('scale', 1)),
+                })
+            prepared_stage = {
+                'background': source({'file': stage['background_file']}, public),
+                'camera': str(stage.get('camera') or ''),
+                'enter': str(stage.get('enter') or 'cut'),
+                'speaker': str(stage.get('speaker') or ''),
+                'line': str(stage.get('line') or ''),
+                'actors': actors,
+            }
+            near = stage.get('foreground_file')
+            if near and Path(str(near)).is_file():
+                prepared_stage['foreground'] = source({'file': str(near)}, public)
+            prepared['stage'] = prepared_stage
+            prepared.pop('file', None)
         if isinstance(shot.get('character_layers'), dict):
             layers = dict(shot['character_layers'])
             if all(layers.get(k) and Path(layers[k]).is_file() for k in ('background_file', 'body_file')):
