@@ -99,7 +99,8 @@ const StageShot = ({shot, width, height, speech}: {shot: Shot; width: number; he
         const boxH = height * 0.64 * actor.scale;
         const boxW = boxH * 0.86;
         const left = width * actor.x - boxW / 2;
-        const top = height * actor.y - boxH + (1 - enter) * 36 + breath * 2.2;
+        const anchorY = stage.foreground ? actor.y : Math.max(actor.y, 1.02);
+        const top = height * anchorY - boxH + (1 - enter) * 36 + breath * 2.2;
         const pose = {width: '100%', height: '100%', objectFit: 'contain' as const,
           objectPosition: 'center bottom', filter: 'brightness(1.08) saturate(1.06)'};
         return <div key={i}>
