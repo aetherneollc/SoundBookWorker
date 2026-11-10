@@ -95,6 +95,17 @@ def prepare(manifest: Path, output: Path) -> None:
         src = source(shot, public) if shot.get('file') else ''
         prepared = {**shot, 'src': src, 'from': cursor_frame,
                     'duration': duration_frames, 'index': i}
+        cartoon = shot.get('cartoon') if isinstance(shot.get('cartoon'), dict) else None
+        if cartoon:
+            cast = []
+            for actor in cartoon.get('actors') or []:
+                actor = dict(actor)
+                for part in ('portrait', 'mouth'):
+                    file = actor.get(f'{part}_file')
+                    if file and Path(file).is_file():
+                        actor[part] = source({'file': file}, public)
+                cast.append({k: v for k, v in actor.items() if not k.endswith('_file') and not k.endswith('_key')})
+            prepared['cartoon'] = {**cartoon, 'actors': cast}
         stage = shot.get('stage') if isinstance(shot.get('stage'), dict) else None
         if stage and stage.get('background_file') and Path(stage['background_file']).is_file():
             actors = []
@@ -146,6 +157,9 @@ def prepare(manifest: Path, output: Path) -> None:
         moving = [shot for shot in timeline if shot.get('cartoon') or shot.get('rover') or shot.get('stage') or shot.get('layers')]
         if len(moving) * 2 < len(timeline):
             raise ValueError(f'Motion quality gate: only {len(moving)}/{len(timeline)} shots have an articulated subject')
+    minimum_seconds = float(doc.get('min_duration_seconds') or 0)
+    if minimum_seconds and cursor_frame / fps < minimum_seconds:
+        raise ValueError(f'Duration quality gate: measured {cursor_frame / fps:.1f}s, minimum {minimum_seconds:.1f}s; rewrite the script instead of stretching shots')
     audio = []
     if intro_frames:
         chime = Path('media/intro-chime.wav'); chime.parent.mkdir(exist_ok=True)
@@ -188,4 +202,8 @@ def prepare(manifest: Path, output: Path) -> None:
 
 
 if __name__ == '__main__':
-    prepare(Path(sys.argv[1]), Path(sys.argv[2]))
+    try:
+        prepare(Path(sys.argv[1]), Path(sys.argv[2]))
+    except Exception as error:
+        Path('qa-error.txt').write_text(str(error)[:900], encoding='utf-8')
+        raise

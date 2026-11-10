@@ -94,6 +94,24 @@ jobs:
                       name=f"media/{n:05d}-{Path(key).name}"
                       s3.download_file(bucket,key,name)
                       layers['mouth_files'][shape]=name
+          portrait_files={}
+          for shot in doc.get('shots', []):
+              cartoon=shot.get('cartoon')
+              if not isinstance(cartoon, dict):
+                  continue
+              for actor in cartoon.get('actors', []):
+                  if not isinstance(actor, dict):
+                      continue
+                  for part in ('portrait','mouth'):
+                      key=actor.get(f'{part}_key')
+                      if not key:
+                          continue
+                      if key not in portrait_files:
+                          n+=1
+                          name=f"media/{n:05d}-{Path(key).name}"
+                          s3.download_file(bucket,key,name)
+                          portrait_files[key]=name
+                      actor[f'{part}_file']=portrait_files[key]
           for shot in doc.get('shots', []):
               stage=shot.get('stage')
               if not isinstance(stage, dict):
@@ -230,7 +248,21 @@ jobs:
           CALLBACK_TOKEN: ${{ secrets.CALLBACK_TOKEN }}
           JOB_ID: ${{ inputs.job_id }}
         run: |
-          curl --retry 5 --retry-all-errors --retry-delay 3 -sS -X POST "$CALLBACK_URL" -H "Authorization: Bearer $CALLBACK_TOKEN" -H 'Content-Type: application/json' -d "{\"job_id\":\"$JOB_ID\",\"status\":\"failed\",\"error\":\"workflow failed; inspect GitHub Actions logs\"}" || true
+          python - <<'PY'
+          import json, os, time, urllib.request
+          from pathlib import Path
+          error = Path('qa-error.txt').read_text(encoding='utf-8') if Path('qa-error.txt').is_file() else 'workflow failed; inspect GitHub Actions logs'
+          body = json.dumps({'job_id': os.environ['JOB_ID'], 'status': 'failed', 'error': error[:900]}).encode()
+          for attempt in range(5):
+              try:
+                  request = urllib.request.Request(os.environ['CALLBACK_URL'], data=body, headers={
+                      'Authorization': 'Bearer ' + os.environ['CALLBACK_TOKEN'], 'Content-Type': 'application/json'})
+                  urllib.request.urlopen(request, timeout=20).read()
+                  break
+              except Exception as exc:
+                  print(f'failure callback attempt {attempt + 1}: {type(exc).__name__}', flush=True)
+                  time.sleep(3)
+          PY
       - name: Upload QA preview
         if: ${{ success() && inputs.qa_mode }}
         uses: actions/upload-artifact@v4

@@ -3,7 +3,7 @@ import {AbsoluteFill, Img, interpolate, spring, staticFile, useCurrentFrame, use
 import {Rover, type RoverAction} from './rover';
 
 export type CartoonAction = 'idle' | 'walk' | 'work' | 'point' | 'talk' | 'react' | 'carry' | 'console';
-export type CartoonActorPlan = {name: string; action: CartoonAction; from_x: number; to_x: number};
+export type CartoonActorPlan = {name: string; action: CartoonAction; from_x: number; to_x: number; portrait?: string; mouth?: string};
 export type CartoonPlan = {actors: CartoonActorPlan[]; prop?: 'tool' | 'battery' | 'sensor' | 'console' | 'crate' | 'none'; focus?: 'actor' | 'robot' | 'prop' | 'wide'};
 type Cue = {from: number; to: number; value: string; speaker: string; scene_number: number};
 type Stage = {background: string; foreground?: string};
@@ -137,6 +137,10 @@ export const CartoonShot = ({shot, width, height, speech}: {shot: Shot; width: n
   const bg = stage?.background || shot.src;
   const active = (speaker: string) => speech.some(cue => cue.scene_number === shot.scene_number && cue.speaker === speaker
     && cue.value !== 'X' && cue.value !== 'A' && shot.from + frame >= cue.from && shot.from + frame < cue.to);
+  const closeActor = phase && focus === 'actor' && shot.cartoon.actors[0]?.portrait ? shot.cartoon.actors[0] : null;
+  const portraitStyle: React.CSSProperties = {position: 'absolute', left: -width*.22, bottom: -height*.06,
+    width: width*.88, height: height*1.14, objectFit: 'contain', objectPosition: 'center bottom',
+    transform: `translateY(${Math.sin(frame / fps * 1.6) * 2}px)`, filter: 'drop-shadow(10px 12px 12px #051321aa)'};
   return <AbsoluteFill style={{overflow: 'hidden', background: '#0c1c2c', fontFamily: '"Noto Sans CJK SC", sans-serif'}}>
     <AbsoluteFill style={{transform: `translate(${shiftX}px, ${shiftY}px) scale(${cam})`,
       transformOrigin: phase ? '50% 50%' : '50% 70%'}}>
@@ -144,12 +148,17 @@ export const CartoonShot = ({shot, width, height, speech}: {shot: Shot; width: n
         filter: 'saturate(.67) contrast(.94) brightness(.86) blur(1.4px)'}} />}
       <div style={{position: 'absolute', inset: 0, background: 'linear-gradient(0deg,#0c1a2a66,transparent 42%), #2049701c'}} />
       <Prop kind={shot.cartoon.prop} frame={frame} fps={fps} width={width} height={height} />
-      {shot.cartoon.actors.map((actor, i) => <Person key={`${actor.name}-${i}`} name={actor.name} action={actor.action}
+      {shot.cartoon.actors.filter(actor => actor !== closeActor).map((actor, i) => <Person key={`${actor.name}-${i}`} name={actor.name} action={actor.action}
         frame={motionFrame} fps={fps} duration={motionDuration} fromX={actor.from_x} toX={actor.to_x}
         speaking={active(actor.name)} width={width} height={height} index={i} />)}
       {shot.rover && <Rover frame={motionFrame} fps={fps} duration={motionDuration} action={shot.rover.action}
         speaking={active(shot.rover.speaker)} width={width*.50} height={height*.60} left="45%" />}
     </AbsoluteFill>
+    {closeActor && <>
+      <Img src={staticFile(closeActor.portrait!)} style={portraitStyle} />
+      {closeActor.mouth && active(closeActor.name) && Math.sin(frame * .6) > -.12
+        && <Img src={staticFile(closeActor.mouth)} style={portraitStyle} />}
+    </>}
     {shot.label && <div style={{position: 'absolute', left: width*.055, top: height*.05, padding: '8px 15px',
       background: '#0d2035a8', borderLeft: '4px solid #f3b96c', color: '#f7f9f4', fontSize: 23,
       fontWeight: 800, textShadow: '0 2px 6px #000', maxWidth: width*.44}}>{shot.label}</div>}
