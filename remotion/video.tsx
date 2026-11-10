@@ -15,7 +15,7 @@ type Stage = {background: string; foreground?: string; camera?: string; enter?: 
   speaker?: string; line?: string; actors: StageActor[]};
 type Shot = {src: string; from: number; duration: number; index: number; camera?: string;
   label?: string; fact_card?: string; section?: string; layers?: LayerSet; stage?: Stage; scene_number?: number;
-  technical_overlay?: boolean; rover?: {action: RoverAction; speaker: string}};
+  technical_overlay?: boolean; rover?: {action: RoverAction; speaker: string}; storyboard?: string; storyboard_phase?: number};
 type Track = {src: string; from: number; volume: number; loop: boolean};
 type Caption = {from: number; to: number; text: string};
 type Speech = {from: number; to: number; value: string; speaker: string; scene_number: number};
@@ -29,6 +29,80 @@ const font = '"Noto Sans CJK SC", "Noto Sans", sans-serif';
 const clamp = {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'} as const;
 const lerp = (frame: number, start: number, end: number, a: number, b: number) =>
   interpolate(frame, [start, Math.max(start + 1, end)], [a, b], clamp);
+
+const scienceBoards: Record<string, {heading: string; rows: string[]; accent: string}> = {
+  assembly: {heading: '模块集成', rows: ['底盘 / 四轮腿', '机械臂 / 两级关节', '电源 / 隔离开关'], accent: '#71cef2'},
+  arm: {heading: '关节检查', rows: ['肩轴 → 伸出', '肘轴 → 抓取', '力矩 → 反馈'], accent: '#75d9b2'},
+  boot: {heading: '通电自检', rows: ['驱动器 ONLINE', '关节编码器 ONLINE', '惯导 IMU ONLINE'], accent: '#85e4bc'},
+  sensors: {heading: '传感器校准', rows: ['视觉定位', '惯性测量', '关节零位'], accent: '#7bcaf4'},
+  stand: {heading: '站立测试', rows: ['支撑多边形', '质心投影', '缓慢抬升'], accent: '#f4c77d'},
+  balance: {heading: '失稳预警', rows: ['机械臂伸出', '质心向前移动', '保护阈值触发'], accent: '#fa9079'},
+  fall: {heading: '紧急制动', rows: ['先切断前进指令', '机械臂尝试支撑', '记录倒地姿态'], accent: '#fa9079'},
+  operator: {heading: '人工复核', rows: ['检查时间戳', '核对姿态记录', '确认测试边界'], accent: '#f0ca8d'},
+  diagnosis: {heading: '根因分析', rows: ['原模型：底盘质量', '漏算：机械臂动态质量', '修正：实时质心补偿'], accent: '#b2b4fa'},
+  telemetry: {heading: '故障日志', rows: ['IMU 倾角', '关节电流', '安全回路状态'], accent: '#78cae9'},
+  review: {heading: '验收记录', rows: ['受控跌倒：已记录', '恢复动作：待复核', '自主停止：下一阶段'], accent: '#f0ca8d'},
+  recover: {heading: '恢复站立', rows: ['重算支撑区域', '降低机械臂', '逐步抬升底盘'], accent: '#82ddbb'},
+};
+
+const ScienceBoard = ({kind, frame, fps, width, height, phase}: {kind: string; frame: number; fps: number; width: number; height: number; phase: number}) => {
+  const board = scienceBoards[kind];
+  if (!board) return null;
+  const appear = spring({frame, fps, config: {damping: 19, stiffness: 100}});
+  const alert = kind === 'fall' || kind === 'balance';
+  return <div style={{position: 'absolute', ...(phase ? {left: width * .045} : {right: width * .045}),
+    top: height * .18, width: width * .31,
+    padding: '20px 22px', border: `2px solid ${board.accent}`, borderRadius: 12,
+    color: '#f4fbff', background: '#07172be8', boxShadow: '0 12px 38px #06101ea8',
+    transform: `translateX(${(1-appear)*(phase ? -70 : 70)}px)`, opacity: appear}}>
+    <div style={{fontSize: 19, letterSpacing: 3, color: board.accent, fontWeight: 900}}>{board.heading}</div>
+    <div style={{height: 2, background: board.accent, opacity: .65, margin: '13px 0'}} />
+    {board.rows.map((row, i) => {
+      const show = spring({frame: frame - fps * (i * .42 + .25), fps, config: {damping: 18, stiffness: 110}});
+      const active = alert && i === 2;
+      return <div key={row} style={{display: 'flex', gap: 12, alignItems: 'center', margin: '13px 0',
+        fontSize: 21, fontWeight: 700, opacity: show, transform: `translateY(${(1-show)*12}px)`}}>
+        <span style={{width: 10, height: 10, borderRadius: '50%', flexShrink: 0,
+          background: active ? (Math.sin(frame*.35)>0 ? '#fff' : board.accent) : board.accent,
+          boxShadow: `0 0 10px ${board.accent}`}} />{row}
+      </div>;
+    })}
+    {['stand','balance','fall','recover'].includes(kind) && <svg width="100%" height="95" viewBox="0 0 320 95" style={{marginTop: 8}}>
+      <path d="M20 72 L300 72 M60 72 L90 49 L242 49 L270 72" fill="none" stroke="#84a8b8" strokeWidth="2" />
+      <path d="M90 49 L242 49" stroke={board.accent} strokeWidth="5" />
+      <path d={`M ${kind==='fall'||kind==='balance' ? 168+Math.min(95,frame/fps*28) : 168+Math.sin(frame/fps*1.8)*6} 19 L ${kind==='fall'||kind==='balance' ? 168+Math.min(95,frame/fps*28) : 168+Math.sin(frame/fps*1.8)*6} 58`}
+        stroke={board.accent} strokeWidth="3" strokeDasharray="5 4" />
+      <circle cx={kind==='fall'||kind==='balance' ? 168+Math.min(95,frame/fps*28) : 168+Math.sin(frame/fps*1.8)*6} cy="18" r="9" fill={board.accent} />
+      <text x="8" y="19" fill="#e9f6fc" fontSize="12">质心投影</text>
+    </svg>}
+    {['assembly','arm','boot','sensors','diagnosis','telemetry','operator','review'].includes(kind) &&
+      <svg width="100%" height="95" viewBox="0 0 320 95" style={{marginTop: 8}}>
+        <path d="M13 79 H307 M13 79 V13" fill="none" stroke="#6a94aa" strokeWidth="2" />
+        {kind === 'assembly' || kind === 'arm' ? <>
+          <rect x={lerp(frame,0,fps*2,58,99)} y="31" width="88" height="38" rx="6" fill="none" stroke={board.accent} strokeWidth="4" />
+          <path d={`M ${lerp(frame,0,fps*2,270,190)} 53 L ${lerp(frame,0,fps*2,234,220)} 28 L 259 22`}
+            fill="none" stroke={board.accent} strokeWidth="7" strokeLinecap="round" strokeLinejoin="round" />
+          <circle cx={lerp(frame,0,fps*2,234,220)} cy="28" r="7" fill="#102638" stroke={board.accent} strokeWidth="3" />
+          <circle cx="120" cy="72" r="13" fill="#102638" stroke={board.accent} strokeWidth="4" />
+          <circle cx="166" cy="72" r="13" fill="#102638" stroke={board.accent} strokeWidth="4" />
+        </> : kind === 'sensors' ? <>
+          <circle cx="160" cy="53" r="35" fill="none" stroke="#6089a0" strokeWidth="2" />
+          <circle cx="160" cy="53" r="20" fill="none" stroke="#6089a0" strokeWidth="2" />
+          <path d={`M160 53 L${160+35*Math.cos(frame/16)} ${53+35*Math.sin(frame/16)}`}
+            stroke={board.accent} strokeWidth="4" />
+          <circle cx="175" cy="42" r="4" fill={board.accent} />
+        </> : <>
+          <path d="M16 54 L53 54 L70 40 L84 68 L101 34 L117 53 L142 53 L158 41 L173 61 L190 50 L220 50 L240 37 L260 62 L278 52 L305 52"
+            fill="none" stroke={board.accent} strokeWidth="3" strokeDasharray="520"
+            strokeDashoffset={lerp(frame,0,fps*3,520,0)} />
+          <circle cx={lerp(frame,0,fps*3,16,305)} cy="52" r="4" fill="#fff" />
+        </>}
+      </svg>}
+    <div style={{marginTop: 8, height: 4, background: '#1b3446', overflow: 'hidden'}}>
+      <div style={{height: '100%', width: `${lerp(frame,0,fps*3,0,100)}%`, background: board.accent}} />
+    </div>
+  </div>;
+};
 
 const Ambient = ({frame, width, height}: {frame: number; width: number; height: number}) => <>
   <div style={{position: 'absolute', inset: 0, background: 'radial-gradient(circle at 72% 32%, #234b74 0%, #101b32 44%, #07101f 100%)'}} />
@@ -76,10 +150,15 @@ const StageShot = ({shot, width, height, speech}: {shot: Shot; width: number; he
   const frame = useCurrentFrame(), {fps} = useVideoConfig();
   const stage = shot.stage!;
   const p = Math.min(1, frame / Math.max(1, shot.duration - 1));
+  const science = Boolean(shot.storyboard && scienceBoards[shot.storyboard]);
+  const sciencePhase = science ? Number(shot.storyboard_phase || 0) : 0;
+  const operatorShot = science && stage.actors.length > 0;
+  const detailShot = science && (sciencePhase === 1 || ['arm', 'sensors', 'balance', 'diagnosis', 'telemetry'].includes(shot.storyboard || ''));
   const push = /push|推|近/.test(stage.camera || '');
   const pull = /pull|拉远|后退/.test(stage.camera || '');
-  const cam = push ? lerp(p, 0, 1, 1.04, 1.16) : pull ? lerp(p, 0, 1, 1.16, 1.04) : lerp(p, 0, 1, 1.07, 1.13);
-  const driftX = (shot.index % 2 ? -1 : 1) * lerp(p, 0, 1, 0, width * .025);
+  const cam = science ? (detailShot ? lerp(p, 0, 1, 1.27, 1.38) : lerp(p, 0, 1, 1.05, 1.17))
+    : push ? lerp(p, 0, 1, 1.04, 1.16) : pull ? lerp(p, 0, 1, 1.16, 1.04) : lerp(p, 0, 1, 1.07, 1.13);
+  const driftX = (shot.index % 2 ? -1 : 1) * lerp(p, 0, 1, 0, width * (science ? .04 : .025));
   const enter = stage.enter === 'slide'
     ? spring({fps, frame, config: {damping: 16, stiffness: 80}})
     : 1;
@@ -87,10 +166,11 @@ const StageShot = ({shot, width, height, speech}: {shot: Shot; width: number; he
   const fontFamily = '"Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif';
   const speaker = stage.actors.find(actor => actor.talking) || stage.actors[0];
   return <AbsoluteFill style={{overflow: 'hidden', backgroundColor: '#0c1220', fontFamily}}>
-    <AbsoluteFill style={{transform: `translateX(${driftX}px) scale(${cam})`, transformOrigin: '52% 64%'}}>
+    <AbsoluteFill style={{transform: `translateX(${driftX}px) scale(${cam})`,
+      transformOrigin: sciencePhase ? '76% 67%' : detailShot ? '24% 67%' : '52% 64%'}}>
       <Img src={staticFile(stage.background)} style={{width: '100%', height: '100%', objectFit: 'cover',
-        filter: 'brightness(1.08) saturate(1.08)'}} />
-      {stage.actors.map((actor, i) => {
+        filter: science ? 'brightness(.86) saturate(.82) contrast(1.08)' : 'brightness(1.08) saturate(1.08)'}} />
+      {!operatorShot && stage.actors.map((actor, i) => {
         const base = actor.cells[actor.expression] || actor.cells.neutral;
         if (!base) return null;
         const speakingNow = speech.some(cue => cue.scene_number === shot.scene_number
@@ -122,10 +202,31 @@ const StageShot = ({shot, width, height, speech}: {shot: Shot; width: number; he
       {shot.rover && <Rover frame={frame} fps={fps} duration={shot.duration} action={shot.rover.action}
         speaking={speech.some(cue => cue.scene_number === shot.scene_number && cue.speaker === shot.rover?.speaker
           && cue.value !== 'X' && cue.value !== 'A' && shot.from + frame >= cue.from && shot.from + frame < cue.to)}
-        width={width * .50} height={height * .60} />}
+        width={width * (detailShot ? .58 : .49)} height={height * (detailShot ? .75 : .60)}
+        left={science ? (sciencePhase ? '45%' : detailShot ? '1%' : '5%') : '43%'} />}
       {stage.foreground && <Img src={staticFile(stage.foreground)} style={{position: 'absolute', inset: 0,
         width: '100%', height: '100%', objectFit: 'cover'}} />}
     </AbsoluteFill>
+    {operatorShot && stage.actors.slice(0, 1).map((actor, i) => {
+      const base = actor.cells[actor.expression] || actor.cells.neutral;
+      if (!base) return null;
+      const bob = Math.sin(frame / (fps * 1.1)) * 3;
+      return <div key={i} style={{position: 'absolute', left: width * (sciencePhase ? .55 : .065), top: height * .25,
+        width: width * .38, height: height * .53, overflow: 'hidden',
+        border: '5px solid #80b8d1', borderRadius: 16, background: '#11324a',
+        boxShadow: '0 18px 50px #03101dba', transform: `translateY(${bob}px)`}}>
+        <Img src={staticFile(base)} style={{position: 'absolute', left: '5%', bottom: '-15%', width: '90%', height: '116%',
+          objectFit: 'contain', objectPosition: 'center bottom', filter: 'saturate(.76) contrast(1.08)'}} />
+        <div style={{position: 'absolute', inset: 0, pointerEvents: 'none',
+          background: 'repeating-linear-gradient(0deg,transparent 0px,transparent 4px,#a2e4ff12 5px)',
+          boxShadow: 'inset 0 0 35px #071a2c'}} />
+        <div style={{position: 'absolute', top: 10, left: 14, color: '#d3f6ff', fontSize: 16,
+          fontWeight: 800, letterSpacing: 2}}>AETHERNEO / TEST CONTROL</div>
+        <div style={{position: 'absolute', bottom: 10, right: 14, color: '#89d7ef', fontSize: 16,
+          fontWeight: 800}}>● LIVE</div>
+      </div>;
+    })}
+    {science && <ScienceBoard kind={shot.storyboard || ''} frame={frame} fps={fps} width={width} height={height} phase={sciencePhase} />}
     {shot.label && <div style={{position: 'absolute', top: height * .055, left: width * .055,
       maxWidth: width * .43, padding: '10px 17px', borderLeft: '5px solid #f0a73f',
       background: '#08192bc9', color: '#fff', textShadow: '0 2px 7px #000',

@@ -6,9 +6,9 @@ export type RoverAction = 'idle' | 'drive' | 'sample' | 'signal' | 'stand' | 'fa
 const bound = {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'} as const;
 
 /** AT-1's first, mechanically plausible rover body. All motion is frame deterministic. */
-export const Rover = ({frame, fps, duration, action, speaking, width, height}: {
+export const Rover = ({frame, fps, duration, action, speaking, width, height, left = '43%'}: {
   frame: number; fps: number; duration: number; action: RoverAction;
-  speaking: boolean; width: number; height: number;
+  speaking: boolean; width: number; height: number; left?: string;
 }) => {
   const t = frame / fps;
   const drive = action === 'drive';
@@ -31,7 +31,7 @@ export const Rover = ({frame, fps, duration, action, speaking, width, height}: {
   const pulse = speaking || signal ? .45 + .55 * Math.max(0, Math.sin(t * 11)) : .16;
   const wheels = [153, 302, 489, 634];
   return <svg width={width} height={height} viewBox="0 0 760 480" xmlns="http://www.w3.org/2000/svg"
-    style={{position: 'absolute', left: '43%', bottom: '3%', overflow: 'visible',
+    style={{position: 'absolute', left, bottom: '3%', overflow: 'visible',
       transform: `translateX(${travel}px)`, filter: 'drop-shadow(0 13px 12px #050b18a8)'}}>
     <defs>
       <linearGradient id="at1-shell" x1="0" y1="0" x2=".7" y2="1"><stop stopColor="#fffdfa"/><stop offset=".42" stopColor="#cfdeea"/><stop offset="1" stopColor="#7795a9"/></linearGradient>
