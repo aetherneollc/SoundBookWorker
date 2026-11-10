@@ -143,7 +143,7 @@ def prepare(manifest: Path, output: Path) -> None:
         timeline.append(prepared)
         cursor_frame += duration_frames
     if doc.get('motion_policy') == 'majority':
-        moving = [shot for shot in timeline if shot.get('rover') or shot.get('stage') or shot.get('layers')]
+        moving = [shot for shot in timeline if shot.get('cartoon') or shot.get('rover') or shot.get('stage') or shot.get('layers')]
         if len(moving) * 2 < len(timeline):
             raise ValueError(f'Motion quality gate: only {len(moving)}/{len(timeline)} shots have an articulated subject')
     audio = []
@@ -154,7 +154,7 @@ def prepare(manifest: Path, output: Path) -> None:
         if intro_voice:
             audio.append({'src': source({'file': str(intro_voice)}, public), 'from': frame(.22, fps), 'volume': 1, 'loop': False})
     animated_scenes = {int(shot.get('scene_number', 0)) for shot in timeline
-                       if shot.get('rover') or shot.get('stage') or (isinstance(shot.get('layers'), dict) and
+                       if shot.get('cartoon') or shot.get('rover') or shot.get('stage') or (isinstance(shot.get('layers'), dict) and
                        (shot['layers'].get('mouth') or shot['layers'].get('mouth_mode') == 'led'))}
     speech = []
     for track in tracks:
