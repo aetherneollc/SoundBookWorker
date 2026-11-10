@@ -17,15 +17,17 @@ export const Rover = ({frame, fps, duration, action, speaking, width, height}: {
   const posture = action === 'stand' ? interpolate(frame, [0, fps * 2.5], [0, 1], bound)
     : action === 'fall' ? interpolate(frame, [0, fps * .7, fps * 1.8], [1, 1, .12], bound)
       : action === 'recover' ? interpolate(frame, [0, fps * .8, fps * 3], [.12, .12, 1], bound) : .72;
-  const hullLift = posture * 65;
-  const hullTilt = action === 'fall' ? interpolate(frame, [0, fps * .7, fps * 1.8], [0, 0, 12], bound)
-    : action === 'recover' ? interpolate(frame, [0, fps * .8, fps * 3], [12, 12, 0], bound) : 0;
+  const hullLift = posture * 90;
+  const balance = Math.sin(t * 2.1) * (action === 'stand' || action === 'recover' ? 1.5 : .5);
+  const hullTilt = (action === 'fall' ? interpolate(frame, [0, fps * .7, fps * 1.8], [0, 0, 18], bound)
+    : action === 'recover' ? interpolate(frame, [0, fps * .8, fps * 3], [18, 18, 0], bound) : 0) + balance;
   const wheelAngle = drive ? frame * 3.8 : 0;
   const travel = drive ? interpolate(frame, [0, Math.max(1, duration - 1)], [-95, 95], bound) : 0;
   const bodyBob = Math.sin(t * (drive ? 14 : 2.2)) * (drive ? 3.8 : 1.1);
   const mastPan = Math.sin(t * 1.2) * (signal ? 8 : 3);
-  const armLift = sample ? interpolate(frame, [0, fps * 1.5, fps * 3], [-18, 26, 36], bound) : -18 + Math.sin(t * 1.1) * 1.2;
-  const elbow = sample ? interpolate(frame, [0, fps * 1.6, fps * 3.3], [-8, 39, 57], bound) : -8;
+  const armLift = sample ? interpolate(frame, [0, fps * 1.5, fps * 3], [-18, 26, 36], bound) + Math.max(0, t - 3) / (1 + Math.max(0, t - 3)) * Math.sin(t * 1.4) * 5
+    : -18 + Math.sin(t * 1.1) * 1.2;
+  const elbow = sample ? interpolate(frame, [0, fps * 1.6, fps * 3.3], [-8, 39, 57], bound) + Math.max(0, t - 3.3) / (1 + Math.max(0, t - 3.3)) * Math.sin(t * 1.1) * 4 : -8;
   const pulse = speaking || signal ? .45 + .55 * Math.max(0, Math.sin(t * 11)) : .16;
   const wheels = [153, 302, 489, 634];
   return <svg width={width} height={height} viewBox="0 0 760 480" xmlns="http://www.w3.org/2000/svg"

@@ -77,14 +77,17 @@ const StageShot = ({shot, width, height, speech}: {shot: Shot; width: number; he
   const stage = shot.stage!;
   const p = Math.min(1, frame / Math.max(1, shot.duration - 1));
   const push = /push|推|近/.test(stage.camera || '');
-  const cam = push ? lerp(p, 0, 1, 1.02, 1.07) : lerp(p, 0, 1, 1.0, 1.03);
+  const pull = /pull|拉远|后退/.test(stage.camera || '');
+  const cam = push ? lerp(p, 0, 1, 1.04, 1.16) : pull ? lerp(p, 0, 1, 1.16, 1.04) : lerp(p, 0, 1, 1.07, 1.13);
+  const driftX = (shot.index % 2 ? -1 : 1) * lerp(p, 0, 1, 0, width * .025);
   const enter = stage.enter === 'slide'
     ? spring({fps, frame, config: {damping: 16, stiffness: 80}})
     : 1;
+  const titleEnter = spring({fps, frame, config: {damping: 20, stiffness: 130}});
   const fontFamily = '"Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif';
   const speaker = stage.actors.find(actor => actor.talking) || stage.actors[0];
   return <AbsoluteFill style={{overflow: 'hidden', backgroundColor: '#0c1220', fontFamily}}>
-    <AbsoluteFill style={{transform: `scale(${cam})`, transformOrigin: '52% 64%'}}>
+    <AbsoluteFill style={{transform: `translateX(${driftX}px) scale(${cam})`, transformOrigin: '52% 64%'}}>
       <Img src={staticFile(stage.background)} style={{width: '100%', height: '100%', objectFit: 'cover',
         filter: 'brightness(1.08) saturate(1.08)'}} />
       {stage.actors.map((actor, i) => {
@@ -123,6 +126,13 @@ const StageShot = ({shot, width, height, speech}: {shot: Shot; width: number; he
       {stage.foreground && <Img src={staticFile(stage.foreground)} style={{position: 'absolute', inset: 0,
         width: '100%', height: '100%', objectFit: 'cover'}} />}
     </AbsoluteFill>
+    {shot.label && <div style={{position: 'absolute', top: height * .055, left: width * .055,
+      maxWidth: width * .43, padding: '10px 17px', borderLeft: '5px solid #f0a73f',
+      background: '#08192bc9', color: '#fff', textShadow: '0 2px 7px #000',
+      transform: `translateX(${(1-titleEnter)*-35}px)`, opacity: titleEnter}}>
+      {shot.section && <div style={{fontSize: 16, color: '#f5c777', fontWeight: 800, letterSpacing: 2}}>{shot.section}</div>}
+      <div style={{fontSize: 28, lineHeight: 1.3, fontWeight: 850}}>{shot.label}</div>
+    </div>}
     {stage.line && speaker && <div style={{position: 'absolute',
       left: speaker.x > 0.58 ? width * 0.06 : width * 0.46,
       top: height * 0.07, width: width * 0.46, background: '#fff', color: '#1b1b1b',
