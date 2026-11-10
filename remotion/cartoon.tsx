@@ -4,7 +4,7 @@ import {Rover, type RoverAction} from './rover';
 
 export type CartoonAction = 'idle' | 'walk' | 'work' | 'point' | 'talk' | 'react' | 'carry' | 'console';
 export type CartoonActorPlan = {name: string; action: CartoonAction; from_x: number; to_x: number};
-export type CartoonPlan = {actors: CartoonActorPlan[]; prop?: 'tool' | 'battery' | 'sensor' | 'console' | 'crate' | 'none'};
+export type CartoonPlan = {actors: CartoonActorPlan[]; prop?: 'tool' | 'battery' | 'sensor' | 'console' | 'crate' | 'none'; focus?: 'actor' | 'robot' | 'prop' | 'wide'};
 type Cue = {from: number; to: number; value: string; speaker: string; scene_number: number};
 type Stage = {background: string; foreground?: string};
 type Shot = {from: number; duration: number; index: number; label?: string; scene_number?: number;
@@ -123,16 +123,26 @@ export const CartoonShot = ({shot, width, height, speech}: {shot: Shot; width: n
   const phase = Number(shot.cartoon_phase || 0);
   const motionFrame = frame + (phase ? shot.duration : 0);
   const motionDuration = shot.duration * (shot.cartoon_phase === undefined ? 1 : 2);
-  const cam = interpolate(p, [0, 1], phase ? [1.15, 1.22] : [1.04, 1.12], clamp);
+  const focus = shot.cartoon.focus || (shot.cartoon.actors.length ? 'actor' : shot.rover ? 'robot' : 'wide');
+  const focusX = focus === 'actor' ? (shot.cartoon.actors[0]?.from_x || .20) : focus === 'robot' ? .68 : focus === 'prop' ? .29 : .5;
+  const focusY = focus === 'actor' ? .61 : focus === 'robot' ? .69 : focus === 'prop' ? .74 : .5;
+  const cam = interpolate(p, [0, 1], phase ? [1.48, 1.60] : [1.01, 1.08], clamp);
+  const crop = (cam - 1) / 2 - .006;
+  const limit = (value: number) => Math.max(-crop, Math.min(crop, value));
+  const targetX = focus === 'actor' ? .38 : focus === 'prop' ? .42 : .52;
+  const targetY = focus === 'actor' ? .56 : focus === 'prop' ? .62 : .60;
+  const shiftX = phase ? limit(targetX - (.5 + cam * (focusX - .5))) * width
+    : (shot.index%2 ? -1 : 1)*p*width*.018;
+  const shiftY = phase ? limit(targetY - (.5 + cam * (focusY - .5))) * height : 0;
   const bg = stage?.background || shot.src;
   const active = (speaker: string) => speech.some(cue => cue.scene_number === shot.scene_number && cue.speaker === speaker
     && cue.value !== 'X' && cue.value !== 'A' && shot.from + frame >= cue.from && shot.from + frame < cue.to);
   return <AbsoluteFill style={{overflow: 'hidden', background: '#0c1c2c', fontFamily: '"Noto Sans CJK SC", sans-serif'}}>
-    <AbsoluteFill style={{transform: `translateX(${(shot.index%2 ? -1 : 1)*p*width*.025}px) scale(${cam})`,
-      transformOrigin: phase ? '62% 70%' : '50% 70%'}}>
+    <AbsoluteFill style={{transform: `translate(${shiftX}px, ${shiftY}px) scale(${cam})`,
+      transformOrigin: phase ? '50% 50%' : '50% 70%'}}>
       {bg && <Img src={staticFile(bg)} style={{width: '100%', height: '100%', objectFit: 'cover',
-        filter: 'saturate(.84) contrast(1.07) brightness(.88)'}} />}
-      <div style={{position: 'absolute', inset: 0, background: 'linear-gradient(0deg,#0c1a2a77,transparent 38%)'}} />
+        filter: 'saturate(.67) contrast(.94) brightness(.86) blur(1.4px)'}} />}
+      <div style={{position: 'absolute', inset: 0, background: 'linear-gradient(0deg,#0c1a2a66,transparent 42%), #2049701c'}} />
       <Prop kind={shot.cartoon.prop} frame={frame} fps={fps} width={width} height={height} />
       {shot.cartoon.actors.map((actor, i) => <Person key={`${actor.name}-${i}`} name={actor.name} action={actor.action}
         frame={motionFrame} fps={fps} duration={motionDuration} fromX={actor.from_x} toX={actor.to_x}
