@@ -54,15 +54,16 @@ def synthesize(manifest_path: Path) -> None:
         if intro_voice not in available_voices:
             intro_voice = default_voice
         intro_output = output_dir / "intro.wav"
-        intro_result = runtime.synthesize(
-            text=intro_text, voice=intro_voice, output_audio_path=intro_output,
-            sample_mode="fixed", do_sample=True, streaming=False,
-            max_new_frames=500, voice_clone_max_text_tokens=65,
-            enable_wetext=False, enable_normalize_tts_text=True,
-        )
-        if not intro_output.exists() or intro_output.stat().st_size < 4096 or not intro_result["text_chunks"]:
-            raise RuntimeError("MOSS could not synthesize the episode announcement")
-        tighten_pacing(intro_output, language)
+        if not intro_output.is_file() or intro_output.stat().st_size < 4096:
+            intro_result = runtime.synthesize(
+                text=intro_text, voice=intro_voice, output_audio_path=intro_output,
+                sample_mode="fixed", do_sample=True, streaming=False,
+                max_new_frames=500, voice_clone_max_text_tokens=65,
+                enable_wetext=False, enable_normalize_tts_text=True,
+            )
+            if not intro_output.exists() or intro_output.stat().st_size < 4096 or not intro_result["text_chunks"]:
+                raise RuntimeError("MOSS could not synthesize the episode announcement")
+            tighten_pacing(intro_output, language)
         doc["intro_voice_file"] = str(intro_output)
         print(f"MOSS intro: {len(intro_text)} characters, voice {intro_voice}", flush=True)
     count = 0
@@ -75,15 +76,16 @@ def synthesize(manifest_path: Path) -> None:
         if voice not in available_voices:
             voice = default_voice
         output = output_dir / f"line-{count:04d}.wav"
-        result = runtime.synthesize(
-            text=text, voice=voice, output_audio_path=output,
-            sample_mode="fixed", do_sample=True, streaming=False,
-            max_new_frames=500, voice_clone_max_text_tokens=65,
-            enable_wetext=False, enable_normalize_tts_text=True,
-        )
-        if not output.exists() or output.stat().st_size < 4096 or not result["text_chunks"]:
-            raise RuntimeError(f"MOSS could not synthesize line {count}")
-        tighten_pacing(output, language)
+        if not output.is_file() or output.stat().st_size < 4096:
+            result = runtime.synthesize(
+                text=text, voice=voice, output_audio_path=output,
+                sample_mode="fixed", do_sample=True, streaming=False,
+                max_new_frames=500, voice_clone_max_text_tokens=65,
+                enable_wetext=False, enable_normalize_tts_text=True,
+            )
+            if not output.exists() or output.stat().st_size < 4096 or not result["text_chunks"]:
+                raise RuntimeError(f"MOSS could not synthesize line {count}")
+            tighten_pacing(output, language)
         track["file"] = str(output)
         print(f"MOSS speech {count}: {len(text)} characters, voice {voice}, {output.stat().st_size} bytes", flush=True)
     if count == 0:

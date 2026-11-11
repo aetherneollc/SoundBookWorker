@@ -141,6 +141,25 @@ jobs:
         with:
           path: moss-tts-nano/models
           key: moss-nano-onnx-v1-${{ runner.os }}
+      - name: Compute speech cache key
+        id: speech_cache
+        run: |
+          python - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          doc=json.loads(Path('manifest.json').read_text())
+          payload={'language':doc.get('language'), 'intro':doc.get('intro_tts_text'),
+                   'intro_voice':doc.get('intro_tts_voice'),
+                   'lines':[(t.get('tts_text'),t.get('tts_voice')) for t in doc.get('audio_tracks', [])]}
+          digest=hashlib.sha256(json.dumps(payload,ensure_ascii=False,sort_keys=True).encode()).hexdigest()
+          with open(os.environ['GITHUB_OUTPUT'],'a') as out:
+              out.write(f'key={digest}\n')
+          PY
+      - name: Cache episode speech for rerenders
+        uses: actions/cache@v4
+        with:
+          path: media/moss
+          key: moss-speech-v2-${{ runner.os }}-${{ steps.speech_cache.outputs.key }}
       - name: Install MOSS CPU runtime
         run: |
           python - <<'PY'
