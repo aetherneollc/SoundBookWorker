@@ -3,7 +3,7 @@ import {AbsoluteFill, staticFile, useCurrentFrame, useVideoConfig} from 'remotio
 import type {CartoonPlan, CartoonAction} from './cartoon';
 
 type Cue = {from: number; to: number; value: string; speaker: string; scene_number: number};
-type PixelShot = {src?: string; from: number; duration: number; index: number; scene_number?: number; location?: string;
+type PixelShot = {src?: string; from: number; duration: number; index: number; scene_number?: number; scene_title?: string; location?: string;
   description?: string; cartoon: CartoonPlan; cartoon_phase?: number; rover?: {action: string; speaker: string}};
 const ink = '#172236', steel = '#526b83', pale = '#d9e3d5', amber = '#efb867', teal = '#85c9c2';
 const palette = (name: string) => /林岚|Lin Lan/i.test(name)
@@ -110,6 +110,38 @@ function GameInteraction({x,action,prop,frame}: {x:number;action:CartoonAction;p
   return null;
 }
 
+// The generated image is scenery. Engineering objects that carry the plot are
+// deterministic sprites so their state actually changes during each shot.
+function EngineeringSetpiece({title,frame,fps,phase}: {title:string;frame:number;fps:number;phase:number}) {
+  const t=Math.min(1,frame/(fps*2.5));
+  const fairing=/整流罩|封舱|包络/.test(title), vibration=/振动|第二轮/.test(title);
+  const hinge=/线|折/.test(title), lock=/锁销|一只眼/.test(title);
+  const vacuum=/故障|密封/.test(title);
+  const panelAngle=hinge||lock ? (phase ? -65*t : -10-35*t) : -16;
+  const shake=vibration&&frame<fps*3?Math.sin(frame*1.9)*2:0;
+  return <g transform={`translate(${shake} 0)`}>
+    {fairing&&<g opacity={.9}>
+      <R x={75} y={40} w={3} h={109} fill={amber}/><R x={231} y={40} w={3} h={109} fill={amber}/>
+      <R x={78} y={39} w={153} h={3} fill={amber}/><R x={78} y={145} w={153} h={3} fill={amber}/>
+      {phase>0&&<><R x={78} y={36} w={5} h={111} fill="#b7c8cd" opacity={.75}/><R x={229} y={36} w={5} h={111} fill="#b7c8cd" opacity={.75}/></>}
+    </g>}
+    {vacuum&&<g><R x={108} y={85} w={98} h={55} fill={ink}/><R x={112} y={89} w={90} h={47} fill="#8399a1"/>
+      <R x={120} y={96} w={70} h={29} fill="#243d55"/><R x={132} y={131} w={48} h={3} fill={frame%30<15?"#e4806b":teal}/>
+      <R x={135} y={140} w={43} h={4} fill={amber}/></g>}
+    {vibration&&<g><R x={99} y={141} w={121} h={7} fill={ink}/><R x={104} y={144} w={111} h={3} fill="#92a6a7"/>
+      <R x={107} y={148} w={5} h={8} fill={steel}/><R x={206} y={148} w={5} h={8} fill={steel}/></g>}
+    {(hinge||lock||fairing||vibration)&&<g>
+      <R x={122} y={112} w={79} h={22} fill={ink}/><R x={126} y={115} w={71} h={16} fill="#c0c8bc"/>
+      <R x={132} y={133} w={13} h={11} fill={ink}/><R x={177} y={133} w={13} h={11} fill={ink}/>
+      <R x={145} y={104} w={26} h={9} fill="#283f57"/><R x={149} y={106} w={17} h={4} fill={teal}/>
+      <g transform={`rotate(${panelAngle} 161 112)`}><R x={160} y={96} w={56} h={15} fill={ink}/>
+        <R x={163} y={99} w={50} h={9} fill="#567c91"/>{[0,1,2].map(i=><R key={i} x={175+i*12} y={100} w={2} h={7} fill="#a7c6c0"/>)}</g>
+      {lock&&<><R x={158} y={108} w={7} h={9} fill={amber}/><R x={155} y={112} w={12} h={2} fill={pale}/></>}
+      {hinge&&<path d="M180 113 Q192 95 198 113" stroke={phase?'#eaa96e':'#e67c66'} strokeWidth="2" fill="none"/>}
+    </g>}
+  </g>;
+}
+
 export const PixelStoryShot = ({shot,width,height,speech}: {shot:PixelShot;width:number;height:number;speech:Cue[]}) => {
   const frame=useCurrentFrame(),{fps}=useVideoConfig(), phase=Number(shot.cartoon_phase||0);
   const location=String(shot.location||'')+' '+String(shot.description||'');
@@ -129,6 +161,7 @@ export const PixelStoryShot = ({shot,width,height,speech}: {shot:PixelShot;width
       preserveAspectRatio="xMidYMid slice" style={{imageRendering:'pixelated'}}/>
       <R x={0} y={0} w={320} h={180} fill="#24374f" opacity={.16}/></>
       : <GameBackdrop kind={kind} variant={variant} frame={frame} fps={fps}/>}
+    <EngineeringSetpiece title={`${shot.scene_title||''} ${shot.description||''}`} frame={frame} fps={fps} phase={phase}/>
     {shot.cartoon.actors.filter(actor=>!/阿拓|AT-1/i.test(actor.name)).map((actor,i)=>{
       const progress=Math.max(0,Math.min(1,frame/Math.max(1,shot.duration)));
       const x=40+320*(actor.from_x+(actor.to_x-actor.from_x)*progress);
