@@ -1,4 +1,4 @@
-import {AbsoluteFill, useCurrentFrame, useVideoConfig} from 'remotion';
+import {AbsoluteFill, staticFile, useCurrentFrame, useVideoConfig} from 'remotion';
 import type {CartoonPlan} from './cartoon';
 import {PixelWorld} from './game/scene';
 import {frameRoom, pose, poseProgress, resolveWorld, vehicleMotion, type PoseAction} from './game/pose';
@@ -18,8 +18,8 @@ type PixelShot = {
   rover?: {action: string; speaker: string};
 };
 
-// Subtitles stay in video.tsx. actor.body and shot.src are ignored: the cast is
-// drawn from the limb atlas, not from a generated portrait.
+// Subtitles stay in video.tsx. Illustrated series assets are reused across shots;
+// the procedural rig remains a fallback when a free image request fails.
 export const PixelStoryShot = ({shot, width, height, speech}: {shot: PixelShot; width: number; height: number; speech: Cue[]}) => {
   const frame = useCurrentFrame();
   const {fps} = useVideoConfig();
@@ -28,6 +28,7 @@ export const PixelStoryShot = ({shot, width, height, speech}: {shot: PixelShot; 
   const people = shot.cartoon.actors.filter(actor => !/阿拓|AT-1/i.test(actor.name));
   const cast = people.map(actor => ({
     name: actor.name,
+    body: actor.body ? staticFile(actor.body) : undefined,
     speaking: speech.some(cue => cue.scene_number === shot.scene_number && cue.speaker === actor.name
       && cue.value !== 'X' && cue.value !== 'A' && shot.from + frame >= cue.from && shot.from + frame < cue.to),
     pose: pose({
@@ -77,6 +78,7 @@ export const PixelStoryShot = ({shot, width, height, speech}: {shot: PixelShot; 
         entering={actions.includes('enter')}
         setpiece={setpiece}
         roverVisible={roverVisible}
+        background={shot.src ? staticFile(shot.src) : undefined}
       />
     </svg>
   </AbsoluteFill>;

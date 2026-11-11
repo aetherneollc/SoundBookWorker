@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Turn free Kolors character sheets into reusable, tiny game sprites.
+"""Turn free Kolors character sheets into reusable 2D animation sprites.
 
 This runs on the Actions CPU. The raw sheet is never sent to Remotion: failed
 segmentation drops the body file and lets the vector actor render instead.
@@ -15,8 +15,16 @@ from PIL import Image
 
 
 def make_sprite(path: Path, output: Path, session) -> bool:
-    from rembg import remove
-    image = Image.open(io.BytesIO(remove(path.read_bytes(), session=session))).convert('RGBA')
+    source = Image.open(path).convert('RGBA')
+    alpha_hist = source.getchannel('A').histogram()
+    transparent = sum(alpha_hist[:32]) / (source.width * source.height)
+    if transparent >= .35:
+        image = source
+    else:
+        if session is None:
+            return False
+        from rembg import remove
+        image = Image.open(io.BytesIO(remove(path.read_bytes(), session=session))).convert('RGBA')
     alpha = image.getchannel('A')
     box = alpha.point(lambda value: 255 if value >= 96 else 0).getbbox()
     if not box or box[3] - box[1] < image.height * .65:
@@ -36,11 +44,11 @@ def make_sprite(path: Path, output: Path, session) -> bool:
             distance = ((r-sample[0])**2 + (g-sample[1])**2 + (b-sample[2])**2)**.5
             if a and distance < 82 and min(r, g, b) > 105:
                 pixels[x, y] = (r, g, b, 0)
-    scale = min(30 / width, 60 / height)
+    scale = min(164 / width, 300 / height)
     size = (max(1, round(width * scale)), max(1, round(height * scale)))
     image = image.resize(size, Image.Resampling.LANCZOS)
-    canvas = Image.new('RGBA', (36, 64), (0, 0, 0, 0))
-    canvas.alpha_composite(image, ((36 - size[0]) // 2, 64 - size[1]))
+    canvas = Image.new('RGBA', (192, 320), (0, 0, 0, 0))
+    canvas.alpha_composite(image, ((192 - size[0]) // 2, 320 - size[1]))
     if canvas.getchannel('A').getbbox() is None:
         return False
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -65,7 +73,7 @@ def process(manifest: Path) -> None:
     for name in sorted(paths):
         output = Path('media') / f'pixel-actor-{Path(name).stem}.png'
         try:
-            results[name] = str(output) if session and make_sprite(Path(name), output, session) else ''
+            results[name] = str(output) if make_sprite(Path(name), output, session) else ''
         except Exception as exc:
             print(f'Pixel sprite rejected for {Path(name).name}: {type(exc).__name__}', flush=True)
             results[name] = ''

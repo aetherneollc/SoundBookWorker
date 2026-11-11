@@ -22,19 +22,15 @@ def source(item: dict, public: Path) -> str:
 
 
 def pixel_story_source(item: dict, public: Path) -> str:
-    """Extract a location's color atmosphere without retaining conflicting geometry."""
-    from PIL import Image, ImageEnhance
+    """Use the illustrated scene plate; old 1px placeholders keep the code backdrop."""
+    from PIL import Image
     path = Path(item['file']).resolve()
     if not path.is_file():
         raise FileNotFoundError(path)
-    target = public / f'pixel-{path.stem}.png'
-    if not target.exists():
-        image = Image.open(path).convert('RGB').resize((16, 9), Image.Resampling.LANCZOS)
-        image = ImageEnhance.Color(image).enhance(.65)
-        image = image.quantize(colors=16, method=Image.Quantize.MEDIANCUT)
-        image = image.convert('RGB').resize((320, 180), Image.Resampling.NEAREST)
-        image.save(target)
-    return f'media/{target.name}'
+    with Image.open(path) as image:
+        if image.width <= 4 or image.height <= 4:
+            return ''
+    return source(item, public)
 
 
 def parse_srt(path: Path, offset: float, fps: int) -> list[dict]:

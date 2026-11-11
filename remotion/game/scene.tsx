@@ -6,7 +6,7 @@ import {
   dustMotes, rainDrops, type Light, type Pose, type Room, type VehicleMotion, type WorldState,
 } from './pose';
 
-export type CastMember = {name: string; pose: Pose; speaking: boolean};
+export type CastMember = {name: string; pose: Pose; speaking: boolean; body?: string};
 
 const Px = ({x, y, w, h, fill, opacity = 1}: {x: number; y: number; w: number; h: number; fill: string; opacity?: number}) =>
   <rect x={x} y={y} width={w} height={h} fill={fill} opacity={opacity} />;
@@ -201,7 +201,30 @@ const Held = ({body, prop}: {body: Pose; prop?: CartoonPlan['prop']}) => {
   return null;
 };
 
-const Character = ({member, prop, frame, fps}: {member: CastMember; prop?: CartoonPlan['prop']; frame: number; fps: number}) => {
+const IllustratedCharacter = ({member, frame, fps, index}: {member: CastMember; frame: number; fps: number; index: number}) => {
+  const {pose: body} = member;
+  const walk = body.action === 'walk' || body.action === 'enter';
+  const stride = walk ? Math.sin(frame / Math.max(1, fps) * 9 + index) : 0;
+  const bob = walk ? Math.abs(stride) * .9 : Math.sin(frame / Math.max(1, fps) * 1.7 + index) * .25;
+  const sway = body.action === 'react' ? Math.sin(frame / Math.max(1, fps) * 8) * 2 : stride * 1.2;
+  const id = `body-${index}`;
+  const sheet = <image href={member.body} x={-22} y={-76} width={44} height={76} preserveAspectRatio="xMidYMax meet" />;
+  return <g transform={`translate(${Math.round(body.pelvis.x)} ${Math.round(GROUND_Y + bob)}) scale(${body.facing} 1) rotate(${sway})`}>
+    <defs>
+      <clipPath id={`${id}-top`}><rect x={-22} y={-76} width={44} height={50} /></clipPath>
+      <clipPath id={`${id}-left`}><rect x={-22} y={-28} width={22} height={30} /></clipPath>
+      <clipPath id={`${id}-right`}><rect x={0} y={-28} width={22} height={30} /></clipPath>
+    </defs>
+    <ellipse cx={0} cy={1} rx={15} ry={2} fill="#10202d" opacity={.35} />
+    <g clipPath={`url(#${id}-left)`} transform={`rotate(${stride * 8} -8 -27)`}>{sheet}</g>
+    <g clipPath={`url(#${id}-right)`} transform={`rotate(${-stride * 8} 8 -27)`}>{sheet}</g>
+    <g clipPath={`url(#${id}-top)`}>{sheet}</g>
+    {member.speaking && frame % 9 < 5 && <ellipse cx={0} cy={-63} rx={1.5} ry={1} fill="#803d49" opacity={.7} />}
+  </g>;
+};
+
+const Character = ({member, prop, frame, fps, index}: {member: CastMember; prop?: CartoonPlan['prop']; frame: number; fps: number; index: number}) => {
+  if (member.body) return <IllustratedCharacter member={member} frame={frame} fps={fps} index={index} />;
   const {pose: body} = member;
   const atlas = limbAtlas(member.name);
   const limbs = atlas.limbs;
@@ -248,7 +271,7 @@ const Wash = ({light}: {light: Light}) => {
 };
 
 export const PixelWorld = ({
-  room, world, frame, fps, progress, vehicle, roverAction, prop, cast, entering, setpiece, roverVisible,
+  room, world, frame, fps, progress, vehicle, roverAction, prop, cast, entering, setpiece, roverVisible, background,
 }: {
   room: Room;
   world: WorldState;
@@ -262,18 +285,23 @@ export const PixelWorld = ({
   entering: boolean;
   setpiece: Setpiece;
   roverVisible: boolean;
+  background?: string;
 }) => {
   const doorOpen = entering && progress >= 0.32 && progress < DOOR_PROGRESS;
   const showConsole = room === 'interior' || prop === 'console' || cast.some(member => member.pose.action === 'console');
   const roverX = vehicle ? vehicle.x : setpiece === 'generic' ? ROVER_PARK_X : setpiece === 'fairing' ? 226 : 233;
-  const roverY = vehicle ? GROUND_Y : setpiece === 'vacuum' ? 123 : setpiece === 'vibration' ? 101 : setpiece === 'assembly' ? 124 : GROUND_Y;
+  const roverY = background || vehicle ? GROUND_Y : setpiece === 'vacuum' ? 123 : setpiece === 'vibration' ? 101 : setpiece === 'assembly' ? 124 : GROUND_Y;
   const showRover = roverVisible || Boolean(vehicle);
   return <g>
-    {room === 'interior' ? <Interior world={world} /> : <Exterior world={world} doorOpen={doorOpen} />}
-    <EngineeringSetpiece kind={setpiece} frame={frame} />
-    {showConsole && setpiece === 'generic' && <ConsoleDesk />}
+    {background ? <g>
+      <image href={background} x={0} y={-8} width={320} height={190} preserveAspectRatio="xMidYMid slice" />
+      <Px x={0} y={0} w={320} h={180} fill="#14263a" opacity={.18} />
+      <Px x={0} y={149} w={320} h={31} fill="#142332" opacity={.32} />
+    </g> : room === 'interior' ? <Interior world={world} /> : <Exterior world={world} doorOpen={doorOpen} />}
+    {!background && <EngineeringSetpiece kind={setpiece} frame={frame} />}
+    {!background && showConsole && setpiece === 'generic' && <ConsoleDesk />}
     {showRover && <RoverSprite x={roverX} y={roverY} frame={frame} fps={fps} action={vehicle ? 'drive' : roverAction} moving={Boolean(vehicle)} />}
-    {cast.map((member, index) => <Character key={`${member.name}-${index}`} member={member} prop={prop} frame={frame} fps={fps} />)}
+    {cast.map((member, index) => <Character key={`${member.name}-${index}`} member={member} prop={prop} frame={frame} fps={fps} index={index} />)}
     <Wash light={world.light} />
     {rainDrops(world.weather, frame).map((drop, index) => <Px key={`rain-${index}`} x={drop.x} y={drop.y} w={1} h={3} fill="#d5e7f4" />)}
     {dustMotes(world.weather, frame).map((mote, index) => <Px key={`dust-${index}`} x={mote.x} y={mote.y} w={1} h={1} fill="#e6c98a" />)}
