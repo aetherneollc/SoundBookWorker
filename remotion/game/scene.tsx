@@ -132,14 +132,23 @@ const EngineeringSetpiece = ({kind, frame}: {kind: Setpiece; frame: number}) => 
     <Px x={199} y={131} w={6} h={17} fill="#67818d" /><Px x={263} y={131} w={6} h={17} fill="#67818d" />
     <Px x={195} y={40} w={30} h={18} fill="#1c3444" /><Px x={199} y={44} w={22} h={10} fill="#75b5ba" />
   </g>;
-  if (kind === 'fairing') return <g>
-    <Px x={227} y={44} w={44} h={104} fill="#d4dcd8" />
-    <Px x={232} y={47} w={34} h={98} fill="#f0eee3" />
-    <Px x={248} y={47} w={2} h={98} fill="#7596a4" />
-    <path d="M227 44 Q229 20 249 10 Q269 20 271 44" fill="#f0eee3" stroke="#7596a4" strokeWidth="2" />
-    <Px x={222} y={145} w={54} h={5} fill="#334855" />
-    <Px x={205} y={85} w={18} h={4} fill="#e6ae54" /><Px x={273} y={85} w={18} h={4} fill="#e6ae54" />
-  </g>;
+  if (kind === 'fairing') {
+    const separation = 4 + Math.sin(frame / 55) * 1.4;
+    const shell = (mirror: boolean) => <g transform={mirror ? `translate(${260 + separation} 0) scale(-1 1)` : `translate(${184 - separation} 0)`}>
+      <path d="M0 141 L0 56 Q1 38 12 20 Q25 38 29 57 L29 141 Z" fill="#edf1ec" stroke="#344e61" strokeWidth="1.7" />
+      <path d="M2 137 L2 58 Q3 43 12 25 Q19 43 21 58 L21 137 Z" fill="#d7e4e5" stroke="#6b8b98" strokeWidth="1" />
+      <path d="M21 59 L21 139" stroke="#4e6979" strokeWidth="2" />
+      {[69, 85, 101, 117, 132].map(y => <path key={y} d={`M4 ${y} Q12 ${y - 5} 21 ${y}`} fill="none" stroke="#8caeb5" strokeWidth="1" />)}
+      <path d="M23 59 L29 59 M23 137 L29 137" stroke="#d39d51" strokeWidth="2" />
+    </g>;
+    return <g>
+      <ellipse cx="222" cy="148" rx="73" ry="5" fill="#182b39" opacity=".3" />
+      <path d="M144 145 H300 M144 151 H300" stroke="#3d5866" strokeWidth="2" />
+      {[158, 195, 249, 286].map(x => <path key={x} d={`M${x} 143 V153`} stroke="#8fa9ad" strokeWidth="1.5" />)}
+      {shell(false)}{shell(true)}
+      <path d="M197 140 H247" stroke="#e0af68" strokeWidth="1.4" strokeDasharray="3 3" />
+    </g>;
+  }
   return null;
 };
 
@@ -295,7 +304,7 @@ export const PixelWorld = ({
       <Px x={0} y={0} w={320} h={180} fill="#14263a" opacity={.18} />
       <Px x={0} y={149} w={320} h={31} fill="#142332" opacity={.32} />
     </g> : room === 'interior' ? <Interior world={world} /> : <Exterior world={world} doorOpen={doorOpen} />}
-    {!background && <EngineeringSetpiece kind={setpiece} frame={frame} />}
+    {(!background || setpiece === 'fairing') && <EngineeringSetpiece kind={setpiece} frame={frame} />}
     {!background && showConsole && setpiece === 'generic' && <ConsoleDesk />}
     {showRover && <RoverSprite x={roverX} y={roverY} frame={frame} fps={fps} action={vehicle ? 'drive' : roverAction} moving={Boolean(vehicle)} />}
     {cast.map((member, index) => <Character key={`${member.name}-${index}`} member={member} prop={prop} frame={frame} fps={fps} index={index} />)}
