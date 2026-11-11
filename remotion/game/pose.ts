@@ -105,7 +105,7 @@ export const BONE = {
   torso: 14,
 } as const;
 
-const STAND_DROP = 22;
+const STAND_DROP = 26;
 /** Seat relative to the rover's ground center. The rider pelvis is this seat. */
 export const SEAT_OFFSET = {x: -8, y: -16};
 const DEFAULT_FROM_X = 0.18;
@@ -284,7 +284,7 @@ export const pose = (input: PoseFrame): Pose => {
   const leftHip = {x: pelvis.x - BONE.hip, y: pelvis.y};
   const rightHip = {x: pelvis.x + BONE.hip, y: pelvis.y};
 
-  const stride = 7;
+  const stride = 4;
   let leftTarget: Vec2;
   let rightTarget: Vec2;
   if (action === 'drive') {
@@ -292,8 +292,8 @@ export const pose = (input: PoseFrame): Pose => {
     rightTarget = {x: pelvis.x + 14, y: GROUND_Y - 9};
   } else {
     const step = action === 'walk' || entering ? swing : 0;
-    leftTarget = plant(leftHip, leftHip.x - 3 - step * stride);
-    rightTarget = plant(rightHip, rightHip.x + 3 + step * stride);
+    leftTarget = plant(leftHip, leftHip.x - 1 - step * stride);
+    rightTarget = plant(rightHip, rightHip.x + 1 + step * stride);
   }
   const leftLeg = solve2Bone(leftHip, leftTarget, BONE.thigh, BONE.shin, leftTarget.x >= leftHip.x ? 1 : -1);
   const rightLeg = solve2Bone(rightHip, rightTarget, BONE.thigh, BONE.shin, rightTarget.x >= rightHip.x ? 1 : -1);
@@ -315,7 +315,7 @@ export const pose = (input: PoseFrame): Pose => {
       const oppose = side === 'left' ? swing : -swing;
       return {x: shoulder.x + dir * 2 + oppose * 8, y: shoulder.y + 16};
     }
-    return {x: shoulder.x + dir * 3, y: shoulder.y + 18};
+    return {x: shoulder.x + dir * 3, y: shoulder.y + 22};
   };
   const leftArmChain = solve2Bone(leftShoulder, armTarget('left'), BONE.upperArm, BONE.forearm, -1);
   const rightArmChain = solve2Bone(rightShoulder, armTarget('right'), BONE.upperArm, BONE.forearm, 1);

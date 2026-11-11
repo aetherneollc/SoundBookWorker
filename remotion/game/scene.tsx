@@ -103,8 +103,48 @@ const ConsoleDesk = () => {
   </g>;
 };
 
+type Setpiece = 'generic' | 'vacuum' | 'vibration' | 'fairing' | 'assembly';
+
+const EngineeringSetpiece = ({kind, frame}: {kind: Setpiece; frame: number}) => {
+  if (kind === 'vacuum') return <g>
+    <Px x={178} y={46} w={112} h={100} fill="#182633" />
+    <Px x={184} y={52} w={100} h={88} fill="#a4bac3" />
+    <Px x={193} y={61} w={82} h={70} fill="#263f50" />
+    <Px x={200} y={68} w={68} h={54} fill="#628495" />
+    <Px x={206} y={75} w={56} h={40} fill="#172a3a" />
+    {[61, 85, 109, 133].map(y => <g key={y}><Px x={187} y={y} w={4} h={4} fill="#efb867" /><Px x={277} y={y} w={4} h={4} fill="#efb867" /></g>)}
+    <Px x={202} y={143} w={64} h={4} fill="#8bb7ba" />
+  </g>;
+  if (kind === 'vibration') return <g>
+    <Px x={182} y={100} w={102} h={10} fill="#162938" />
+    <Px x={190} y={110} w={86} h={22} fill="#66889b" />
+    {[194, 216, 238, 260].map(x => <Px key={x} x={x} y={132} w={8} h={16} fill="#dfac58" />)}
+    <Px x={177} y={146} w={112} h={5} fill="#243747" />
+    <Px x={180} y={40} w={5} h={60} fill="#93abb2" /><Px x={281} y={40} w={5} h={60} fill="#93abb2" />
+    <Px x={180} y={40} w={106} h={6} fill="#93abb2" />
+    <Px x={217} y={49} w={32} h={10} fill={Math.floor(frame / 12) % 2 ? '#efb867' : '#8bc8c0'} />
+  </g>;
+  if (kind === 'assembly') return <g>
+    <Px x={181} y={24} w={6} h={123} fill="#76909c" /><Px x={283} y={24} w={6} h={123} fill="#76909c" />
+    <Px x={181} y={24} w={108} h={8} fill="#a5bac0" />
+    <Px x={223} y={32} w={3} h={42} fill="#e1ae5d" /><Px x={217} y={72} w={15} h={8} fill="#e1ae5d" />
+    <Px x={193} y={124} w={82} h={7} fill="#344b59" />
+    <Px x={199} y={131} w={6} h={17} fill="#67818d" /><Px x={263} y={131} w={6} h={17} fill="#67818d" />
+    <Px x={195} y={40} w={30} h={18} fill="#1c3444" /><Px x={199} y={44} w={22} h={10} fill="#75b5ba" />
+  </g>;
+  if (kind === 'fairing') return <g>
+    <Px x={227} y={44} w={44} h={104} fill="#d4dcd8" />
+    <Px x={232} y={47} w={34} h={98} fill="#f0eee3" />
+    <Px x={248} y={47} w={2} h={98} fill="#7596a4" />
+    <path d="M227 44 Q229 20 249 10 Q269 20 271 44" fill="#f0eee3" stroke="#7596a4" strokeWidth="2" />
+    <Px x={222} y={145} w={54} h={5} fill="#334855" />
+    <Px x={205} y={85} w={18} h={4} fill="#e6ae54" /><Px x={273} y={85} w={18} h={4} fill="#e6ae54" />
+  </g>;
+  return null;
+};
+
 const RoverSprite = ({x, frame, fps, action, moving}: {x: number; frame: number; fps: number; action: string; moving: boolean}) => {
-  const spin = frame * (moving ? 22 : 4);
+  const spin = moving ? frame * 22 : 0;
   const reach = action === 'reach' || action === 'sample';
   const wave = Math.sin(frame / Math.max(1, fps) * (reach ? 3 : 1.5));
   const arm = reach ? -34 + wave * 14 : -14 + wave * 8;
@@ -212,7 +252,7 @@ const Wash = ({light}: {light: Light}) => {
 };
 
 export const PixelWorld = ({
-  room, world, frame, fps, progress, vehicle, roverAction, prop, cast, entering,
+  room, world, frame, fps, progress, vehicle, roverAction, prop, cast, entering, setpiece, roverVisible,
 }: {
   room: Room;
   world: WorldState;
@@ -224,14 +264,17 @@ export const PixelWorld = ({
   prop?: CartoonPlan['prop'];
   cast: CastMember[];
   entering: boolean;
+  setpiece: Setpiece;
+  roverVisible: boolean;
 }) => {
   const doorOpen = entering && progress >= 0.32 && progress < DOOR_PROGRESS;
   const showConsole = room === 'interior' || prop === 'console' || cast.some(member => member.pose.action === 'console');
-  const roverX = vehicle ? vehicle.x : ROVER_PARK_X;
-  const showRover = room === 'exterior' || Boolean(vehicle);
+  const roverX = vehicle ? vehicle.x : setpiece === 'generic' ? ROVER_PARK_X : setpiece === 'fairing' ? 226 : 233;
+  const showRover = roverVisible || Boolean(vehicle);
   return <g>
     {room === 'interior' ? <Interior world={world} /> : <Exterior world={world} doorOpen={doorOpen} />}
-    {showConsole && <ConsoleDesk />}
+    <EngineeringSetpiece kind={setpiece} frame={frame} />
+    {showConsole && setpiece === 'generic' && <ConsoleDesk />}
     {showRover && <RoverSprite x={roverX} frame={frame} fps={fps} action={vehicle ? 'drive' : roverAction} moving={Boolean(vehicle)} />}
     {cast.map((member, index) => <Character key={`${member.name}-${index}`} member={member} prop={prop} frame={frame} fps={fps} />)}
     <Wash light={world.light} />
