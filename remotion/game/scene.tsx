@@ -143,7 +143,7 @@ const EngineeringSetpiece = ({kind, frame}: {kind: Setpiece; frame: number}) => 
   return null;
 };
 
-const RoverSprite = ({x, frame, fps, action, moving}: {x: number; frame: number; fps: number; action: string; moving: boolean}) => {
+const RoverSprite = ({x, y, frame, fps, action, moving}: {x: number; y: number; frame: number; fps: number; action: string; moving: boolean}) => {
   const spin = moving ? frame * 22 : 0;
   const reach = action === 'reach' || action === 'sample';
   const wave = Math.sin(frame / Math.max(1, fps) * (reach ? 3 : 1.5));
@@ -152,7 +152,7 @@ const RoverSprite = ({x, frame, fps, action, moving}: {x: number; frame: number;
   const blink = action === 'signal' && frame % 16 < 8;
   const tilt = !moving && action === 'fall' ? Math.min(14, frame / Math.max(1, fps) * 9)
     : !moving && action === 'recover' ? Math.max(0, 14 - frame / Math.max(1, fps) * 7) : 0;
-  return <g transform={`translate(${Math.round(x)} ${GROUND_Y}) rotate(${tilt})`}>
+  return <g transform={`translate(${Math.round(x)} ${Math.round(y)}) rotate(${tilt})`}>
     <Px x={-22} y={-2} w={44} h={2} fill="#172236" opacity={.4} />
     {[-16, 14].map(wx => <g key={wx} transform={`translate(${wx} -6)`}>
       <Px x={-6} y={-6} w={12} h={12} fill="#172236" />
@@ -270,12 +270,13 @@ export const PixelWorld = ({
   const doorOpen = entering && progress >= 0.32 && progress < DOOR_PROGRESS;
   const showConsole = room === 'interior' || prop === 'console' || cast.some(member => member.pose.action === 'console');
   const roverX = vehicle ? vehicle.x : setpiece === 'generic' ? ROVER_PARK_X : setpiece === 'fairing' ? 226 : 233;
+  const roverY = vehicle ? GROUND_Y : setpiece === 'vacuum' ? 123 : setpiece === 'vibration' ? 101 : setpiece === 'assembly' ? 124 : GROUND_Y;
   const showRover = roverVisible || Boolean(vehicle);
   return <g>
     {room === 'interior' ? <Interior world={world} /> : <Exterior world={world} doorOpen={doorOpen} />}
     <EngineeringSetpiece kind={setpiece} frame={frame} />
     {showConsole && setpiece === 'generic' && <ConsoleDesk />}
-    {showRover && <RoverSprite x={roverX} frame={frame} fps={fps} action={vehicle ? 'drive' : roverAction} moving={Boolean(vehicle)} />}
+    {showRover && <RoverSprite x={roverX} y={roverY} frame={frame} fps={fps} action={vehicle ? 'drive' : roverAction} moving={Boolean(vehicle)} />}
     {cast.map((member, index) => <Character key={`${member.name}-${index}`} member={member} prop={prop} frame={frame} fps={fps} />)}
     <Wash light={world.light} />
     {rainDrops(world.weather, frame).map((drop, index) => <Px key={`rain-${index}`} x={drop.x} y={drop.y} w={1} h={3} fill="#d5e7f4" />)}
