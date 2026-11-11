@@ -291,7 +291,7 @@ export const PixelWorld = ({
   const showRover = roverVisible || Boolean(vehicle);
   return <g>
     {background ? <g>
-      <image href={background} x={-8} y={-14} width={336} height={202} preserveAspectRatio="xMidYMid slice" />
+      <image href={background} x={0} y={0} width={320} height={180} preserveAspectRatio="xMidYMid slice" />
       <Px x={0} y={0} w={320} h={180} fill="#14263a" opacity={.18} />
       <Px x={0} y={149} w={320} h={31} fill="#142332" opacity={.32} />
     </g> : room === 'interior' ? <Interior world={world} /> : <Exterior world={world} doorOpen={doorOpen} />}
