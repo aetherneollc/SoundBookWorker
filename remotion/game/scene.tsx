@@ -244,11 +244,7 @@ const Character = ({member, prop, frame, fps}: {member: CastMember; prop?: Carto
 const Wash = ({light}: {light: Light}) => {
   if (light === 'day') return null;
   if (light === 'night') return <Px x={0} y={0} w={320} h={180} fill="#050814" opacity={.38} />;
-  return <g>
-    <Px x={0} y={0} w={320} h={180} fill="#120e0a" opacity={.26} />
-    <Px x={96} y={36} w={128} h={108} fill="#efb867" opacity={.14} />
-    <Px x={120} y={52} w={80} h={78} fill="#efb867" opacity={.12} />
-  </g>;
+  return <Px x={0} y={0} w={320} h={180} fill="#120e0a" opacity={.10} />;
 };
 
 export const PixelWorld = ({

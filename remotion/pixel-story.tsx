@@ -53,7 +53,7 @@ export const PixelStoryShot = ({shot, width, height, speech}: {shot: PixelShot; 
   const roverAnchor = vehicle?.x ?? (setpiece === 'generic' ? 100 : setpiece === 'fairing' ? 226 : 233);
   const focus = shot.cartoon.focus;
   const cameraEase = Math.min(1, frame / Math.max(1, fps * 0.8));
-  const actorWidths = [320, 290, 260];
+  const actorWidths = [320, 275, 210];
   const targetWidth = focus === 'wide' ? 320 : focus === 'actor' ? actorWidths[shot.index % actorWidths.length]
     : focus === 'prop' ? 250 : 260;
   const cameraWidth = 320 - (320 - targetWidth) * cameraEase;
