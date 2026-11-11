@@ -3,6 +3,7 @@ import {AbsoluteFill, Img, Sequence, interpolate, spring, staticFile, useCurrent
 import {Audio} from '@remotion/media';
 import {Rover, type RoverAction} from './rover';
 import {CartoonShot, type CartoonPlan} from './cartoon';
+import {PixelStoryShot} from './pixel-story';
 
 type LayerSet = {background: string; body: string; head?: string; arm_left?: string; arm_right?: string;
   subject_x: number; subject_y: number; character?: string;
@@ -16,6 +17,7 @@ type Stage = {background: string; foreground?: string; camera?: string; enter?: 
   speaker?: string; line?: string; actors: StageActor[]};
 type Shot = {src: string; from: number; duration: number; index: number; camera?: string;
   label?: string; fact_card?: string; section?: string; layers?: LayerSet; stage?: Stage; scene_number?: number;
+  location?: string; description?: string; pixel_story?: boolean;
   technical_overlay?: boolean; rover?: {action: RoverAction; speaker: string}; storyboard?: string; storyboard_phase?: number;
   cartoon?: CartoonPlan; cartoon_phase?: number};
 type Track = {src: string; from: number; volume: number; loop: boolean};
@@ -397,7 +399,8 @@ export const SoundBook = (props: SoundBookProps) => {
   return <AbsoluteFill style={{background: '#07101f'}}>
     {props.introFrames > 0 && <Sequence from={0} durationInFrames={props.introFrames}><Intro props={props} /></Sequence>}
     {props.shots.map(shot => <Sequence key={`${shot.index}-${shot.from}`} from={shot.from} durationInFrames={shot.duration}>
-      {shot.cartoon ? <CartoonShot shot={{...shot, cartoon: shot.cartoon}} width={props.width} height={props.height} speech={props.speech || []} />
+      {shot.cartoon && shot.pixel_story ? <PixelStoryShot shot={{...shot, cartoon: shot.cartoon}} width={props.width} height={props.height} speech={props.speech || []} />
+        : shot.cartoon ? <CartoonShot shot={{...shot, cartoon: shot.cartoon}} width={props.width} height={props.height} speech={props.speech || []} />
         : shot.stage ? <StageShot shot={shot} width={props.width} height={props.height} speech={props.speech || []} />
         : <MotionShot shot={shot} width={props.width} height={props.height} speech={props.speech || []} />}
     </Sequence>)}

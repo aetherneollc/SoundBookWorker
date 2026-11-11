@@ -175,7 +175,8 @@ jobs:
           import json
           from pathlib import Path
           shots=json.loads(Path('manifest.json').read_text()).get('shots', [])
-          if not any(shot.get('file') and not shot.get('stage') and not shot.get('rover')
+          if not any(shot.get('pixel_story') and any(actor.get('body_file') for actor in (shot.get('cartoon') or {}).get('actors', []))
+                     or shot.get('file') and not shot.get('stage') and not shot.get('rover')
                      and not shot.get('fact_card') and not shot.get('label')
                      and not (isinstance(shot.get('character_layers'), dict)
                               and shot['character_layers'].get('body_file')) for shot in shots):
@@ -188,6 +189,10 @@ jobs:
         env:
           U2NET_HOME: character-model
         run: python renderer/layer_shots.py manifest.json || echo 'Character masking unavailable; using original shots'
+      - name: Prepare pixel story actors
+        env:
+          U2NET_HOME: character-model
+        run: python renderer/pixel_actor_sprites.py manifest.json
       - name: Install phonetic lip sync when character mouth assets are present
         run: |
           if python - <<'PY'

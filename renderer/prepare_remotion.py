@@ -21,6 +21,21 @@ def source(item: dict, public: Path) -> str:
     return f'media/{target.name}'
 
 
+def pixel_story_source(item: dict, public: Path) -> str:
+    """Render the same location plate as a stable 320x180 game background."""
+    from PIL import Image, ImageEnhance
+    path = Path(item['file']).resolve()
+    if not path.is_file():
+        raise FileNotFoundError(path)
+    target = public / f'pixel-{path.stem}.png'
+    if not target.exists():
+        image = Image.open(path).convert('RGB').resize((320, 180), Image.Resampling.LANCZOS)
+        image = ImageEnhance.Color(image).enhance(.78)
+        image = image.quantize(colors=48, method=Image.Quantize.MEDIANCUT)
+        image.save(target)
+    return f'media/{target.name}'
+
+
 def parse_srt(path: Path, offset: float, fps: int) -> list[dict]:
     def secs(value: str) -> float:
         h, m, s, ms = map(int, re.split('[:,]', value))
@@ -92,7 +107,7 @@ def prepare(manifest: Path, output: Path) -> None:
     timeline = []; cursor_frame = intro_frames
     for i, shot in enumerate(shots):
         duration_frames = max(1, frame(min(300, max(.25, float(shot.get('duration', 4)))), fps))
-        src = source(shot, public) if shot.get('file') else ''
+        src = (pixel_story_source(shot, public) if shot.get('pixel_story') else source(shot, public)) if shot.get('file') else ''
         prepared = {**shot, 'src': src, 'from': cursor_frame,
                     'duration': duration_frames, 'index': i}
         cartoon = shot.get('cartoon') if isinstance(shot.get('cartoon'), dict) else None
