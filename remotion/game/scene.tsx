@@ -199,9 +199,11 @@ const Held = ({body, prop}: {body: Pose; prop?: CartoonPlan['prop']}) => {
 const IllustratedCharacter = ({member, frame, fps, index}: {member: CastMember; frame: number; fps: number; index: number}) => {
   const {pose: body} = member;
   const walk = body.action === 'walk' || body.action === 'enter';
+  const expressive = member.speaking || body.action === 'talk' || body.action === 'point';
   const stride = walk ? Math.sin(frame / Math.max(1, fps) * 9 + index) : 0;
-  const bob = walk ? Math.abs(stride) * .9 : Math.sin(frame / Math.max(1, fps) * 1.7 + index) * .25;
-  const sway = body.action === 'react' ? Math.sin(frame / Math.max(1, fps) * 8) * 2 : stride * 1.2;
+  const bob = walk ? Math.abs(stride) * .9 : Math.sin(frame / Math.max(1, fps) * (expressive ? 3.1 : 1.7) + index) * (expressive ? 1.1 : .35);
+  const sway = body.action === 'react' ? Math.sin(frame / Math.max(1, fps) * 8) * 3
+    : expressive ? Math.sin(frame / Math.max(1, fps) * 3.1 + index) * 2.5 : stride * 1.2;
   const id = `body-${index}`;
   const sheet = <image href={member.body} x={-22} y={-76} width={44} height={76} preserveAspectRatio="xMidYMax meet" />;
   return <g transform={`translate(${Math.round(body.pelvis.x)} ${Math.round(GROUND_Y + bob)}) scale(${body.facing} 1) rotate(${sway})`}>
@@ -213,7 +215,7 @@ const IllustratedCharacter = ({member, frame, fps, index}: {member: CastMember; 
     <ellipse cx={0} cy={1} rx={15} ry={2} fill="#10202d" opacity={.35} />
     <g clipPath={`url(#${id}-left)`} transform={`rotate(${stride * 8} -8 -27)`}>{sheet}</g>
     <g clipPath={`url(#${id}-right)`} transform={`rotate(${-stride * 8} 8 -27)`}>{sheet}</g>
-    <g clipPath={`url(#${id}-top)`}>{sheet}</g>
+    <g clipPath={`url(#${id}-top)`} transform={expressive ? `rotate(${Math.sin(frame / Math.max(1, fps) * 3.1 + index) * 2} 0 -27)` : undefined}>{sheet}</g>
     {member.speaking && frame % 9 < 5 && <ellipse cx={0} cy={-63} rx={1.5} ry={1} fill="#803d49" opacity={.7} />}
   </g>;
 };
