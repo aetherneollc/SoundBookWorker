@@ -153,32 +153,27 @@ const RoverSprite = ({x, y, frame, fps, action, moving}: {x: number; y: number; 
   const tilt = !moving && action === 'fall' ? Math.min(14, frame / Math.max(1, fps) * 9)
     : !moving && action === 'recover' ? Math.max(0, 14 - frame / Math.max(1, fps) * 7) : 0;
   return <g transform={`translate(${Math.round(x)} ${Math.round(y)}) rotate(${tilt})`}>
-    <Px x={-22} y={-2} w={44} h={2} fill="#172236" opacity={.4} />
-    {[-16, 14].map(wx => <g key={wx} transform={`translate(${wx} -6)`}>
-      <Px x={-6} y={-6} w={12} h={12} fill="#172236" />
-      <Px x={-5} y={-5} w={10} h={10} fill="#3e5160" />
-      <g transform={`rotate(${spin})`}>
-        <Px x={-1} y={-4} w={2} h={8} fill="#d9e3d5" />
-        <Px x={-4} y={-1} w={8} h={2} fill="#d9e3d5" />
-      </g>
-      <Px x={-2} y={-2} w={4} h={4} fill="#172236" />
+    <ellipse cx={0} cy={0} rx={26} ry={2.2} fill="#10202d" opacity={.35} />
+    {[-17, 17].map(wx => <g key={wx} transform={`translate(${wx} -7)`}>
+      <circle r={7.4} fill="#182633" stroke="#7f9dad" strokeWidth={1.4} />
+      <circle r={4.8} fill="#394e61" stroke="#cadbdc" strokeWidth={1} />
+      <g transform={`rotate(${spin})`}><path d="M0 -3.5V3.5M-3.5 0H3.5" stroke="#e8ece6" strokeWidth={1.3} /></g>
+      <circle r={1.7} fill="#162b38" />
     </g>)}
-    <Px x={-26} y={-16} w={52} h={10} fill="#172236" />
-    <Px x={-24} y={-15} w={48} h={8} fill="#d5ddd2" />
-    <Px x={-20} y={-14} w={18} h={3} fill="#8fd0c8" />
-    <Px x={-14} y={-18} w={14} h={4} fill="#243848" />
-    <Px x={-16} y={-30} w={3} h={14} fill="#172236" />
-    <Px x={8} y={-28} w={3} h={12} fill="#172236" />
-    <Px x={-16} y={-30} w={27} h={3} fill="#172236" />
-    <Px x={4} y={-40} w={3} h={12} fill="#172236" />
-    <Px x={2} y={-43} w={7} h={4} fill={blink ? '#efb867' : '#85c9c2'} />
-    <g transform={`translate(18 -16) rotate(${arm})`}>
-      <Px x={-2} y={0} w={4} h={12} fill="#172236" />
-      <Px x={-1} y={1} w={2} h={10} fill="#efb867" />
-      <g transform={`translate(0 12) rotate(${elbow})`}>
-        <Px x={-2} y={0} w={4} h={11} fill="#172236" />
-        <Px x={-1} y={1} w={2} h={8} fill="#d9e3d5" />
-        <Px x={-3} y={10} w={7} h={3} fill="#526b83" />
+    <path d="M-25 -20L-18 -26H18L25 -20L23 -12H-23Z" fill="#edf2ed" stroke="#233b4a" strokeWidth={1.7} />
+    <path d="M-21 -20H21L18 -15H-18Z" fill="#d4e2e6" />
+    <path d="M-17 -13H17" stroke="#ee9e48" strokeWidth={1.5} />
+    <path d="M-12 -26L-9 -34H8L12 -26" fill="#2e5065" stroke="#233b4a" strokeWidth={1.2} />
+    <path d="M-10 -34H10L8 -39H-8Z" fill="#cddfe2" stroke="#203c4b" strokeWidth={1.2} />
+    <path d="M-5 -38H5" stroke={blink ? '#f3b45d' : '#78d4e0'} strokeWidth={2} strokeLinecap="round" />
+    <path d="M-22 -22L-28 -24M22 -22L28 -24" stroke="#a9c8ce" strokeWidth={1.8} strokeLinecap="round" />
+    <g transform={`translate(22 -23) rotate(${arm})`}>
+      <path d="M0 0L3 13" stroke="#203d4c" strokeWidth={5} strokeLinecap="round" />
+      <path d="M0 0L3 13" stroke="#e1e9e5" strokeWidth={2.4} strokeLinecap="round" />
+      <g transform={`translate(3 13) rotate(${elbow})`}>
+        <circle r={2.5} fill="#eda65c" stroke="#203d4c" strokeWidth={1} />
+        <path d="M0 0L-2 11" stroke="#d8e5e6" strokeWidth={3.7} strokeLinecap="round" />
+        <path d="M-2 11L-6 13M-2 11L2 14" stroke="#38576b" strokeWidth={1.5} strokeLinecap="round" />
       </g>
     </g>
     {moving && [0, 1, 2, 3].map(i => <Px key={i} x={-30 - ((frame * 3 + i * 6) % 16)} y={-5 - (i % 3)} w={2} h={1} fill="#c2b090" />)}
@@ -294,7 +289,7 @@ export const PixelWorld = ({
   const showRover = roverVisible || Boolean(vehicle);
   return <g>
     {background ? <g>
-      <image href={background} x={0} y={-8} width={320} height={190} preserveAspectRatio="xMidYMid slice" />
+      <image href={background} x={-8} y={-14} width={336} height={202} preserveAspectRatio="xMidYMid slice" />
       <Px x={0} y={0} w={320} h={180} fill="#14263a" opacity={.18} />
       <Px x={0} y={149} w={320} h={31} fill="#142332" opacity={.32} />
     </g> : room === 'interior' ? <Interior world={world} /> : <Exterior world={world} doorOpen={doorOpen} />}
