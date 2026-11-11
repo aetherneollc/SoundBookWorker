@@ -2,9 +2,14 @@ import React from 'react';
 import {AbsoluteFill, Img, interpolate, spring, staticFile, useCurrentFrame, useVideoConfig} from 'remotion';
 import {Rover, type RoverAction} from './rover';
 
-export type CartoonAction = 'idle' | 'walk' | 'work' | 'point' | 'talk' | 'react' | 'carry' | 'console';
+export type CartoonAction = 'idle' | 'walk' | 'work' | 'point' | 'talk' | 'react' | 'carry' | 'console' | 'enter' | 'drive';
+export type CartoonRoom = 'exterior' | 'interior';
+export type CartoonWeather = 'clear' | 'dust' | 'rain';
+export type CartoonLight = 'day' | 'night' | 'lamp';
+/** Optional pixel_story state. CartoonShot does not read it. */
+export type CartoonWorld = {room?: CartoonRoom; weather?: CartoonWeather; light?: CartoonLight};
 export type CartoonActorPlan = {name: string; action: CartoonAction; from_x: number; to_x: number; portrait?: string; mouth?: string; body?: string};
-export type CartoonPlan = {actors: CartoonActorPlan[]; prop?: 'tool' | 'battery' | 'sensor' | 'console' | 'crate' | 'none'; focus?: 'actor' | 'robot' | 'prop' | 'wide'};
+export type CartoonPlan = {actors: CartoonActorPlan[]; prop?: 'tool' | 'battery' | 'sensor' | 'console' | 'crate' | 'none'; focus?: 'actor' | 'robot' | 'prop' | 'wide'; world?: CartoonWorld};
 type Cue = {from: number; to: number; value: string; speaker: string; scene_number: number};
 type Stage = {background: string; foreground?: string};
 type Shot = {from: number; duration: number; index: number; label?: string; scene_number?: number;

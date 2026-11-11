@@ -1,0 +1,83 @@
+{
+  "width": 1280,
+  "height": 720,
+  "fps": 24,
+  "durationInFrames": 192,
+  "introFrames": 0,
+  "shots": [
+    {
+      "src": "",
+      "from": 0,
+      "duration": 48,
+      "index": 0,
+      "pixel_story": true,
+      "scene_number": 1,
+      "location": "总装试验场",
+      "description": "林岚走过场地",
+      "cartoon": {
+        "actors": [{"name": "林岚", "action": "walk", "from_x": 0.18, "to_x": 0.55}],
+        "prop": "none",
+        "focus": "actor",
+        "world": {"room": "exterior", "weather": "clear", "light": "day"}
+      }
+    },
+    {
+      "src": "",
+      "from": 48,
+      "duration": 48,
+      "index": 1,
+      "pixel_story": true,
+      "scene_number": 2,
+      "location": "实验舱门口",
+      "description": "林岚走进实验舱",
+      "cartoon": {
+        "actors": [{"name": "林岚", "action": "enter", "from_x": 0.18, "to_x": 0.55}],
+        "prop": "none",
+        "focus": "actor",
+        "world": {"room": "interior", "weather": "clear", "light": "day"}
+      }
+    },
+    {
+      "src": "",
+      "from": 96,
+      "duration": 48,
+      "index": 2,
+      "pixel_story": true,
+      "scene_number": 3,
+      "location": "月面",
+      "description": "林岚驾驶阿拓驶过场地",
+      "rover": {"action": "drive", "speaker": "阿拓 AT-1"},
+      "cartoon": {
+        "actors": [{"name": "林岚", "action": "drive", "from_x": 0.22, "to_x": 0.7}],
+        "prop": "none",
+        "focus": "actor",
+        "world": {"room": "exterior", "weather": "clear", "light": "day"}
+      }
+    },
+    {
+      "src": "",
+      "from": 144,
+      "duration": 48,
+      "index": 3,
+      "pixel_story": true,
+      "scene_number": 4,
+      "location": "发射台",
+      "description": "雨夜的发射台",
+      "cartoon": {
+        "actors": [{"name": "林岚", "action": "idle", "from_x": 0.34, "to_x": 0.34}],
+        "prop": "none",
+        "focus": "wide",
+        "world": {"room": "exterior", "weather": "rain", "light": "night"}
+      }
+    }
+  ],
+  "audio": [],
+  "captions": [],
+  "speech": [],
+  "episodeNumber": 1,
+  "title": "pixel story qa",
+  "language": "zh",
+  "cta": null,
+  "ctaFrom": 192,
+  "ctaFrames": 0
+}
