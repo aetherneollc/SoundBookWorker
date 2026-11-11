@@ -176,7 +176,7 @@ jobs:
           from pathlib import Path
           shots=json.loads(Path('manifest.json').read_text()).get('shots', [])
           if not any(shot.get('pixel_story') and any(actor.get('body_file') for actor in (shot.get('cartoon') or {}).get('actors', []))
-                     or shot.get('file') and not shot.get('stage') and not shot.get('rover')
+                     or shot.get('file') and not shot.get('pixel_story') and not shot.get('stage') and not shot.get('rover')
                      and not shot.get('fact_card') and not shot.get('label')
                      and not (isinstance(shot.get('character_layers'), dict)
                               and shot['character_layers'].get('body_file')) for shot in shots):

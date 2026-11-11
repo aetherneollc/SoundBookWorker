@@ -86,9 +86,28 @@ function GameRover({action,frame,fps}: {action:string;frame:number;fps:number}) 
     <R x={-6} y={-27} w={14} h={9} fill={ink}/><R x={-4} y={-25} w={10} h={5} fill={frame%20<10?teal:amber}/>
     <R x={-24} y={3} w={11} h={10} fill={ink}/><R x={15} y={3} w={11} h={10} fill={ink}/>
     <R x={-22} y={5} w={7} h={6} fill={steel}/><R x={17} y={5} w={7} h={6} fill={steel}/>
-    <R x={17} y={-21} w={4} h={15} fill={ink}/><R x={20} y={-24} w={14} h={4} fill={ink}/>
-    <R x={20} y={-22} w={11} h={2} fill={amber}/>
+    <R x={moving&&frame%12<6?-19:-22} y={7} w={2} h={2} fill={pale}/>
+    <R x={moving&&frame%12<6?20:17} y={7} w={2} h={2} fill={pale}/>
+    <g transform={`rotate(${action==='reach'||action==='sample'?-28+Math.sin(frame/fps*4)*13:0} 18 -19)`}>
+      <R x={17} y={-21} w={4} h={15} fill={ink}/><R x={20} y={-24} w={14} h={4} fill={ink}/>
+      <R x={20} y={-22} w={11} h={2} fill={amber}/>
+    </g>
+    {action==='signal'&&frame%18<9&&<><R x={-3} y={-31} w={6} h={3} fill={amber}/><R x={-6} y={-34} w={12} h={1} fill={amber}/></>}
   </g>;
+}
+
+function GameInteraction({x,action,prop,frame}: {x:number;action:CartoonAction;prop:CartoonPlan['prop'];frame:number}) {
+  if (action==='work'||action==='console') return <g>
+    <R x={x+11} y={111+frame%3} w={12} h={2} fill={ink}/>
+    <R x={x+20} y={110+frame%3} w={4} h={3} fill="#c4d2c9"/>
+    {frame%12<6&&<><R x={x+24} y={107} w={2} h={2} fill={amber}/><R x={x+27} y={104} w={1} h={1} fill={pale}/></>}
+  </g>;
+  if (action==='carry') return <g>
+    <R x={x+10} y={108} w={16} h={13} fill={ink}/><R x={x+12} y={110} w={12} h={9} fill={prop==='battery'?amber:teal}/>
+  </g>;
+  if (action==='point') return <g><R x={x+11} y={109} w={16} h={3} fill={ink}/><R x={x+25} y={107} w={4} h={7} fill={pale}/></g>;
+  if (action==='react'&&frame%16<8) return <g><R x={x-16} y={91} w={2} h={6} fill={amber}/><R x={x-16} y={99} w={2} h={2} fill={amber}/></g>;
+  return null;
 }
 
 export const PixelStoryShot = ({shot,width,height,speech}: {shot:PixelShot;width:number;height:number;speech:Cue[]}) => {
@@ -113,9 +132,11 @@ export const PixelStoryShot = ({shot,width,height,speech}: {shot:PixelShot;width
     {shot.cartoon.actors.filter(actor=>!/阿拓|AT-1/i.test(actor.name)).map((actor,i)=>{
       const progress=Math.max(0,Math.min(1,frame/Math.max(1,shot.duration)));
       const x=40+320*(actor.from_x+(actor.to_x-actor.from_x)*progress);
+      const effect=<GameInteraction x={Math.round(x)} action={actor.action} prop={shot.cartoon.prop} frame={frame}/>;
       if (actor.body) {
         const stride=actor.action==='walk'?Math.sin((frame+phase*shot.duration)/fps*9):0;
-        return <g key={`${actor.name}-${i}`} transform={`translate(${Math.round(x)} ${Math.round(145-Math.abs(stride)*1.4)})`}>
+        const shake=actor.action==='react'?Math.sin(frame*.8)*1.8:0;
+        return <g key={`${actor.name}-${i}`}>{effect}<g transform={`translate(${Math.round(x+shake)} ${Math.round(145-Math.abs(stride)*1.4)})`}>
           <R x={-14} y={-1} w={28} h={2} fill={ink} opacity={.4}/>
           <g transform={`rotate(${stride*1.5} 0 -25)`}>
             <image href={staticFile(actor.body)} x={-18} y={-64} width={36} height={64}
@@ -127,13 +148,12 @@ export const PixelStoryShot = ({shot,width,height,speech}: {shot:PixelShot;width
               style={{imageRendering:'pixelated',clipPath:'polygon(50% 64%,100% 64%,100% 100%,50% 100%)',
                 transform:`rotate(${-stride*8}deg)`,transformOrigin:'4px -23px'}}/>
           </g>
-        </g>;
+        </g></g>;
       }
-      return <GamePerson key={`${actor.name}-${i}`} name={actor.name} x={x} action={actor.action}
-        frame={frame+phase*shot.duration} fps={fps} speaking={active(actor.name)}/>;
+      return <g key={`${actor.name}-${i}`}>{effect}<GamePerson name={actor.name} x={x} action={actor.action}
+        frame={frame+phase*shot.duration} fps={fps} speaking={active(actor.name)}/></g>;
     })}
     {shot.rover&&<GameRover action={shot.rover.action} frame={frame+phase*shot.duration} fps={fps}/>}
-    {shot.cartoon.prop&&shot.cartoon.prop!=='none'&&<g><R x={83} y={110} w={19} h={8} fill={ink}/><R x={86} y={112} w={13} h={4} fill={shot.cartoon.prop==='battery'?amber:teal}/></g>}
     <R x={0} y={156} w={320} h={3} fill="#1b2d42" opacity={.75}/>
   </svg></AbsoluteFill>;
 };
