@@ -17,6 +17,55 @@ const P = ({points,fill}: {points:string;fill:string}) => <polygon points={point
 
 function GameBackdrop({kind, variant, frame, fps}: {kind: string;variant: number;frame:number;fps:number}) {
   const moon = kind === 'moon', exterior = kind === 'launch', control = kind === 'control';
+  if (['vacuum','cleanroom','fairing','vibration','cable'].includes(kind)) {
+    const bright=kind==='cleanroom', warning=kind==='vibration';
+    const wall=bright?'#7899aa':warning?'#34455c':'#39576c';
+    const floor=bright?'#8ba8ae':'#3f5668';
+    return <g>
+      <R x={0} y={0} w={320} h={180} fill={wall}/>
+      <R x={0} y={0} w={320} h={10} fill="#192d42"/>
+      <R x={0} y={10} w={320} h={3} fill={bright?'#cedbd0':'#78919b'}/>
+      {[24,94,164,234,304].map((x,i)=><g key={i}>
+        <R x={x} y={14} w={4} h={109} fill={bright?'#55788c':'#243a50'}/>
+        <R x={x+4} y={14} w={2} h={109} fill={bright?'#b8c8c5':'#647f90'}/>
+        <R x={x+12} y={17} w={37} h={3} fill={i%2?amber:teal} opacity={.65}/>
+      </g>)}
+      <R x={0} y={122} w={320} h={58} fill={floor}/><R x={0} y={122} w={320} h={3} fill="#c5c5ad"/>
+      {[0,1,2,3].map(i=><g key={i}><R x={i*81+22} y={142} w={47} h={2} fill="#526b7c"/>
+        <R x={i*81+45} y={142} w={2} h={38} fill="#526b7c"/></g>)}
+      {kind==='vacuum'&&<g>
+        <R x={60} y={42} w={89} h={77} fill="#182c42"/><R x={65} y={48} w={79} h={64} fill="#8da7ae"/>
+        <R x={70} y={54} w={69} h={51} fill="#243e58"/><R x={82} y={67} w={43} h={26} fill="#526d82"/>
+        <R x={178} y={51} w={70} h={51} fill="#1c3349"/><R x={184} y={57} w={58} h={37} fill="#45677a"/>
+        <R x={191} y={64} w={43} h={4} fill={frame%(fps*2)<fps?teal:amber}/>
+        <R x={190} y={74} w={32} h={2} fill="#a7c5c1"/>
+      </g>}
+      {kind==='cleanroom'&&<g>
+        <R x={26} y={34} w={120} h={74} fill="#c5d6d0"/><R x={31} y={39} w={110} h={64} fill="#a8c0c3"/>
+        <R x={47} y={46} w={77} h={46} fill="#7797a6"/><R x={171} y={80} w={100} h={8} fill="#d0d6c8"/>
+        <R x={181} y={88} w={5} h={34} fill="#4d687d"/><R x={258} y={88} w={5} h={34} fill="#4d687d"/>
+      </g>}
+      {kind==='fairing'&&<g>
+        <R x={30} y={17} w={8} h={106} fill="#8c9da3"/><R x={282} y={17} w={8} h={106} fill="#8c9da3"/>
+        <R x={38} y={21} w={244} h={6} fill="#aeb9ae"/><R x={43} y={31} w={4} h={91} fill="#78909a"/>
+        <R x={273} y={31} w={4} h={91} fill="#78909a"/>
+        <R x={103} y={45} w={115} h={72} fill="#283f54"/><R x={107} y={49} w={107} h={64} fill="#4f6a7c"/>
+        <R x={156} y={49} w={4} h={64} fill="#a2b8b8"/>
+      </g>}
+      {kind==='vibration'&&<g>
+        <R x={30} y={34} w={48} h={57} fill="#20364e"/><R x={35} y={39} w={38} h={32} fill="#3d6576"/>
+        <R x={41} y={48} w={21} h={4} fill={frame%20<10?'#e6856a':teal}/>
+        <R x={99} y={107} w={172} h={12} fill="#263a4c"/><R x={108} y={110} w={153} h={6} fill="#879a9b"/>
+        <R x={117} y={119} w={8} h={12} fill={ink}/><R x={246} y={119} w={8} h={12} fill={ink}/>
+      </g>}
+      {kind==='cable'&&<g>
+        <R x={35} y={37} w={94} h={68} fill="#243d52"/><R x={40} y={42} w={84} h={58} fill="#6b8894"/>
+        {[0,1,2].map(i=><path key={i} d={`M ${52+i*18} 51 Q ${67+i*15} 82 ${54+i*18} 98`}
+          stroke={i===1?'#e7b06c':'#9fc5be'} strokeWidth="3" fill="none"/>)}
+        <R x={192} y={45} w={78} h={58} fill="#253c53"/><R x={198} y={51} w={66} h={46} fill="#52738a"/>
+      </g>}
+    </g>;
+  }
   if (moon) return <g>
     <R x={0} y={0} w={320} h={180} fill="#152541"/><R x={0} y={0} w={320} h={86} fill="#243d60"/>
     <circle cx="261" cy="39" r="16" fill="#e4e6cb"/><circle cx="256" cy="35" r="4" fill="#c1c9bd"/>
@@ -142,8 +191,15 @@ function EngineeringSetpiece({title,frame,fps,phase}: {title:string;frame:number
 export const PixelStoryShot = ({shot,width,height,speech}: {shot:PixelShot;width:number;height:number;speech:Cue[]}) => {
   const frame=useCurrentFrame(),{fps}=useVideoConfig(), phase=Number(shot.cartoon_phase||0);
   const location=String(shot.location||'')+' '+String(shot.description||'');
+  const sceneTitle=String(shot.scene_title||'');
   const engineeringObject=/整流罩|封舱|包络|线束|折叠|振动|第二轮|锁销|一只眼/.test(`${shot.scene_title||''} ${shot.description||''}`);
-  const kind=/月球|月面|moon|lunar/i.test(location)?'moon':/发射|航天港|launch/i.test(location)?'launch'
+  const kind=/热真空|密封故障|旧故障/.test(sceneTitle)?'vacuum'
+    :/换一圈|洁净/.test(sceneTitle+' '+location)?'cleanroom'
+    :/振动|第二轮/.test(sceneTitle)?'vibration'
+    :/线却|线束/.test(sceneTitle)?'cable'
+    :/整流罩|封舱/.test(sceneTitle)?'fairing'
+    :/月球|月面|moon|lunar/i.test(location)?'moon'
+    :/发射|航天港|launch/i.test(location)?'launch'
     :/控制|通信|监测|control/i.test(location)?'control':'workshop';
   const variant=shot.index%3;
   const focus=shot.cartoon.focus||'wide';
@@ -155,10 +211,9 @@ export const PixelStoryShot = ({shot,width,height,speech}: {shot:PixelShot;width
     &&cue.value!=='X'&&cue.value!=='A'&&shot.from+frame>=cue.from&&shot.from+frame<cue.to);
   return <AbsoluteFill style={{background:'#172236'}}><svg width={width} height={height}
     viewBox={`${viewX} ${viewY} ${viewWidth} ${viewHeight}`} preserveAspectRatio="xMidYMid slice" shapeRendering="crispEdges">
-    {shot.src ? <><image href={staticFile(shot.src)} x={0} y={0} width={320} height={180}
-      preserveAspectRatio="xMidYMid slice" style={{imageRendering:'pixelated'}}/>
-      <R x={0} y={0} w={320} h={180} fill="#182941" opacity={.3}/></>
-      : <GameBackdrop kind={kind} variant={variant} frame={frame} fps={fps}/>}
+    <GameBackdrop kind={kind} variant={variant} frame={frame} fps={fps}/>
+    {shot.src&&<image href={staticFile(shot.src)} x={0} y={0} width={320} height={180}
+      preserveAspectRatio="xMidYMid slice" opacity={.18} style={{imageRendering:'pixelated'}}/>}
     {(shot.rover||engineeringObject)&&<GameRover action={shot.rover?.action||'idle'} frame={frame+phase*shot.duration} fps={fps}/>}
     <EngineeringSetpiece title={`${shot.scene_title||''} ${shot.description||''}`} frame={frame} fps={fps} phase={phase}/>
     {shot.cartoon.actors.filter(actor=>!/阿拓|AT-1/i.test(actor.name)).map((actor,i)=>{

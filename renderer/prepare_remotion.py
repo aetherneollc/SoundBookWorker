@@ -30,8 +30,8 @@ def pixel_story_source(item: dict, public: Path) -> str:
     target = public / f'pixel-{path.stem}.png'
     if not target.exists():
         image = Image.open(path).convert('RGB').resize((320, 180), Image.Resampling.LANCZOS)
-        image = ImageEnhance.Color(image).enhance(.78)
-        image = image.quantize(colors=48, method=Image.Quantize.MEDIANCUT)
+        image = ImageEnhance.Color(image).enhance(.68)
+        image = image.quantize(colors=24, method=Image.Quantize.MEDIANCUT)
         image.save(target)
     return f'media/{target.name}'
 
