@@ -44,7 +44,8 @@ export const PixelStoryShot = ({shot, width, height, speech}: {shot: PixelShot; 
   const driving = Boolean(driver) || shot.rover?.action === 'drive';
   const vehicle = driver?.pose.vehicle ?? (driving ? vehicleMotion(progress) : null);
   const place = `${shot.location || ''} ${shot.scene_title || ''} ${shot.description || ''}`;
-  const setpiece = /热真空|真空试验|thermal.vacuum/i.test(place) ? 'vacuum'
+  const controlCutaway = /整流罩旁/.test(shot.location || '') && /控制室|control room/i.test(shot.description || '');
+  const setpiece = controlCutaway ? 'generic' : /热真空|真空试验|thermal.vacuum/i.test(place) ? 'vacuum'
     : /振动|vibration/i.test(place) ? 'vibration'
     : /整流罩|fairing/i.test(place) ? 'fairing'
     : /集成|装配|assembly|integration/i.test(place) ? 'assembly' : 'generic';
@@ -52,7 +53,9 @@ export const PixelStoryShot = ({shot, width, height, speech}: {shot: PixelShot; 
   const roverAnchor = vehicle?.x ?? (setpiece === 'generic' ? 100 : setpiece === 'fairing' ? 226 : 233);
   const focus = shot.cartoon.focus;
   const cameraEase = Math.min(1, frame / Math.max(1, fps * 0.8));
-  const targetWidth = focus === 'wide' ? 320 : focus === 'actor' ? 290 : focus === 'prop' ? 250 : 260;
+  const actorWidths = [320, 290, 260];
+  const targetWidth = focus === 'wide' ? 320 : focus === 'actor' ? actorWidths[shot.index % actorWidths.length]
+    : focus === 'prop' ? 250 : 260;
   const cameraWidth = 320 - (320 - targetWidth) * cameraEase;
   const cameraHeight = cameraWidth * 9 / 16;
   const targetX = focus === 'actor' ? cast[0]?.pose.pelvis.x ?? 160
