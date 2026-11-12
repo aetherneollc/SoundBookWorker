@@ -196,7 +196,7 @@ const RoverSprite = ({x, y, frame, fps, action, moving, body, scale, width, heig
   if (body) return <g transform={`translate(${Math.round(x)} ${Math.round(y)}) scale(${scale}) rotate(${tilt})`}>
     <ellipse cx={0} cy={0} rx={23} ry={3.2} fill="#10202d" opacity={.48} />
     <g transform={`translate(0 ${Math.sin(frame / Math.max(1, fps) * (moving ? 8 : 1.7)) * (moving ? .8 : .25)})`}>
-      <image href={body} x={-width / 2} y={-height} width={width} height={height} preserveAspectRatio="xMidYMax meet" />
+      <image href={body} x={-width / 2} y={-height} width={width} height={height} preserveAspectRatio="xMidYMax meet" style={{imageRendering: 'pixelated'}} />
     </g>
   </g>;
   return <g transform={`translate(${Math.round(x)} ${Math.round(y)}) scale(${scale}) rotate(${tilt})`}>
@@ -257,7 +257,7 @@ const IllustratedCharacter = ({member, frame, fps, index}: {member: CastMember; 
   const id = `body-${index}`;
   const actorHeight = member.actorHeight || 62;
   const actorWidth = actorHeight * .61;
-  const sheet = <image href={member.body} x={-actorWidth / 2} y={-actorHeight} width={actorWidth} height={actorHeight} preserveAspectRatio="xMidYMax meet" />;
+  const sheet = <image href={member.body} x={-actorWidth / 2} y={-actorHeight} width={actorWidth} height={actorHeight} preserveAspectRatio="xMidYMax meet" style={{imageRendering: 'pixelated'}} />;
   return <g transform={`translate(${Math.round(body.pelvis.x)} ${Math.round(GROUND_Y + bob)}) scale(${body.facing} 1) rotate(${sway})`}>
     <defs>
       <clipPath id={`${id}-arm`}><rect x={8} y={-61} width={15} height={37} /></clipPath>
@@ -358,7 +358,7 @@ export const PixelWorld = ({
   const showRover = roverVisible || Boolean(vehicle);
   return <g>
     {background ? <g>
-      <image href={background} x={0} y={0} width={320} height={180} preserveAspectRatio="xMidYMid slice" />
+      <image href={background} x={0} y={0} width={320} height={180} preserveAspectRatio="xMidYMid slice" style={{imageRendering: 'pixelated'}} />
       <Px x={0} y={0} w={320} h={180} fill="#14263a" opacity={.18} />
     </g> : room === 'interior' ? <Interior world={world} /> : <Exterior world={world} doorOpen={doorOpen} />}
     {(!background || setpiece !== 'generic') && <EngineeringSetpiece kind={setpiece} frame={frame} duration={shotDuration} actionEvent={actionEvent} layer="back" />}
