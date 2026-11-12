@@ -232,18 +232,23 @@ const IllustratedCharacter = ({member, frame, fps, index}: {member: CastMember; 
   const bob = walk ? Math.abs(stride) * .9 : Math.sin(frame / Math.max(1, fps) * (expressive ? 3.1 : 1.7) + index) * (expressive ? 1.1 : .35);
   const sway = body.action === 'react' ? Math.sin(frame / Math.max(1, fps) * 8) * 3
     : expressive ? Math.sin(frame / Math.max(1, fps) * 3.1 + index) * 2.5 : stride * 1.2;
+  const handMotion = body.action === 'work' ? -9 + Math.sin(frame / Math.max(1, fps) * 3.5 + index) * 11
+    : body.action === 'point' ? -19 + Math.sin(frame / Math.max(1, fps) * 2.2 + index) * 4
+      : expressive ? Math.sin(frame / Math.max(1, fps) * 3.1 + index) * 7 : 0;
   const id = `body-${index}`;
   const sheet = <image href={member.body} x={-22} y={-76} width={44} height={76} preserveAspectRatio="xMidYMax meet" />;
   return <g transform={`translate(${Math.round(body.pelvis.x)} ${Math.round(GROUND_Y + bob)}) scale(${body.facing} 1) rotate(${sway})`}>
     <defs>
-      <clipPath id={`${id}-top`}><rect x={-22} y={-76} width={44} height={50} /></clipPath>
+      <clipPath id={`${id}-arm`}><rect x={8} y={-61} width={15} height={37} /></clipPath>
+      <clipPath id={`${id}-torso`}><path d="M-22 -76 H22 V-61 H8 V-26 H-22 Z" /></clipPath>
       <clipPath id={`${id}-left`}><rect x={-22} y={-28} width={22} height={30} /></clipPath>
       <clipPath id={`${id}-right`}><rect x={0} y={-28} width={22} height={30} /></clipPath>
     </defs>
     <ellipse cx={0} cy={1} rx={15} ry={2} fill="#10202d" opacity={.35} />
     <g clipPath={`url(#${id}-left)`} transform={`rotate(${stride * 8} -8 -27)`}>{sheet}</g>
     <g clipPath={`url(#${id}-right)`} transform={`rotate(${-stride * 8} 8 -27)`}>{sheet}</g>
-    <g clipPath={`url(#${id}-top)`} transform={expressive ? `rotate(${Math.sin(frame / Math.max(1, fps) * 3.1 + index) * 2} 0 -27)` : undefined}>{sheet}</g>
+    <g clipPath={`url(#${id}-torso)`} transform={expressive ? `rotate(${Math.sin(frame / Math.max(1, fps) * 3.1 + index) * 2} 0 -27)` : undefined}>{sheet}</g>
+    <g clipPath={`url(#${id}-arm)`} transform={`rotate(${handMotion} 8 -55)`}>{sheet}</g>
     {member.speaking && frame % 9 < 5 && <ellipse cx={0} cy={-63} rx={1.5} ry={1} fill="#803d49" opacity={.7} />}
   </g>;
 };
