@@ -83,7 +83,52 @@ def validate_props(props: dict) -> tuple[list[str], dict]:
             issues.append(f'scene {scene}: fewer than two camera compositions')
         if state['shots'] >= 3 and int(state['events']) < 2:
             issues.append(f'scene {scene}: fewer than two visible action events')
+    duration = int(props.get('durationInFrames') or 0)
+    captions = props.get('captions') if isinstance(props.get('captions'), list) else []
+    audio = props.get('audio') if isinstance(props.get('audio'), list) else []
+    speech_tracks = [track for track in audio if isinstance(track, dict)
+                     and track.get('scene_number') is not None and not track.get('loop')]
+    caption_groups: dict[tuple[int, int], list[dict]] = defaultdict(list)
+    for index, caption in enumerate(captions, 1):
+        if not isinstance(caption, dict):
+            issues.append(f'caption {index}: invalid record')
+            continue
+        start, end = caption.get('from'), caption.get('to')
+        if not isinstance(start, (int, float)) or not isinstance(end, (int, float)) or start < 0 or end <= start:
+            issues.append(f'caption {index}: invalid frame range')
+            continue
+        if duration and end > duration:
+            issues.append(f'caption {index}: extends beyond episode duration')
+        if caption.get('scene_number') is not None and caption.get('dialogue_number') is not None:
+            key = (int(caption['scene_number']), int(caption['dialogue_number']))
+            caption_groups[key].append(caption)
+    for index, track in enumerate(speech_tracks, 1):
+        scene, dialogue = int(track.get('scene_number') or 0), int(track.get('dialogue_number') or 0)
+        start, length = track.get('from'), track.get('duration')
+        if not isinstance(start, (int, float)) or not isinstance(length, (int, float)) or start < 0 or length <= 0:
+            issues.append(f'voice track {index} ({scene}:{dialogue}): missing or invalid timing')
+            continue
+        end = start + length
+        if duration and end > duration + 1:
+            issues.append(f'voice track {index} ({scene}:{dialogue}): extends beyond episode duration')
+        ranges = caption_groups.get((scene, dialogue), [])
+        if not ranges:
+            issues.append(f'voice track {index} ({scene}:{dialogue}): no matching captions')
+            continue
+        first = min(float(caption['from']) for caption in ranges)
+        last = max(float(caption['to']) for caption in ranges)
+        if abs(first - start) > 1 or abs(last - end) > 2:
+            issues.append(f'voice track {index} ({scene}:{dialogue}): captions do not cover the full speech audio')
+    speech_cues = props.get('speech') if isinstance(props.get('speech'), list) else []
+    for index, cue in enumerate(speech_cues, 1):
+        start, end = cue.get('from'), cue.get('to')
+        if not isinstance(start, (int, float)) or not isinstance(end, (int, float)) or start < 0 or end <= start:
+            issues.append(f'speech cue {index}: invalid frame range')
+        elif duration and end > duration:
+            issues.append(f'speech cue {index}: extends beyond episode duration')
     return issues, {'shot_count': len(shots), 'pixel_story_shot_count': pixel_shots,
+                    'caption_count': len(captions), 'voice_track_count': len(speech_tracks),
+                    'speech_cue_count': len(speech_cues),
                     'scene_count': len(per_scene), 'scenes': {
                         str(scene): {'shot_count': state['shots'], 'focuses': sorted(state['focus']),
                                      'action_event_count': state['events']}

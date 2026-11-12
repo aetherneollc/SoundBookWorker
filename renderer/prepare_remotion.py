@@ -176,7 +176,9 @@ def prepare(manifest: Path, output: Path) -> None:
                 offset = 0.0
                 for chunk in chunks:
                     length = duration * max(1, len(chunk.replace(' ', ''))) / total
-                    captions.append({'from': frame(cursor+local+offset, fps), 'to': frame(cursor+local+offset+length, fps), 'text': chunk})
+                    captions.append({'from': frame(cursor+local+offset, fps), 'to': frame(cursor+local+offset+length, fps),
+                                     'text': chunk, 'scene_number': int(scene),
+                                     'dialogue_number': int(track.get('dialogue_number') or 0)})
                     offset += length
                 local += duration + .28
             scene_duration = max(.25, local-.28+.65)
@@ -284,8 +286,13 @@ def prepare(manifest: Path, output: Path) -> None:
         start = (intro_seconds if track.get('loop') else 0) if doc.get('timeline_mode') == 'voice_locked' else (0 if track.get('_full_length') else intro_seconds)
         if not track.get('loop') and track.get('start_ms') is not None:
             start = float(track['start_ms']) / 1000 + (0 if doc.get('timeline_mode') == 'voice_locked' or track.get('_full_length') else intro_seconds)
-        audio.append({'src': source(track, public), 'from': frame(start, fps),
-                      'volume': max(0, min(4, float(track.get('volume', 1)))), 'loop': bool(track.get('loop'))})
+        audio_entry = {'src': source(track, public), 'from': frame(start, fps),
+                       'volume': max(0, min(4, float(track.get('volume', 1)))), 'loop': bool(track.get('loop'))}
+        if not track.get('loop') and track.get('scene_number') is not None:
+            audio_entry.update({'duration': frame(media_duration(Path(track['file'])), fps),
+                                'scene_number': int(track['scene_number']),
+                                'dialogue_number': int(track.get('dialogue_number') or 0)})
+        audio.append(audio_entry)
         if not track.get('loop') and track.get('scene_number') is not None and track.get('speaker') and int(track['scene_number']) in animated_scenes:
             for cue in speech_cues(Path(track['file']), str(track.get('caption_text', '')), str(doc.get('language') or 'zh')):
                 speech.append({'from': frame(start + cue['start'], fps),

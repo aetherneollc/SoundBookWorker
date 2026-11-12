@@ -44,6 +44,29 @@ class QualityReportTests(unittest.TestCase):
         self.assertIn('scene 1: fewer than two camera compositions', issues)
         self.assertIn('scene 1: fewer than two visible action events', issues)
 
+    def test_voice_captions_must_cover_audio_without_overflow(self):
+        props = {'durationInFrames': 240, 'audio': [
+            {'from': 24, 'duration': 48, 'scene_number': 1, 'dialogue_number': 1},
+        ], 'captions': [
+            {'from': 24, 'to': 45, 'scene_number': 1, 'dialogue_number': 1, 'text': '第一句'},
+            {'from': 45, 'to': 72, 'scene_number': 1, 'dialogue_number': 1, 'text': '第二句'},
+        ], 'speech': [{'from': 28, 'to': 66, 'scene_number': 1}]}
+        issues, summary = validate_props(props)
+        self.assertEqual(issues, [])
+        self.assertEqual(summary['voice_track_count'], 1)
+        self.assertEqual(summary['caption_count'], 2)
+        props['captions'][1]['to'] = 60
+        issues, _ = validate_props(props)
+        self.assertTrue(any('captions do not cover the full speech audio' in item for item in issues))
+
+    def test_rejects_caption_and_speech_frames_past_episode_end(self):
+        props = {'durationInFrames': 100,
+                 'captions': [{'from': 90, 'to': 101, 'text': '字幕'}],
+                 'speech': [{'from': 98, 'to': 102, 'scene_number': 1}]}
+        issues, _ = validate_props(props)
+        self.assertIn('caption 1: extends beyond episode duration', issues)
+        self.assertIn('speech cue 1: extends beyond episode duration', issues)
+
     def test_action_evidence_saves_three_frames_and_motion_measure(self):
         import subprocess
         with tempfile.TemporaryDirectory() as tmp:
