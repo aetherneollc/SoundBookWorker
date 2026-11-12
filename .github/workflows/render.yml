@@ -245,14 +245,6 @@ jobs:
             unzip -q rhubarb.zip -d rhubarb-runtime
             echo "RHUBARB_BIN=$PWD/rhubarb-runtime/Rhubarb-Lip-Sync-1.14.0-Linux/rhubarb" >> "$GITHUB_ENV"
           fi
-      - name: Mark running
-        if: ${{ !inputs.qa_mode }}
-        env:
-          CALLBACK_URL: ${{ secrets.CALLBACK_URL }}
-          CALLBACK_TOKEN: ${{ secrets.CALLBACK_TOKEN }}
-          JOB_ID: ${{ inputs.job_id }}
-        run: |
-          curl --fail-with-body --retry 5 --retry-all-errors --retry-delay 3 -sS -X POST "$CALLBACK_URL" -H "Authorization: Bearer $CALLBACK_TOKEN" -H 'Content-Type: application/json' -d "{\"job_id\":\"$JOB_ID\",\"status\":\"running\"}" || echo 'Running status callback failed; continuing with render'
       - name: Install Remotion
         run: npm ci
       - name: Prepare frame-accurate timeline
@@ -272,7 +264,7 @@ jobs:
           JOB_ID: ${{ inputs.job_id }}
         run: |
           python - <<'PY'
-          import os, boto3
+          import json, os, boto3
           from pathlib import Path
           s3=boto3.client('s3',endpoint_url=os.environ['R2_ENDPOINT'],aws_access_key_id=os.environ['AWS_ACCESS_KEY_ID'],aws_secret_access_key=os.environ['AWS_SECRET_ACCESS_KEY'],region_name='auto')
           bucket=os.environ['R2_BUCKET']; prefix=f"renders/{os.environ['JOB_ID']}/qa"
@@ -283,47 +275,43 @@ jobs:
                   s3.upload_file(str(path),bucket,f'{prefix}/{path.name}',ExtraArgs={'ContentType':content_type})
           if Path('output.mp4').is_file():
               s3.upload_file('output.mp4',bucket,f"renders/{os.environ['JOB_ID']}/output.mp4",ExtraArgs={'ContentType':'video/mp4'})
+          report_path=Path('qa/report.json')
+          report=json.loads(report_path.read_text()) if report_path.is_file() else None
+          passed=bool(report and report.get('result')=='technical_pass_visual_review_required')
+          status={'job_id':os.environ['JOB_ID'],'status':'succeeded' if passed else 'failed',
+                  'quality_status':'visual_review_required' if passed else 'failed',
+                  'quality_report_key':f"{prefix}/report.json" if report_path.is_file() else None,
+                  'output_key':f"renders/{os.environ['JOB_ID']}/output.mp4" if Path('output.mp4').is_file() else None,
+                  'error':None if passed else '; '.join((report or {}).get('issues',[]))[:900] or 'render or technical QA did not complete'}
+          s3.put_object(Bucket=bucket,Key=f"renders/{os.environ['JOB_ID']}/status.json",Body=__import__('json').dumps(status).encode(),ContentType='application/json')
           PY
-      - name: Mark succeeded
-        if: ${{ success() && !inputs.qa_mode }}
-        env:
-          CALLBACK_URL: ${{ secrets.CALLBACK_URL }}
-          CALLBACK_TOKEN: ${{ secrets.CALLBACK_TOKEN }}
-          JOB_ID: ${{ inputs.job_id }}
-          OUTPUT_KEY: renders/${{ inputs.job_id }}/output.mp4
-          QA_REPORT_KEY: renders/${{ inputs.job_id }}/qa/report.json
-        run: |
-          curl --fail-with-body --retry 5 --retry-all-errors --retry-delay 3 -sS -X POST "$CALLBACK_URL" -H "Authorization: Bearer $CALLBACK_TOKEN" -H 'Content-Type: application/json' -d "{\"job_id\":\"$JOB_ID\",\"status\":\"succeeded\",\"quality_status\":\"visual_review_required\",\"quality_report_key\":\"$QA_REPORT_KEY\",\"output_key\":\"$OUTPUT_KEY\"}"
       - name: Mark failed
         if: ${{ failure() && !inputs.qa_mode }}
         env:
-          CALLBACK_URL: ${{ secrets.CALLBACK_URL }}
-          CALLBACK_TOKEN: ${{ secrets.CALLBACK_TOKEN }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
           JOB_ID: ${{ inputs.job_id }}
           OUTPUT_KEY: renders/${{ inputs.job_id }}/output.mp4
           QA_REPORT_KEY: renders/${{ inputs.job_id }}/qa/report.json
         run: |
           python - <<'PY'
-          import json, os, time, urllib.error, urllib.request
+          import json, os
           from pathlib import Path
-          error = Path('qa-error.txt').read_text(encoding='utf-8') if Path('qa-error.txt').is_file() else 'workflow failed; inspect GitHub Actions logs'
-          body = json.dumps({'job_id': os.environ['JOB_ID'], 'status': 'failed', 'quality_status': 'failed' if Path('qa/report.json').is_file() else 'not_checked',
-                             'quality_report_key': os.environ['QA_REPORT_KEY'] if Path('qa/report.json').is_file() else None,
-                             'output_key': os.environ['OUTPUT_KEY'] if Path('output.mp4').is_file() else None,
-                             'error': error[:900]}).encode()
-          for attempt in range(5):
-              try:
-                  request = urllib.request.Request(os.environ['CALLBACK_URL'], data=body, headers={
-                      'Authorization': 'Bearer ' + os.environ['CALLBACK_TOKEN'], 'Content-Type': 'application/json'})
-                  urllib.request.urlopen(request, timeout=20).read()
-                  break
-              except urllib.error.HTTPError as exc:
-                  detail = exc.read().decode('utf-8', 'replace')[:300]
-                  print(f'failure callback attempt {attempt + 1}: HTTP {exc.code} {detail}', flush=True)
-                  time.sleep(3)
-              except Exception as exc:
-                  print(f'failure callback attempt {attempt + 1}: {type(exc).__name__}', flush=True)
-                  time.sleep(3)
+          try:
+              import boto3
+              s3=boto3.client('s3',endpoint_url=os.environ['R2_ENDPOINT'],aws_access_key_id=os.environ['AWS_ACCESS_KEY_ID'],aws_secret_access_key=os.environ['AWS_SECRET_ACCESS_KEY'],region_name='auto')
+              report_path=Path('qa/report.json')
+              report=json.loads(report_path.read_text()) if report_path.is_file() else None
+              error=Path('qa-error.txt').read_text(encoding='utf-8') if Path('qa-error.txt').is_file() else '; '.join((report or {}).get('issues',[])) or 'workflow failed; inspect GitHub Actions logs'
+              status={'job_id':os.environ['JOB_ID'],'status':'failed','quality_status':'failed' if report else 'not_checked',
+                      'quality_report_key':os.environ['QA_REPORT_KEY'] if report else None,
+                      'output_key':os.environ['OUTPUT_KEY'] if Path('output.mp4').is_file() else None,'error':error[:900]}
+              s3.put_object(Bucket=os.environ['R2_BUCKET'],Key=f"renders/{os.environ['JOB_ID']}/status.json",Body=json.dumps(status).encode(),ContentType='application/json')
+              print('Failure status saved to R2 for Worker reconciliation.', flush=True)
+          except Exception as exc:
+              print(f'Could not save failure status to R2: {type(exc).__name__}', flush=True)
           PY
       - name: Upload QA preview
         if: ${{ always() && inputs.qa_mode }}
