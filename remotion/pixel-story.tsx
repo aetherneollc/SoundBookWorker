@@ -77,7 +77,7 @@ export const PixelStoryShot = ({shot, width, height, speech}: {shot: PixelShot; 
   return <AbsoluteFill style={{background: '#172236'}}>
     <svg width={width} height={height} viewBox={`${cameraX} ${cameraY} ${cameraWidth} ${cameraHeight}`} preserveAspectRatio="xMidYMid slice" shapeRendering={shot.src ? 'geometricPrecision' : 'crispEdges'}>
       <PixelWorld
-        room={frameRoom(actions, progress, shot.cartoon.world)}
+        room={setpiece !== 'generic' ? 'interior' : frameRoom(actions, progress, shot.cartoon.world)}
         world={world}
         frame={frame}
         fps={fps}
@@ -90,7 +90,7 @@ export const PixelStoryShot = ({shot, width, height, speech}: {shot: PixelShot; 
         entering={actions.includes('enter')}
         setpiece={setpiece}
         roverVisible={roverVisible}
-        background={shot.src && world.room !== 'interior' ? staticFile(shot.src) : undefined}
+        background={shot.src && setpiece === 'generic' && world.room !== 'interior' ? staticFile(shot.src) : undefined}
         stageLayout={stageLayout}
         actionEvent={shot.cartoon.action_event}
         shotDuration={shot.duration}
