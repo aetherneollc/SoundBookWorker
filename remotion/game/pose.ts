@@ -307,12 +307,13 @@ export const pose = (input: PoseFrame): Pose => {
     const shoulder = side === 'left' ? leftShoulder : rightShoulder;
     const dir = side === 'left' ? -1 : 1;
     if (action === 'console' && side === 'right') return {x: CONSOLE_ANCHOR.x, y: CONSOLE_ANCHOR.y};
-    if (action === 'work' && side === 'right') {
+    if ((action === 'work' || action === 'walk') && side === 'right' && input.interactionProgress !== undefined) {
       const t = unit(input.interactionProgress, 1);
       const ready = {x: shoulder.x + 4, y: shoulder.y + 18};
       const contact = {x: pelvis.x + 27, y: pelvis.y - 13};
       return {x: ready.x + (contact.x - ready.x) * t, y: ready.y + (contact.y - ready.y) * t};
     }
+    if (action === 'work' && side === 'right') return {x: pelvis.x + 18, y: pelvis.y - 2};
     if (action === 'point' && side === 'right') return {x: pelvis.x + 26, y: pelvis.y - 12};
     if (action === 'carry') return {x: pelvis.x + 11, y: pelvis.y - 8};
     if (action === 'react') return {x: shoulder.x + dir * 6, y: shoulder.y - 8};

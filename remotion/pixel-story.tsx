@@ -43,18 +43,24 @@ export const PixelStoryShot = ({shot, width, height, speech}: {shot: PixelShot; 
   const interactionProgress = actionEnvelope(actorEvent, progress);
   const eventPoseAction = actorEvent && ['reach', 'press', 'secure', 'inspect'].includes(actorEvent.kind) ? 'work'
     : actorEvent?.kind === 'signal' ? 'point' : undefined;
+  const interactionTargetX = actorEvent?.target === 'rover' ? stageLayout?.rover.x ?? .66
+    : actorEvent?.target === 'panel' ? .62
+      : ['fairing', 'cable', 'latch', 'test_platform'].includes(actorEvent?.target || '') ? .70 : undefined;
   const cast = people.map((actor, actorIndex) => ({
     name: actor.name,
     body: actor.body ? staticFile(actor.body) : undefined,
     speaking: speech.some(cue => cue.scene_number === shot.scene_number && cue.speaker === actor.name
       && cue.value !== 'X' && cue.value !== 'A' && shot.from + frame >= cue.from && shot.from + frame < cue.to),
     pose: pose({
-      action: actorIndex === 0 && eventPoseAction ? eventPoseAction : actor.action,
+      action: actorIndex === 0 && eventPoseAction
+        ? interactionTargetX !== undefined && Math.abs(interactionTargetX - actor.from_x) > .13 ? 'walk' : eventPoseAction
+        : actor.action,
       frame,
       fps,
       duration: shot.duration,
       fromX: actor.from_x,
-      toX: actor.to_x,
+      toX: actorIndex === 0 && interactionTargetX !== undefined
+        ? Math.max(0.08, Math.min(0.92, interactionTargetX + (actor.from_x <= interactionTargetX ? -.06 : .06))) : actor.to_x,
       interactionProgress: actorIndex === 0 ? interactionProgress : undefined,
     }),
     stage: stageLayout?.actors?.[actor.name],
@@ -96,7 +102,8 @@ export const PixelStoryShot = ({shot, width, height, speech}: {shot: PixelShot; 
   const cameraHeight = cameraWidth * 9 / 16;
   const equipmentX = setpiece === 'vacuum' ? 115 : setpiece === 'fairing' ? 222
     : setpiece === 'vibration' ? 230 : setpiece === 'assembly' ? 205 : 160;
-  const targetX = eventFocus && focus === 'wide' ? actionEvent?.subject === 'rover' ? roverAnchor : cast[0]?.pose.pelvis.x ?? 160
+  const targetX = eventFocus && focus === 'wide' ? actionEvent?.subject === 'rover' ? roverAnchor
+    : interactionTargetX !== undefined ? ((cast[0]?.pose.pelvis.x ?? 160) + interactionTargetX * 320) / 2 : cast[0]?.pose.pelvis.x ?? 160
     : focus === 'actor' ? cast[0]?.pose.pelvis.x ?? 160
     : focus === 'robot' ? roverAnchor : focus === 'prop' ? equipmentX : 160;
   const cameraX = Math.max(0, Math.min(320 - cameraWidth, targetX - cameraWidth / 2 + (shot.index % 2 ? -slowDrift : slowDrift)));
