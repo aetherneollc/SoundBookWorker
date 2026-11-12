@@ -61,31 +61,42 @@ const Exterior = ({world, doorOpen}: {world: WorldState; doorOpen: boolean}) => 
   </g>;
 };
 
-const outsideColor = (world: WorldState) => world.light === 'night' ? '#141a2e'
-  : world.weather === 'rain' ? '#60788a' : world.weather === 'dust' ? '#c4a36c' : '#7eacd0';
-
-const Interior = ({world}: {world: WorldState}) => {
+const Interior = ({world, kind}: {world: WorldState; kind: Setpiece}) => {
   const night = world.light === 'night';
-  const wall = night ? '#1c2630' : '#4a5d6e';
-  const wallDark = night ? '#141b22' : '#31414e';
-  const floor = night ? '#1a2118' : '#3e4a40';
-  const outside = outsideColor(world);
+  const accent = kind === 'vibration' ? '#d29a4b' : kind === 'vacuum' ? '#78c3bf' : '#84a8b5';
+  const wall = night ? '#1c2630' : '#344b5a';
+  const wallDark = night ? '#141b22' : '#253846';
+  const floor = night ? '#1a2118' : '#39474a';
   return <g>
     <Px x={0} y={0} w={320} h={180} fill={wall} />
-    <Px x={0} y={0} w={320} h={10} fill={wallDark} />
-    <Px x={0} y={10} w={320} h={3} fill="#85c9c2" />
-    {[18, 78, 138, 250, 300].map(x => <Px key={x} x={x} y={14} w={4} h={GROUND_Y - 14} fill={wallDark} />)}
-    <Px x={200} y={28} w={78} h={42} fill="#172236" />
-    <Px x={204} y={32} w={70} h={34} fill={outside} />
-    <Px x={238} y={32} w={2} h={34} fill="#172236" />
-    <Px x={204} y={48} w={70} h={2} fill="#172236" />
+    <Px x={0} y={0} w={320} h={12} fill={wallDark} />
+    <Px x={0} y={12} w={320} h={3} fill={accent} />
+    {[18, 92, 170, 258, 302].map(x => <g key={x}>
+      <Px x={x} y={16} w={5} h={GROUND_Y - 16} fill={wallDark} />
+      <Px x={x + 1} y={20} w={1} h={GROUND_Y - 25} fill="#627e89" />
+    </g>)}
+    {[40, 116, 198, 278].map(x => <g key={x}>
+      <Px x={x} y={24} w={24} h={4} fill="#213746" />
+      <Px x={x + 3} y={28} w={18} h={2} fill={accent} />
+      <Px x={x + 4} y={40} w={16} h={12} fill="#293f4d" />
+      <Px x={x + 6} y={42} w={12} h={2} fill="#66808a" />
+    </g>)}
+    {/* Solid wall panels prevent generated windows and outdoor skylines from
+        leaking into a room shot. The shelves remain far behind the action lane. */}
+    <Px x={26} y={79} w={56} h={42} fill="#263b49" />
+    <Px x={29} y={82} w={50} h={3} fill="#71909a" />
+    {[91, 103, 115].map(y => <Px key={y} x={29} y={y} w={50} h={2} fill="#536e7b" />)}
+    <Px x={34} y={85} w={9} h={6} fill="#b48145" />
+    <Px x={50} y={85} w={12} h={6} fill="#385769" />
+    <Px x={66} y={85} w={9} h={6} fill="#789099" />
     <Px x={INTERIOR_DOOR_X - 4} y={GROUND_Y - 40} w={26} h={40} fill="#172236" />
-    <Px x={INTERIOR_DOOR_X} y={GROUND_Y - 36} w={16} h={36} fill={outside} />
+    <Px x={INTERIOR_DOOR_X} y={GROUND_Y - 36} w={16} h={36} fill="#415b66" />
     <Px x={INTERIOR_DOOR_X + 14} y={GROUND_Y - 34} w={10} h={34} fill="#6a4a38" />
     <Px x={0} y={GROUND_Y} w={320} h={30} fill={floor} />
-    <Px x={0} y={GROUND_Y} w={320} h={1} fill="#d9e3d5" />
+    <Px x={0} y={GROUND_Y} w={320} h={2} fill="#9aa9a0" />
+    <Px x={0} y={GROUND_Y + 3} w={320} h={1} fill="#263943" />
     {[0, 1, 2, 3, 4, 5, 6].map(i => <Px key={i} x={i * 46 + 8} y={164} w={28} h={2} fill="#2c3a34" />)}
-    <Px x={148} y={16} w={10} h={4} fill="#efb867" />
+    <Px x={148} y={16} w={10} h={4} fill={accent} />
     <Px x={151} y={20} w={4} h={8} fill="#172236" />
   </g>;
 };
@@ -379,7 +390,7 @@ export const PixelWorld = ({
     {background ? <g>
       <image href={background} x={0} y={0} width={320} height={180} preserveAspectRatio="xMidYMid slice" style={{imageRendering: 'pixelated'}} />
       <Px x={0} y={0} w={320} h={180} fill="#14263a" opacity={.18} />
-    </g> : room === 'interior' ? <Interior world={world} /> : <Exterior world={world} doorOpen={doorOpen} />}
+    </g> : room === 'interior' ? <Interior world={world} kind={setpiece} /> : <Exterior world={world} doorOpen={doorOpen} />}
     {(!background || setpiece !== 'generic') && <EngineeringSetpiece kind={setpiece} frame={frame} duration={shotDuration} actionEvent={actionEvent} layer="back" />}
     {!background && showConsole && setpiece === 'generic' && <ConsoleDesk />}
     {showRover && <RoverSprite x={roverX} y={roverY} frame={frame} fps={fps} action={vehicle ? 'drive' : roverAction} moving={Boolean(vehicle)} body={roverBody} scale={roverScale}

@@ -90,7 +90,7 @@ export const PixelStoryShot = ({shot, width, height, speech}: {shot: PixelShot; 
         entering={actions.includes('enter')}
         setpiece={setpiece}
         roverVisible={roverVisible}
-        background={shot.src ? staticFile(shot.src) : undefined}
+        background={shot.src && world.room !== 'interior' ? staticFile(shot.src) : undefined}
         stageLayout={stageLayout}
         actionEvent={shot.cartoon.action_event}
         shotDuration={shot.duration}
