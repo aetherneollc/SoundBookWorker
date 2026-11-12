@@ -66,12 +66,15 @@ def make_rover_sprite(path: Path, output: Path, session) -> bool:
         from rembg import remove
         image = Image.open(io.BytesIO(remove(path.read_bytes(), session=session))).convert('RGBA')
     alpha = image.getchannel('A')
+    occupied = sum(alpha.histogram()[96:]) / (image.width * image.height)
+    if occupied > .62:
+        return False
     box = alpha.point(lambda value: 255 if value >= 96 else 0).getbbox()
     if not box:
         return False
     image = image.crop(box)
     width, height = image.size
-    if not .75 <= width / height <= 3.2:
+    if not 1.45 <= width / height <= 3.4:
         return False
     if width < source.width * .35 or height < source.height * .20:
         return False
