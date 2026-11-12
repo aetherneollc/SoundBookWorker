@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import subprocess
 import sys
@@ -10,6 +11,11 @@ from pathlib import Path
 
 
 DEFAULT_VOICE = {"zh": "Weiguo", "en": "Nathan", "ja": "Saki", "ko": "Junhao"}
+
+
+def speech_cache_id(language: str, voice: str, text: str) -> str:
+    """Stable cache identity for one utterance; changes in text or voice miss safely."""
+    return hashlib.sha256(f"{language}\0{voice}\0{text.strip()}".encode("utf-8")).hexdigest()[:20]
 
 
 def tighten_pacing(path: Path, language: str) -> None:
@@ -75,7 +81,11 @@ def synthesize(manifest_path: Path) -> None:
         voice = str(track.get("tts_voice") or default_voice)
         if voice not in available_voices:
             voice = default_voice
-        output = output_dir / f"line-{count:04d}.wav"
+        # Cache speech by the exact text/voice/language, not by episode line number.
+        # This lets a short-scene rewrite reuse every unchanged utterance while
+        # making stale audio impossible when a line changes in place.
+        cache_id = speech_cache_id(language, voice, text)
+        output = output_dir / f"line-{cache_id}.wav"
         if not output.is_file() or output.stat().st_size < 4096:
             result = runtime.synthesize(
                 text=text, voice=voice, output_audio_path=output,
