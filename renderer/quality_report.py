@@ -147,22 +147,31 @@ def extract_action_evidence(video: Path, props: dict, directory: Path) -> tuple[
                      '-frames:v', '1', '-vf', 'scale=128:72', '-q:v', '5', str(target)])
             samples.append(target)
             files.append(target)
-        with Image.open(samples[0]) as first, Image.open(samples[-1]) as last:
-            height = min(first.height, last.height)
-            width = min(first.width, last.width)
-            # Ignore the lower subtitle band so text changes do not masquerade
-            # as character or prop movement.
-            crop_height = max(1, int(height * .82))
-            a = first.convert('RGB').crop((0, 0, width, crop_height))
-            b = last.convert('RGB').crop((0, 0, width, crop_height))
-            channels = ImageStat.Stat(ImageChops.difference(a, b)).mean
-            difference = sum(channels) / (3 * 255)
+        def frame_difference(first: Path, last: Path) -> float:
+            with Image.open(first) as a_image, Image.open(last) as b_image:
+                height = min(a_image.height, b_image.height)
+                width = min(a_image.width, b_image.width)
+                # Ignore the lower subtitle band so text changes do not masquerade
+                # as character or prop movement.
+                crop_height = max(1, int(height * .82))
+                a = a_image.convert('RGB').crop((0, 0, width, crop_height))
+                b = b_image.convert('RGB').crop((0, 0, width, crop_height))
+                channels = ImageStat.Stat(ImageChops.difference(a, b)).mean
+                return sum(channels) / (3 * 255)
+
+        before_contact = frame_difference(samples[0], samples[1])
+        contact_after = frame_difference(samples[1], samples[-1])
+        # A timed gesture returns to its initial pose after contact, so comparing
+        # only its first and last frames falsely reports zero movement.
+        difference = max(before_contact, contact_after)
         evidence.append({
             'shot_index': index,
             'scene_number': int(shot.get('scene_number') or 0),
             'action_kind': event.get('kind'),
             'start_contact_end': [event.get('start'), event.get('contact'), event.get('end')],
             'mean_frame_difference': round(difference, 4),
+            'before_contact_difference': round(before_contact, 4),
+            'contact_after_difference': round(contact_after, 4),
             'motion_signal': 'low' if difference < .012 else 'visible_change',
             'frames': [path.name for path in samples],
         })

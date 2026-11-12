@@ -72,7 +72,7 @@ export const PixelStoryShot = ({shot, width, height, speech}: {shot: PixelShot; 
         : actionEvent.kind === 'move' ? 'drive'
           : actionEvent.kind === 'fall' || actionEvent.kind === 'recover' ? actionEvent.kind : undefined
     : undefined;
-  const roverAction = shot.rover?.action && shot.rover.action !== 'idle' ? shot.rover.action : eventRoverAction || 'idle';
+  const roverAction = eventRoverAction || (shot.rover?.action && shot.rover.action !== 'idle' ? shot.rover.action : 'idle');
   const place = `${shot.location || ''} ${shot.scene_title || ''} ${shot.description || ''}`;
   const controlCutaway = /整流罩旁/.test(shot.location || '') && /控制室|control room/i.test(shot.description || '');
   const layoutId = stageLayout?.setpiece.id;
@@ -87,15 +87,17 @@ export const PixelStoryShot = ({shot, width, height, speech}: {shot: PixelShot; 
   const roverVisible = Boolean(shot.rover || vehicle || /阿拓|AT-1|机器人|月球车|探测车|rover/i.test(place));
   const roverAnchor = vehicle?.x ?? (stageLayout?.rover.x ?? (setpiece === 'generic' ? 100 / 320 : setpiece === 'fairing' ? 226 / 320 : 233 / 320)) * 320;
   const focus = shot.cartoon.focus;
+  const eventFocus = actionEvent?.subject !== 'environment' && ['reach', 'press', 'secure', 'inspect', 'signal'].includes(actionEvent?.kind || '');
   const cameraEase = Math.min(1, frame / Math.max(1, fps * 0.8));
   const slowDrift = Math.min(1, frame / Math.max(1, shot.duration)) * 10;
-  const targetWidth = focus === 'wide' ? 320 : focus === 'actor' ? 210
+  const targetWidth = focus === 'wide' ? eventFocus ? 260 : 320 : focus === 'actor' ? 210
     : focus === 'robot' ? 200 : focus === 'prop' ? 190 : 235;
   const cameraWidth = 320 - (320 - targetWidth) * cameraEase;
   const cameraHeight = cameraWidth * 9 / 16;
   const equipmentX = setpiece === 'vacuum' ? 115 : setpiece === 'fairing' ? 222
     : setpiece === 'vibration' ? 230 : setpiece === 'assembly' ? 205 : 160;
-  const targetX = focus === 'actor' ? cast[0]?.pose.pelvis.x ?? 160
+  const targetX = eventFocus && focus === 'wide' ? actionEvent?.subject === 'rover' ? roverAnchor : cast[0]?.pose.pelvis.x ?? 160
+    : focus === 'actor' ? cast[0]?.pose.pelvis.x ?? 160
     : focus === 'robot' ? roverAnchor : focus === 'prop' ? equipmentX : 160;
   const cameraX = Math.max(0, Math.min(320 - cameraWidth, targetX - cameraWidth / 2 + (shot.index % 2 ? -slowDrift : slowDrift)));
   const cameraY = Math.max(0, 180 - cameraHeight - 7);
