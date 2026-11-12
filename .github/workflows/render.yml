@@ -96,6 +96,15 @@ jobs:
                       layers['mouth_files'][shape]=name
           portrait_files={}
           for shot in doc.get('shots', []):
+              rover=shot.get('rover')
+              if isinstance(rover, dict) and rover.get('body_key'):
+                  key=rover['body_key']
+                  if key not in portrait_files:
+                      n+=1
+                      name=f"media/{n:05d}-{Path(key).name}"
+                      s3.download_file(bucket,key,name)
+                      portrait_files[key]=name
+                  rover['body_file']=portrait_files[key]
               cartoon=shot.get('cartoon')
               if not isinstance(cartoon, dict):
                   continue

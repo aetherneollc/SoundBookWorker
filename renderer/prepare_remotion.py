@@ -107,6 +107,12 @@ def prepare(manifest: Path, output: Path) -> None:
         src = (pixel_story_source(shot, public) if shot.get('pixel_story') else source(shot, public)) if shot.get('file') else ''
         prepared = {**shot, 'src': src, 'from': cursor_frame,
                     'duration': duration_frames, 'index': i}
+        rover = shot.get('rover') if isinstance(shot.get('rover'), dict) else None
+        if rover:
+            prepared_rover = {k: v for k, v in rover.items() if not k.endswith('_file') and not k.endswith('_key')}
+            if rover.get('body_file') and Path(rover['body_file']).is_file():
+                prepared_rover['body'] = source({'file': rover['body_file']}, public)
+            prepared['rover'] = prepared_rover
         cartoon = shot.get('cartoon') if isinstance(shot.get('cartoon'), dict) else None
         if cartoon:
             cast = []

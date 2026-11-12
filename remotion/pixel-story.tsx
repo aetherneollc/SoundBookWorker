@@ -15,7 +15,7 @@ type PixelShot = {
   description?: string;
   cartoon: CartoonPlan;
   cartoon_phase?: number;
-  rover?: {action: string; speaker: string};
+  rover?: {action: string; speaker: string; body?: string};
 };
 
 // Subtitles stay in video.tsx. Illustrated series assets are reused across shots;
@@ -74,6 +74,7 @@ export const PixelStoryShot = ({shot, width, height, speech}: {shot: PixelShot; 
         progress={progress}
         vehicle={vehicle}
         roverAction={shot.rover?.action || 'idle'}
+        roverBody={shot.rover?.body ? staticFile(shot.rover.body) : undefined}
         prop={shot.cartoon.prop}
         cast={cast}
         entering={actions.includes('enter')}

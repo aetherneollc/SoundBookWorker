@@ -152,7 +152,7 @@ const EngineeringSetpiece = ({kind, frame}: {kind: Setpiece; frame: number}) => 
   return null;
 };
 
-const RoverSprite = ({x, y, frame, fps, action, moving}: {x: number; y: number; frame: number; fps: number; action: string; moving: boolean}) => {
+const RoverSprite = ({x, y, frame, fps, action, moving, body}: {x: number; y: number; frame: number; fps: number; action: string; moving: boolean; body?: string}) => {
   const spin = moving ? frame * 22 : 0;
   const reach = action === 'reach' || action === 'sample';
   const wave = Math.sin(frame / Math.max(1, fps) * (reach ? 3 : 1.5));
@@ -161,6 +161,12 @@ const RoverSprite = ({x, y, frame, fps, action, moving}: {x: number; y: number; 
   const blink = action === 'signal' && frame % 16 < 8;
   const tilt = !moving && action === 'fall' ? Math.min(14, frame / Math.max(1, fps) * 9)
     : !moving && action === 'recover' ? Math.max(0, 14 - frame / Math.max(1, fps) * 7) : 0;
+  if (body) return <g transform={`translate(${Math.round(x)} ${Math.round(y)}) rotate(${tilt})`}>
+    <ellipse cx={0} cy={0} rx={26} ry={2.2} fill="#10202d" opacity={.3} />
+    <g transform={`translate(0 ${Math.sin(frame / Math.max(1, fps) * (moving ? 8 : 1.7)) * (moving ? .8 : .25)})`}>
+      <image href={body} x={-30} y={-45} width={60} height={45} preserveAspectRatio="xMidYMax meet" />
+    </g>
+  </g>;
   return <g transform={`translate(${Math.round(x)} ${Math.round(y)}) rotate(${tilt})`}>
     <ellipse cx={0} cy={0} rx={26} ry={2.2} fill="#10202d" opacity={.35} />
     {[-17, 17].map(wx => <g key={wx} transform={`translate(${wx} -7)`}>
@@ -277,7 +283,7 @@ const Wash = ({light}: {light: Light}) => {
 };
 
 export const PixelWorld = ({
-  room, world, frame, fps, progress, vehicle, roverAction, prop, cast, entering, setpiece, roverVisible, background,
+  room, world, frame, fps, progress, vehicle, roverAction, roverBody, prop, cast, entering, setpiece, roverVisible, background,
 }: {
   room: Room;
   world: WorldState;
@@ -286,6 +292,7 @@ export const PixelWorld = ({
   progress: number;
   vehicle: VehicleMotion | null;
   roverAction: string;
+  roverBody?: string;
   prop?: CartoonPlan['prop'];
   cast: CastMember[];
   entering: boolean;
@@ -306,7 +313,7 @@ export const PixelWorld = ({
     </g> : room === 'interior' ? <Interior world={world} /> : <Exterior world={world} doorOpen={doorOpen} />}
     {(!background || setpiece === 'fairing') && <EngineeringSetpiece kind={setpiece} frame={frame} />}
     {!background && showConsole && setpiece === 'generic' && <ConsoleDesk />}
-    {showRover && <RoverSprite x={roverX} y={roverY} frame={frame} fps={fps} action={vehicle ? 'drive' : roverAction} moving={Boolean(vehicle)} />}
+    {showRover && <RoverSprite x={roverX} y={roverY} frame={frame} fps={fps} action={vehicle ? 'drive' : roverAction} moving={Boolean(vehicle)} body={roverBody} />}
     {cast.map((member, index) => <Character key={`${member.name}-${index}`} member={member} prop={prop} frame={frame} fps={fps} index={index} />)}
     <Wash light={world.light} />
     {rainDrops(world.weather, frame).map((drop, index) => <Px key={`rain-${index}`} x={drop.x} y={drop.y} w={1} h={3} fill="#d5e7f4" />)}
