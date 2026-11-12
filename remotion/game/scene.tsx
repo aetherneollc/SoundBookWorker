@@ -133,18 +133,31 @@ const EngineeringSetpiece = ({kind, frame}: {kind: Setpiece; frame: number}) => 
     <Px x={195} y={40} w={30} h={18} fill="#1c3444" /><Px x={199} y={44} w={22} h={10} fill="#75b5ba" />
   </g>;
   if (kind === 'fairing') {
-    const separation = 4 + Math.sin(frame / 55) * 1.4;
+    const separation = 4 + Math.sin(frame / 55) * 2.4;
     const shell = (mirror: boolean) => <g transform={mirror ? `translate(${260 + separation} 0) scale(-1 1)` : `translate(${184 - separation} 0)`}>
-      <path d="M0 141 L0 56 Q1 38 12 20 Q25 38 29 57 L29 141 Z" fill="#edf1ec" stroke="#344e61" strokeWidth="1.7" />
-      <path d="M2 137 L2 58 Q3 43 12 25 Q19 43 21 58 L21 137 Z" fill="#d7e4e5" stroke="#6b8b98" strokeWidth="1" />
-      <path d="M21 59 L21 139" stroke="#4e6979" strokeWidth="2" />
-      {[69, 85, 101, 117, 132].map(y => <path key={y} d={`M4 ${y} Q12 ${y - 5} 21 ${y}`} fill="none" stroke="#8caeb5" strokeWidth="1" />)}
-      <path d="M23 59 L29 59 M23 137 L29 137" stroke="#d39d51" strokeWidth="2" />
+      <path d="M0 141 L0 57 Q1 36 12 18 Q25 37 30 58 L30 141 Z" fill="url(#fairing-outer)" stroke="#344e61" strokeWidth="1.7" />
+      <path d="M3 137 L3 59 Q4 43 12 25 Q19 43 22 60 L22 137 Z" fill="url(#fairing-inner)" stroke="#6b8b98" strokeWidth="1" />
+      <path d="M22 59 L22 140" stroke="#2f4b5d" strokeWidth="2.8" />
+      <path d="M26 59 L26 140" stroke="#f2f5ef" strokeWidth="1" />
+      {[67, 81, 95, 109, 123, 136].map(y => <g key={y}>
+        <path d={`M4 ${y} Q12 ${y - 5} 22 ${y}`} fill="none" stroke="#7a9ba8" strokeWidth="1.2" />
+        <path d={`M6 ${y + 1} L12 ${y + 8} L20 ${y + 1}`} fill="none" stroke="#a7bdc0" strokeWidth=".5" />
+      </g>)}
+      {[72, 95, 118, 136].map(y => <circle key={y} cx={26} cy={y} r={1.25} fill="#d6a25e" stroke="#6e7470" strokeWidth=".45" />)}
+      <path d="M28 58 L34 58 M28 137 L34 137" stroke="#d39d51" strokeWidth="2" />
     </g>;
     return <g>
+      <defs>
+        <linearGradient id="fairing-outer" x1="0" x2="1" y1="0" y2="0"><stop stopColor="#faf9ec" /><stop offset=".47" stopColor="#d3e2e2" /><stop offset="1" stopColor="#7895a3" /></linearGradient>
+        <linearGradient id="fairing-inner" x1="0" x2="1" y1="0" y2="0"><stop stopColor="#e8f0eb" /><stop offset=".65" stopColor="#a8c0c4" /><stop offset="1" stopColor="#668796" /></linearGradient>
+      </defs>
       <ellipse cx="222" cy="148" rx="73" ry="5" fill="#182b39" opacity=".3" />
       <path d="M144 145 H300 M144 151 H300" stroke="#3d5866" strokeWidth="2" />
       {[158, 195, 249, 286].map(x => <path key={x} d={`M${x} 143 V153`} stroke="#8fa9ad" strokeWidth="1.5" />)}
+      <path d="M215 139 V67 Q217 57 222 54 Q227 57 229 67 V139 Z" fill="#d7e5e7" stroke="#344e61" strokeWidth="1.5" />
+      <path d="M218 74 H226 V92 H218 Z M218 99 H226 V125 H218 Z" fill="#335466" stroke="#80a6ae" strokeWidth=".8" />
+      {[96, 130].map(y => <path key={y} d={`M213 ${y} H231`} stroke="#dca75c" strokeWidth="2" />)}
+      <path d="M229 111 Q241 111 246 118" fill="none" stroke="#db8055" strokeWidth="1.2" />
       {shell(false)}{shell(true)}
       <path d="M197 140 H247" stroke="#e0af68" strokeWidth="1.4" strokeDasharray="3 3" />
     </g>;
