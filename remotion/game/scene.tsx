@@ -175,7 +175,7 @@ const RoverSprite = ({x, y, frame, fps, action, moving, body}: {x: number; y: nu
   const tilt = !moving && action === 'fall' ? Math.min(14, frame / Math.max(1, fps) * 9)
     : !moving && action === 'recover' ? Math.max(0, 14 - frame / Math.max(1, fps) * 7) : 0;
   if (body) return <g transform={`translate(${Math.round(x)} ${Math.round(y)}) rotate(${tilt})`}>
-    <ellipse cx={0} cy={0} rx={26} ry={2.2} fill="#10202d" opacity={.3} />
+    <ellipse cx={0} cy={0} rx={29} ry={4} fill="#10202d" opacity={.48} />
     <g transform={`translate(0 ${Math.sin(frame / Math.max(1, fps) * (moving ? 8 : 1.7)) * (moving ? .8 : .25)})`}>
       <image href={body} x={-36} y={-48} width={72} height={48} preserveAspectRatio="xMidYMax meet" />
     </g>

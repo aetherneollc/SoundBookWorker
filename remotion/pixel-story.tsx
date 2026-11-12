@@ -48,7 +48,7 @@ export const PixelStoryShot = ({shot, width, height, speech}: {shot: PixelShot; 
   const controlCutaway = /整流罩旁/.test(shot.location || '') && /控制室|control room/i.test(shot.description || '');
   const setpiece = controlCutaway ? 'generic' : /热真空|真空试验|thermal.vacuum/i.test(place) ? 'vacuum'
     : /振动|vibration/i.test(place) ? 'vibration'
-    : /整流罩|fairing/i.test(place) ? 'fairing'
+    : /整流罩|载荷集成大厅|封舱|fairing/i.test(place) ? 'fairing'
     : /集成|装配|assembly|integration/i.test(place) ? 'assembly' : 'generic';
   const roverVisible = Boolean(shot.rover || vehicle || /阿拓|AT-1|机器人|月球车|探测车|rover/i.test(place));
   const roverAnchor = vehicle?.x ?? (setpiece === 'generic' ? 100 : setpiece === 'fairing' ? 226 : 233);
