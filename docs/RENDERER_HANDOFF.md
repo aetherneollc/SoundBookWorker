@@ -10,6 +10,12 @@
 
 2026-11-12 已增加 `renderer/quality_report.py`：正式 Action 在上传前验证视频流、时长/分辨率、舞台布局、每场镜头焦点与显式动作事件，并生成逐镜中心帧及联系表。报告与抽帧上传到 `renders/<job-id>/qa/`；技术检查失败会使任务失败，保留报告和失败 MP4。技术通过只标为 `visual_review_required`，因为当前尚无语义视觉审核器。CF 控制端将其显示为“待画面复核”，MCP 同样返回质量状态。不要把 `technical_pass_visual_review_required` 改写成 `approved`。
 
+## 2026-11-12：整集复核与运行时缓存
+
+第 6 集最新技术通过 Action `43244261874` 产出 518.101 秒 720p MP4（8 场、24 镜），但只通过结构化/技术 QA。联系表 `/tmp/soundbook-ep6-pixel-v2-contact.jpg` 已人工检查：场景背景已替换为低细节剧情游戏美术，并保留 48 色以内的建筑细节；角色/设备层仍存在比例与拥挤问题。结果状态必须保持 `visual_review_required`，不能标为成片批准。完整结论见 SoundBookCF 的 `docs/ANIMATION_EXECUTION_STATUS.md`。
+
+MOSS 逐句缓存使用语言、声线和台词内容的 SHA-256 前缀作文件名，因此只改部分对白时可安全复用其他语音。GitHub Actions 使用 `actions/cache/restore` 和 `actions/cache/save`，缓存按内容版本恢复；失败时可保存已经成功合成的音频，避免重做完整 TTS。背景底图经过尺寸/色彩规整，并以 `image-rendering: pixelated` 与角色资产统一为剧情游戏像素视觉；请在更换色板/缩放策略前先对比完整联系表和动作抽帧。
+
 控制端的科学像素故事编剧还会在图片生成前检查每场至少两个有效、带接触时点的动作事件。若模型连续生成不合格场景，生产流程会重试该场，不能通过减少每场动作数来绕开渲染器的质量门槛。
 
 ## 2026-11-11：2D 游戏式剧情渲染
