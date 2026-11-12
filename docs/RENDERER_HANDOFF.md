@@ -33,3 +33,5 @@ Action `43249555084` 完成 518.101 秒全片，24 镜技术 QA 通过，但人�
 修正地点解析后的 Action `43264011872`、render `b22bfbc6-999b-46a2-9945-17c8cc7d1ffd` 完成 518.101 秒全片，技术 QA 通过。联系表 `/tmp/soundbook-ep6-v16-contact.jpg` 证明模型仍在室内背景中画出城市和天空，因此新修复不再依赖室内生图提示词：`pixel-story.tsx` 对室内场景忽略 AI 背景，`game/scene.tsx` 以程序化封闭墙面、地板、梁柱和远景架绘制像素舞台；室外继续用 AI 背景。本版尚未全片复渲，需以新的联系表复核。
 
 首次程序舞台 Action `43267534964`、render `4e9cbeb9-0cc7-464b-8d35-91c63707fb42` 全片技术检查通过。联系表 `/tmp/soundbook-ep6-v17-contact.jpg` 表明，仍有几镜因旧版 `cartoon.world.room` 字段不准确而套回 AI 城市背景。新提交强制所有识别到真空舱/装配/振动台/整流罩的 setpiece 走室内像素舞台，并固定为室内房间。需要在该最新提交上再跑完整片，检查 24 镜都不混入室外背景。比例、可读动作和声音同步仍未完整验收。
+
+修正后的 Action `43271437318`、render `16489fbe-a4bd-416f-a833-c4c107612e65` 完整技术通过，联系表 `/tmp/soundbook-ep6-v18-contact.jpg` 已逐镜检查：工程场景不再混入城市/天空背景，风格统一；程序化墙面较朴素，动作叙事和完整音频/字幕仍需验收。状态继续保持 `visual_review_required`。SoundBookWorker 提交 `a5e5c7e`，SoundBookCF 当前场景解析提交 `5aef198`；项目中还有后续文档提交。测试：TS 类型检查、8 项 renderer/QA Python 测试通过。
