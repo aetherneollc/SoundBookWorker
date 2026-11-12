@@ -61,6 +61,7 @@ class QualityReportTests(unittest.TestCase):
             self.assertEqual(len(evidence), 1)
             self.assertEqual(len(evidence[0]['frames']), 3)
             self.assertGreater(evidence[0]['mean_frame_difference'], 0)
+            self.assertEqual(evidence[0]['motion_signal'], 'visible_change')
             self.assertEqual(contact, 'action-contact.jpg')
             self.assertTrue((root / 'qa' / contact).is_file())
 

@@ -6,7 +6,7 @@ import {
   dustMotes, rainDrops, type Light, type Pose, type Room, type VehicleMotion, type WorldState,
 } from './pose';
 
-export type CastMember = {name: string; pose: Pose; speaking: boolean; body?: string; stage?: StageAnchor; actorHeight?: number};
+export type CastMember = {name: string; pose: Pose; speaking: boolean; body?: string; stage?: StageAnchor; actorHeight?: number; actionEvent?: CartoonActionEvent};
 
 const Px = ({x, y, w, h, fill, opacity = 1}: {x: number; y: number; w: number; h: number; fill: string; opacity?: number}) =>
   <rect x={x} y={y} width={w} height={h} fill={fill} opacity={opacity} />;
@@ -273,16 +273,26 @@ const Held = ({body, prop}: {body: Pose; prop?: CartoonPlan['prop']}) => {
   return null;
 };
 
-const IllustratedCharacter = ({member, frame, fps, index}: {member: CastMember; frame: number; fps: number; index: number}) => {
+const IllustratedCharacter = ({member, frame, fps, index, duration}: {member: CastMember; frame: number; fps: number; index: number; duration: number}) => {
   const {pose: body} = member;
+  const event = member.actionEvent;
+  const actionTime = Math.max(0, Math.min(1, frame / Math.max(1, duration)));
+  const contactTime = event?.contact ?? .52;
+  const actionTravel = event && ['reach', 'press', 'secure', 'inspect', 'signal'].includes(event.kind)
+    ? actionTime < (event.start ?? 0) || actionTime >= (event.end ?? 1) ? 0
+      : actionTime < contactTime
+        ? Math.max(0, Math.min(1, (actionTime - (event.start ?? 0)) / Math.max(.01, contactTime - (event.start ?? 0))))
+        : 1
+    : 0;
   const walk = body.action === 'walk' || body.action === 'enter';
   const expressive = member.speaking || body.action === 'talk' || body.action === 'point';
   const stride = walk ? Math.sin(frame / Math.max(1, fps) * 9 + index) : 0;
   const bob = walk ? Math.abs(stride) * .9 : Math.sin(frame / Math.max(1, fps) * (expressive ? 3.1 : 1.7) + index) * (expressive ? 1.1 : .35);
   const sway = body.action === 'react' ? Math.sin(frame / Math.max(1, fps) * 8) * 3
     : expressive ? Math.sin(frame / Math.max(1, fps) * 3.1 + index) * 2.5 : stride * 1.2;
-  const handMotion = body.action === 'work' ? -9 + Math.sin(frame / Math.max(1, fps) * 3.5 + index) * 11
-    : body.action === 'point' ? -19 + Math.sin(frame / Math.max(1, fps) * 2.2 + index) * 4
+  const handMotion = actionTravel > 0 ? -12 - actionTravel * 58
+    : body.action === 'work' ? -16 + Math.sin(frame / Math.max(1, fps) * 3.5 + index) * 22
+    : body.action === 'point' ? -30 + Math.sin(frame / Math.max(1, fps) * 2.2 + index) * 12
       : expressive ? Math.sin(frame / Math.max(1, fps) * 3.1 + index) * 7 : 0;
   const id = `body-${index}`;
   const actorHeight = member.actorHeight || 62;
@@ -304,8 +314,8 @@ const IllustratedCharacter = ({member, frame, fps, index}: {member: CastMember; 
   </g>;
 };
 
-const Character = ({member, prop, frame, fps, index}: {member: CastMember; prop?: CartoonPlan['prop']; frame: number; fps: number; index: number}) => {
-  if (member.body) return <IllustratedCharacter member={member} frame={frame} fps={fps} index={index} />;
+const Character = ({member, prop, frame, fps, duration, index}: {member: CastMember; prop?: CartoonPlan['prop']; frame: number; fps: number; duration: number; index: number}) => {
+  if (member.body) return <IllustratedCharacter member={member} frame={frame} fps={fps} duration={duration} index={index} />;
   const {pose: body} = member;
   const atlas = limbAtlas(member.name);
   const limbs = atlas.limbs;
@@ -401,7 +411,7 @@ export const PixelWorld = ({
       const scale = anchor ? 0.70 + anchor.depth * 0.46 : 1;
       const x = member.pose.pelvis.x;
       return <g key={`${member.name}-${index}`} transform={`translate(${Math.round(x)} ${Math.round(ground)}) scale(${scale}) translate(${-Math.round(x)} ${-GROUND_Y})`}>
-        <Character member={member} prop={prop} frame={frame} fps={fps} index={index} />
+        <Character member={member} prop={prop} frame={frame} fps={fps} duration={shotDuration} index={index} />
       </g>;
     })}
     {setpiece === 'fairing' && <EngineeringSetpiece kind="fairing" frame={frame} duration={shotDuration} actionEvent={actionEvent} layer="front" />}

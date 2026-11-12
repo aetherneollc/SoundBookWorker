@@ -163,6 +163,7 @@ def extract_action_evidence(video: Path, props: dict, directory: Path) -> tuple[
             'action_kind': event.get('kind'),
             'start_contact_end': [event.get('start'), event.get('contact'), event.get('end')],
             'mean_frame_difference': round(difference, 4),
+            'motion_signal': 'low' if difference < .012 else 'visible_change',
             'frames': [path.name for path in samples],
         })
     if not files:
@@ -238,6 +239,7 @@ def run(manifest_path: Path, props_path: Path, video: Path, out_dir: Path) -> di
         'exact_duplicate_center_frames': duplicate_count,
         'frame_files': frame_names,
         'action_evidence': action_evidence,
+        'low_motion_evidence_count': sum(item.get('motion_signal') == 'low' for item in action_evidence),
         'action_contact_file': action_contact_file,
         'visual_semantic_review': 'not_run',
     }

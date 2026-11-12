@@ -28,7 +28,7 @@ export const PixelStoryShot = ({shot, width, height, speech}: {shot: PixelShot; 
   const world = resolveWorld(shot.cartoon.world);
   const stageLayout = shot.stage_layout || shot.cartoon.stage_layout;
   const people = shot.cartoon.actors.filter(actor => !/阿拓|AT-1/i.test(actor.name));
-  const cast = people.map(actor => ({
+  const cast = people.map((actor, actorIndex) => ({
     name: actor.name,
     body: actor.body ? staticFile(actor.body) : undefined,
     speaking: speech.some(cue => cue.scene_number === shot.scene_number && cue.speaker === actor.name
@@ -43,11 +43,20 @@ export const PixelStoryShot = ({shot, width, height, speech}: {shot: PixelShot; 
     }),
     stage: stageLayout?.actors?.[actor.name],
     actorHeight: stageLayout?.dimensions?.actor_height,
+    actionEvent: actorIndex === 0 ? shot.cartoon.action_event : undefined,
   }));
   const actions: PoseAction[] = people.map(actor => actor.action);
   const driver = cast.find(member => member.pose.action === 'drive');
   const driving = Boolean(driver) || shot.rover?.action === 'drive';
   const vehicle = driver?.pose.vehicle ?? (driving ? vehicleMotion(progress) : null);
+  const actionEvent = shot.cartoon.action_event;
+  const eventRoverAction = actionEvent?.target === 'rover' || actionEvent?.subject === 'rover'
+    ? actionEvent.kind === 'signal' ? 'signal'
+      : actionEvent.kind === 'sample' || actionEvent.kind === 'reach' ? 'sample'
+        : actionEvent.kind === 'move' ? 'drive'
+          : actionEvent.kind === 'fall' || actionEvent.kind === 'recover' ? actionEvent.kind : undefined
+    : undefined;
+  const roverAction = shot.rover?.action && shot.rover.action !== 'idle' ? shot.rover.action : eventRoverAction || 'idle';
   const place = `${shot.location || ''} ${shot.scene_title || ''} ${shot.description || ''}`;
   const controlCutaway = /整流罩旁/.test(shot.location || '') && /控制室|control room/i.test(shot.description || '');
   const layoutId = stageLayout?.setpiece.id;
@@ -83,7 +92,7 @@ export const PixelStoryShot = ({shot, width, height, speech}: {shot: PixelShot; 
         fps={fps}
         progress={progress}
         vehicle={vehicle}
-        roverAction={shot.rover?.action || 'idle'}
+        roverAction={roverAction}
         roverBody={shot.rover?.body ? staticFile(shot.rover.body) : undefined}
         prop={shot.cartoon.prop}
         cast={cast}
