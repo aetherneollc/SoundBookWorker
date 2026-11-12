@@ -1,6 +1,10 @@
 import unittest
+import json
+import tempfile
+from pathlib import Path
+from unittest.mock import patch
 
-from renderer.quality_report import inspect_layout, validate_props
+from renderer.quality_report import inspect_layout, run, validate_props
 
 
 def shot(scene: int, focus: str, event: bool = True) -> dict:
@@ -39,6 +43,20 @@ class QualityReportTests(unittest.TestCase):
         issues, _ = validate_props(props)
         self.assertIn('scene 1: fewer than two camera compositions', issues)
         self.assertIn('scene 1: fewer than two visible action events', issues)
+
+    def test_missing_ffprobe_produces_a_report_instead_of_a_traceback(self):
+        props = {'width': 1280, 'height': 720, 'fps': 24, 'durationInFrames': 24, 'shots': [shot(1, 'wide')]}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest, props_path, video = root / 'manifest.json', root / 'props.json', root / 'output.mp4'
+            manifest.write_text('{}', encoding='utf-8')
+            props_path.write_text(json.dumps(props), encoding='utf-8')
+            video.write_bytes(b'x' * 100_001)
+            with patch('renderer.quality_report.command', side_effect=FileNotFoundError('ffprobe')):
+                report = run(manifest, props_path, video, root / 'qa')
+            self.assertEqual(report['result'], 'failed')
+            self.assertIn('ffprobe is not installed; technical media checks could not run', report['issues'])
+            self.assertTrue((root / 'qa' / 'report.json').is_file())
 
 
 if __name__ == '__main__':

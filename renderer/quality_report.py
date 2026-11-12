@@ -127,7 +127,15 @@ def run(manifest_path: Path, props_path: Path, video: Path, out_dir: Path) -> di
         issues.append('rendered MP4 is missing or unexpectedly small')
         media = {}
     else:
-        media = probe(video)
+        try:
+            media = probe(video)
+        except FileNotFoundError:
+            issues.append('ffprobe is not installed; technical media checks could not run')
+            media = {}
+        except subprocess.CalledProcessError:
+            issues.append('ffprobe could not read the rendered MP4')
+            media = {}
+    if media:
         streams = media.get('streams') or []
         videos = [stream for stream in streams if stream.get('codec_type') == 'video']
         audios = [stream for stream in streams if stream.get('codec_type') == 'audio']
