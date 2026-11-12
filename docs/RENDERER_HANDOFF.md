@@ -8,6 +8,8 @@
 
 下一位开发者应先解决无人值守全身角色资产、关节绑定和动作质量检验，再扩大自动发布。任何新增动作必须有可复用的素材约定、失败回退和至少一段从 R2 manifest 到 MP4 的端到端测试。
 
+2026-11-12 已增加 `renderer/quality_report.py`：正式 Action 在上传前验证视频流、时长/分辨率、舞台布局、每场镜头焦点与显式动作事件，并生成逐镜中心帧及联系表。报告与抽帧上传到 `renders/<job-id>/qa/`；技术检查失败会使任务失败，保留报告和失败 MP4。技术通过只标为 `visual_review_required`，因为当前尚无语义视觉审核器。CF 控制端将其显示为“待画面复核”，MCP 同样返回质量状态。不要把 `technical_pass_visual_review_required` 改写成 `approved`。
+
 ## 2026-11-11：2D 游戏式剧情渲染
 
-`pixel_story` 分支使用 `remotion/pixel-story.tsx`。`renderer/prepare_remotion.py` 将每场背景缩至 320×180、48 色；`renderer/pixel_actor_sprites.py` 用 CPU `isnet-anime` 将 `pixel_body` 原图抠像为 36×64 角色。工作流会缓存模型。无抠像结果时移除 body_file，Remotion 退回程序角色，不阻断整集。当前只通过本地静帧和单图抠像检查，仍需整集 QA，特别是角色脚下背景残留、动作幅度、场景重复和字幕对比度。
+`pixel_story` 分支使用 `remotion/pixel-story.tsx`。`renderer/prepare_remotion.py` 将每场背景缩至 320×180、48 色；`renderer/pixel_actor_sprites.py` 用 CPU `isnet-anime` 将 `pixel_body` 原图抠像为 36×64 角色。工作流会缓存模型。无抠像结果时移除 body_file，Remotion 退回程序角色，不阻断整集。舞台深度和承载面已进入布局契约，但仍需完整成片 QA，特别是比例、脚下背景残留、动作可读、画风连续、场景重复和字幕对比度。
