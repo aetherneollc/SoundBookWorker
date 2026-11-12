@@ -39,7 +39,7 @@ export const PixelStoryShot = ({shot, width, height, speech}: {shot: PixelShot; 
   const stageLayout = shot.stage_layout || shot.cartoon.stage_layout;
   const people = shot.cartoon.actors.filter(actor => !/阿拓|AT-1/i.test(actor.name));
   const event = shot.cartoon.action_event;
-  const actorEvent = event?.subject !== 'rover' && event?.target !== 'rover' ? event : undefined;
+  const actorEvent = event?.subject === 'character' ? event : undefined;
   const interactionProgress = actionEnvelope(actorEvent, progress);
   const eventPoseAction = actorEvent && ['reach', 'press', 'secure', 'inspect'].includes(actorEvent.kind) ? 'work'
     : actorEvent?.kind === 'signal' ? 'point' : undefined;
@@ -66,9 +66,9 @@ export const PixelStoryShot = ({shot, width, height, speech}: {shot: PixelShot; 
   const driving = Boolean(driver) || shot.rover?.action === 'drive';
   const vehicle = driver?.pose.vehicle ?? (driving ? vehicleMotion(progress) : null);
   const actionEvent = event;
-  const eventRoverAction = actionEvent?.target === 'rover' || actionEvent?.subject === 'rover'
+  const eventRoverAction = actionEvent?.subject === 'rover'
     ? actionEvent.kind === 'signal' ? 'signal'
-      : actionEvent.kind === 'sample' || actionEvent.kind === 'reach' ? 'sample'
+      : ['sample', 'reach', 'press', 'secure', 'inspect', 'open', 'close'].includes(actionEvent.kind) ? 'sample'
         : actionEvent.kind === 'move' ? 'drive'
           : actionEvent.kind === 'fall' || actionEvent.kind === 'recover' ? actionEvent.kind : undefined
     : undefined;

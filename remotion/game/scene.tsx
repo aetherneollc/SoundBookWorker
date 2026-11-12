@@ -125,6 +125,14 @@ const eventProgress = (event: CartoonActionEvent | undefined, frame: number, dur
   return linear * linear * (3 - 2 * linear);
 };
 
+const actionEnvelope = (event: CartoonActionEvent | undefined, frame: number, duration: number) => {
+  if (!event) return 0;
+  const at = Math.max(0, Math.min(1, frame / Math.max(1, duration)));
+  if (at <= event.start || at >= event.end) return 0;
+  if (at < event.contact) return (at - event.start) / Math.max(.01, event.contact - event.start);
+  return (event.end - at) / Math.max(.01, event.end - event.contact);
+};
+
 const EngineeringSetpiece = ({kind, frame, duration, actionEvent, layer = 'back'}: {kind: Setpiece; frame: number; duration: number; actionEvent?: CartoonActionEvent; layer?: 'back' | 'front'}) => {
   if (kind === 'vacuum') return <g>
     <Px x={178} y={46} w={112} h={100} fill="#182633" />
@@ -214,11 +222,11 @@ const EngineeringSetpiece = ({kind, frame, duration, actionEvent, layer = 'back'
   return null;
 };
 
-const RoverSprite = ({x, y, frame, fps, action, moving, body, scale, width, height}: {x: number; y: number; frame: number; fps: number; action: string; moving: boolean; body?: string; scale: number; width: number; height: number}) => {
+const RoverSprite = ({x, y, frame, fps, action, actionProgress, moving, body, scale, width, height}: {x: number; y: number; frame: number; fps: number; action: string; actionProgress: number; moving: boolean; body?: string; scale: number; width: number; height: number}) => {
   const spin = moving ? frame * 22 : 0;
   const reach = action === 'reach' || action === 'sample';
   const wave = Math.sin(frame / Math.max(1, fps) * (reach ? 3 : 1.5));
-  const arm = reach ? -34 + wave * 14 : -14 + wave * 8;
+  const arm = reach ? -34 - actionProgress * 48 + wave * 14 : -14 + wave * 8;
   const elbow = reach ? 28 + Math.sin(frame / Math.max(1, fps) * 2.1) * 8 : 10;
   const blink = action === 'signal' && frame % 16 < 8;
   const tilt = !moving && action === 'fall' ? Math.min(14, frame / Math.max(1, fps) * 9)
@@ -227,6 +235,12 @@ const RoverSprite = ({x, y, frame, fps, action, moving, body, scale, width, heig
     <ellipse cx={0} cy={0} rx={23} ry={3.2} fill="#10202d" opacity={.48} />
     <g transform={`translate(0 ${Math.sin(frame / Math.max(1, fps) * (moving ? 8 : 1.7)) * (moving ? .8 : .25)})`}>
       <image href={body} x={-width / 2} y={-height} width={width} height={height} preserveAspectRatio="xMidYMax meet" style={{imageRendering: 'pixelated'}} />
+      {reach && <g transform={`translate(${width * .16} ${-height * .57}) rotate(${-8 - actionProgress * 54})`}>
+        <path d="M0 0L9 0L17 -3L24 -3" fill="none" stroke="#172b3b" strokeWidth={5} strokeLinecap="square" />
+        <path d="M0 0L9 0L17 -3L24 -3" fill="none" stroke="#d5e2df" strokeWidth={2.5} strokeLinecap="square" />
+        <circle cx={9} cy={0} r={2.3} fill="#e6a34c" />
+        <path d="M24 -3L28 -6M24 -3L29 0" stroke="#e6a34c" strokeWidth={1.5} strokeLinecap="square" />
+      </g>}
     </g>
   </g>;
   return <g transform={`translate(${Math.round(x)} ${Math.round(y)}) scale(${scale}) rotate(${tilt})`}>
@@ -404,7 +418,7 @@ export const PixelWorld = ({
     </g> : room === 'interior' ? <Interior world={world} kind={setpiece} /> : <Exterior world={world} doorOpen={doorOpen} />}
     {(!background || setpiece !== 'generic') && <EngineeringSetpiece kind={setpiece} frame={frame} duration={shotDuration} actionEvent={actionEvent} layer="back" />}
     {!background && showConsole && setpiece === 'generic' && <ConsoleDesk />}
-    {showRover && <RoverSprite x={roverX} y={roverY} frame={frame} fps={fps} action={vehicle ? 'drive' : roverAction} moving={Boolean(vehicle)} body={roverBody} scale={roverScale}
+    {showRover && <RoverSprite x={roverX} y={roverY} frame={frame} fps={fps} action={vehicle ? 'drive' : roverAction} actionProgress={actionEnvelope(actionEvent?.subject === 'rover' ? actionEvent : undefined, frame, shotDuration)} moving={Boolean(vehicle)} body={roverBody} scale={roverScale}
       width={stageLayout?.dimensions?.rover_width || 56} height={stageLayout?.dimensions?.rover_height || 38} />}
     {cast.map((member, index) => {
       const anchor = member.stage;
