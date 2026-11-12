@@ -6,6 +6,7 @@ import hashlib
 import json
 import subprocess
 import sys
+import math
 from collections import defaultdict
 from pathlib import Path
 
@@ -118,6 +119,63 @@ def extract_contact_sheet(video: Path, props: dict, directory: Path) -> tuple[li
     return [name for name, _ in frames], duplicate_count
 
 
+def extract_action_evidence(video: Path, props: dict, directory: Path) -> tuple[list[dict], str | None]:
+    """Save before/contact/after frames and motion evidence for planned actions."""
+    from PIL import Image, ImageChops, ImageStat
+
+    directory.mkdir(parents=True, exist_ok=True)
+    fps = float(props.get('fps') or 24)
+    evidence: list[dict] = []
+    files: list[Path] = []
+    for index, shot in enumerate(props.get('shots') or [], 1):
+        if not shot.get('pixel_story'):
+            continue
+        cartoon = shot.get('cartoon') if isinstance(shot.get('cartoon'), dict) else {}
+        event = cartoon.get('action_event') if isinstance(cartoon, dict) else None
+        if not isinstance(event, dict):
+            continue
+        start_frame = max(0, int(shot.get('from') or 0))
+        duration = max(1, int(shot.get('duration') or 1))
+        samples = []
+        for label, fraction in (('before', event.get('start')), ('contact', event.get('contact')), ('after', event.get('end'))):
+            relative = max(0.0, min(1.0, float(fraction))) if isinstance(fraction, (int, float)) else .5
+            frame = min(start_frame + duration - 1, start_frame + int(duration * relative))
+            seconds = frame / fps
+            name = f"action-shot-{index:03d}-{label}.jpg"
+            target = directory / name
+            command(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-ss', f'{seconds:.3f}', '-i', str(video),
+                     '-frames:v', '1', '-vf', 'scale=128:72', '-q:v', '5', str(target)])
+            samples.append(target)
+            files.append(target)
+        with Image.open(samples[0]) as first, Image.open(samples[-1]) as last:
+            height = min(first.height, last.height)
+            width = min(first.width, last.width)
+            # Ignore the lower subtitle band so text changes do not masquerade
+            # as character or prop movement.
+            crop_height = max(1, int(height * .82))
+            a = first.convert('RGB').crop((0, 0, width, crop_height))
+            b = last.convert('RGB').crop((0, 0, width, crop_height))
+            channels = ImageStat.Stat(ImageChops.difference(a, b)).mean
+            difference = sum(channels) / (3 * 255)
+        evidence.append({
+            'shot_index': index,
+            'scene_number': int(shot.get('scene_number') or 0),
+            'action_kind': event.get('kind'),
+            'start_contact_end': [event.get('start'), event.get('contact'), event.get('end')],
+            'mean_frame_difference': round(difference, 4),
+            'frames': [path.name for path in samples],
+        })
+    if not files:
+        return evidence, None
+    columns = 12
+    rows = math.ceil(len(files) / columns)
+    sheet = directory / 'action-contact.jpg'
+    subprocess.run(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-pattern_type', 'glob', '-i',
+                    str(directory / 'action-shot-*.jpg'), '-vf', f'tile={columns}x{rows}:padding=4:margin=4:color=black',
+                    '-frames:v', '1', str(sheet)], check=True, capture_output=True)
+    return evidence, sheet.name
+
+
 def run(manifest_path: Path, props_path: Path, video: Path, out_dir: Path) -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
     manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
@@ -153,6 +211,8 @@ def run(manifest_path: Path, props_path: Path, video: Path, out_dir: Path) -> di
             issues.append('MP4 has no audio stream')
     frame_names: list[str] = []
     duplicate_count = 0
+    action_evidence: list[dict] = []
+    action_contact_file: str | None = None
     if video.is_file() and storyboard['shot_count']:
         try:
             frame_names, duplicate_count = extract_contact_sheet(video, props, out_dir)
@@ -160,6 +220,10 @@ def run(manifest_path: Path, props_path: Path, video: Path, out_dir: Path) -> di
                 issues.append(f'too many exact duplicate shot frames ({duplicate_count}/{len(frame_names)})')
         except Exception as exc:
             issues.append(f'failed to extract storyboard frames ({type(exc).__name__})')
+        try:
+            action_evidence, action_contact_file = extract_action_evidence(video, props, out_dir)
+        except Exception as exc:
+            issues.append(f'failed to extract action evidence ({type(exc).__name__})')
     report = {
         'version': 1,
         'result': 'failed' if issues else 'technical_pass_visual_review_required',
@@ -173,6 +237,8 @@ def run(manifest_path: Path, props_path: Path, video: Path, out_dir: Path) -> di
         'storyboard': storyboard,
         'exact_duplicate_center_frames': duplicate_count,
         'frame_files': frame_names,
+        'action_evidence': action_evidence,
+        'action_contact_file': action_contact_file,
         'visual_semantic_review': 'not_run',
     }
     (out_dir / 'report.json').write_text(json.dumps(report, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')

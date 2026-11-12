@@ -35,3 +35,5 @@ Action `43249555084` 完成 518.101 秒全片，24 镜技术 QA 通过，但人�
 首次程序舞台 Action `43267534964`、render `4e9cbeb9-0cc7-464b-8d35-91c63707fb42` 全片技术检查通过。联系表 `/tmp/soundbook-ep6-v17-contact.jpg` 表明，仍有几镜因旧版 `cartoon.world.room` 字段不准确而套回 AI 城市背景。新提交强制所有识别到真空舱/装配/振动台/整流罩的 setpiece 走室内像素舞台，并固定为室内房间。需要在该最新提交上再跑完整片，检查 24 镜都不混入室外背景。比例、可读动作和声音同步仍未完整验收。
 
 修正后的 Action `43271437318`、render `16489fbe-a4bd-416f-a833-c4c107612e65` 完整技术通过，联系表 `/tmp/soundbook-ep6-v18-contact.jpg` 已逐镜检查：工程场景不再混入城市/天空背景，风格统一；程序化墙面较朴素，动作叙事和完整音频/字幕仍需验收。状态继续保持 `visual_review_required`。SoundBookWorker 提交 `a5e5c7e`，SoundBookCF 当前场景解析提交 `5aef198`；项目中还有后续文档提交。测试：TS 类型检查、8 项 renderer/QA Python 测试通过。
+
+2026-11-12 后续 QA 改进：`quality_report.py` 为每个结构化动作保存动作前/接触点/动作后三帧，生成 `action-contact.jpg`，并计算避开字幕区域的首尾帧平均变化量。它提供可复核证据，不会把“有像素变化”直接判为动作语义合格。控制端新增 `/api/render-jobs/:id/quality/action-contact` 读取动作联系表；下一次 Action 要确认上传、报告字段和路由都正常。

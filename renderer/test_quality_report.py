@@ -4,7 +4,7 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
-from renderer.quality_report import inspect_layout, run, validate_props
+from renderer.quality_report import extract_action_evidence, inspect_layout, run, validate_props
 
 
 def shot(scene: int, focus: str, event: bool = True) -> dict:
@@ -43,6 +43,26 @@ class QualityReportTests(unittest.TestCase):
         issues, _ = validate_props(props)
         self.assertIn('scene 1: fewer than two camera compositions', issues)
         self.assertIn('scene 1: fewer than two visible action events', issues)
+
+    def test_action_evidence_saves_three_frames_and_motion_measure(self):
+        import subprocess
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            video = root / 'sample.mp4'
+            subprocess.run([
+                'ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi',
+                '-i', 'testsrc2=size=320x180:rate=12:duration=3', '-pix_fmt', 'yuv420p', str(video),
+            ], check=True, capture_output=True)
+            props = {'fps': 12, 'shots': [{
+                'pixel_story': True, 'scene_number': 1, 'from': 0, 'duration': 36,
+                'cartoon': {'action_event': {'kind': 'reach', 'start': .1, 'contact': .5, 'end': .9}},
+            }]}
+            evidence, contact = extract_action_evidence(video, props, root / 'qa')
+            self.assertEqual(len(evidence), 1)
+            self.assertEqual(len(evidence[0]['frames']), 3)
+            self.assertGreater(evidence[0]['mean_frame_difference'], 0)
+            self.assertEqual(contact, 'action-contact.jpg')
+            self.assertTrue((root / 'qa' / contact).is_file())
 
     def test_missing_ffprobe_produces_a_report_instead_of_a_traceback(self):
         props = {'width': 1280, 'height': 720, 'fps': 24, 'durationInFrames': 24, 'shots': [shot(1, 'wide')]}
