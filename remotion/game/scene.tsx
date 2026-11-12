@@ -1,4 +1,4 @@
-import type {CartoonPlan} from '../cartoon';
+import type {CartoonActionEvent, CartoonPlan, StageAnchor, StageLayout} from '../cartoon';
 import type {SpriteCell} from './atlas';
 import {limbAtlas, paletteFor} from './atlas';
 import {
@@ -6,7 +6,7 @@ import {
   dustMotes, rainDrops, type Light, type Pose, type Room, type VehicleMotion, type WorldState,
 } from './pose';
 
-export type CastMember = {name: string; pose: Pose; speaking: boolean; body?: string};
+export type CastMember = {name: string; pose: Pose; speaking: boolean; body?: string; stage?: StageAnchor; actorHeight?: number};
 
 const Px = ({x, y, w, h, fill, opacity = 1}: {x: number; y: number; w: number; h: number; fill: string; opacity?: number}) =>
   <rect x={x} y={y} width={w} height={h} fill={fill} opacity={opacity} />;
@@ -105,7 +105,16 @@ const ConsoleDesk = () => {
 
 type Setpiece = 'generic' | 'vacuum' | 'vibration' | 'fairing' | 'assembly';
 
-const EngineeringSetpiece = ({kind, frame}: {kind: Setpiece; frame: number}) => {
+const eventProgress = (event: CartoonActionEvent | undefined, frame: number, duration: number) => {
+  if (!event) return 0;
+  const at = Math.max(0, Math.min(1, frame / Math.max(1, duration)));
+  const from = event.kind === 'close' || event.kind === 'open' || event.kind === 'secure' || event.kind === 'press'
+    ? event.contact : event.start;
+  const linear = Math.max(0, Math.min(1, (at - from) / Math.max(.001, event.end - from)));
+  return linear * linear * (3 - 2 * linear);
+};
+
+const EngineeringSetpiece = ({kind, frame, duration, actionEvent, layer = 'back'}: {kind: Setpiece; frame: number; duration: number; actionEvent?: CartoonActionEvent; layer?: 'back' | 'front'}) => {
   if (kind === 'vacuum') return <g>
     <Px x={178} y={46} w={112} h={100} fill="#182633" />
     <Px x={184} y={52} w={100} h={88} fill="#a4bac3" />
@@ -115,7 +124,10 @@ const EngineeringSetpiece = ({kind, frame}: {kind: Setpiece; frame: number}) => 
     {[61, 85, 109, 133].map(y => <g key={y}><Px x={187} y={y} w={4} h={4} fill="#efb867" /><Px x={277} y={y} w={4} h={4} fill="#efb867" /></g>)}
     <Px x={202} y={143} w={64} h={4} fill="#8bb7ba" />
   </g>;
-  if (kind === 'vibration') return <g>
+  if (kind === 'vibration') {
+    const shake = actionEvent?.kind === 'vibrate' && actionEvent.target === 'test_platform'
+      ? Math.sin(frame * Math.PI * 2 / 4) * 1.6 : 0;
+    return <g transform={`translate(0 ${shake})`}>
     <Px x={182} y={100} w={102} h={10} fill="#162938" />
     <Px x={190} y={110} w={86} h={22} fill="#66889b" />
     {[194, 216, 238, 260].map(x => <Px key={x} x={x} y={132} w={8} h={16} fill="#dfac58" />)}
@@ -123,7 +135,8 @@ const EngineeringSetpiece = ({kind, frame}: {kind: Setpiece; frame: number}) => 
     <Px x={180} y={40} w={5} h={60} fill="#93abb2" /><Px x={281} y={40} w={5} h={60} fill="#93abb2" />
     <Px x={180} y={40} w={106} h={6} fill="#93abb2" />
     <Px x={217} y={49} w={32} h={10} fill={Math.floor(frame / 12) % 2 ? '#efb867' : '#8bc8c0'} />
-  </g>;
+    </g>;
+  }
   if (kind === 'assembly') return <g>
     <Px x={181} y={24} w={6} h={123} fill="#76909c" /><Px x={283} y={24} w={6} h={123} fill="#76909c" />
     <Px x={181} y={24} w={108} h={8} fill="#a5bac0" />
@@ -133,7 +146,12 @@ const EngineeringSetpiece = ({kind, frame}: {kind: Setpiece; frame: number}) => 
     <Px x={195} y={40} w={30} h={18} fill="#1c3444" /><Px x={199} y={44} w={22} h={10} fill="#75b5ba" />
   </g>;
   if (kind === 'fairing') {
-    const separation = 4 + Math.sin(frame / 55) * 2.4;
+    const progress = eventProgress(actionEvent, frame, duration);
+    const separation = actionEvent?.kind === 'open' ? 4 + progress * 12
+      : actionEvent?.kind === 'close' ? 16 - progress * 12
+        : actionEvent?.to_state === 'open' ? 16 : 4;
+    const cablePull = actionEvent?.kind === 'press' && actionEvent.target === 'cable' ? progress * 7 : 0;
+    const latchY = actionEvent?.kind === 'secure' && actionEvent.target === 'latch' ? 140 - progress * 6 : 140;
     const shell = (mirror: boolean) => <g transform={mirror ? `translate(${260 + separation} 0) scale(-1 1)` : `translate(${184 - separation} 0)`}>
       <path d="M0 141 L0 57 Q1 36 12 18 Q25 37 30 58 L30 141 Z" fill="url(#fairing-outer)" stroke="#344e61" strokeWidth="1.7" />
       <path d="M3 137 L3 59 Q4 43 12 25 Q19 43 22 60 L22 137 Z" fill="url(#fairing-inner)" stroke="#6b8b98" strokeWidth="1" />
@@ -146,6 +164,7 @@ const EngineeringSetpiece = ({kind, frame}: {kind: Setpiece; frame: number}) => 
       {[72, 95, 118, 136].map(y => <circle key={y} cx={26} cy={y} r={1.25} fill="#d6a25e" stroke="#6e7470" strokeWidth=".45" />)}
       <path d="M28 58 L34 58 M28 137 L34 137" stroke="#d39d51" strokeWidth="2" />
     </g>;
+    if (layer === 'front') return <g>{shell(true)}</g>;
     return <g>
       <defs>
         <linearGradient id="fairing-outer" x1="0" x2="1" y1="0" y2="0"><stop stopColor="#faf9ec" /><stop offset=".47" stopColor="#d3e2e2" /><stop offset="1" stopColor="#7895a3" /></linearGradient>
@@ -157,15 +176,15 @@ const EngineeringSetpiece = ({kind, frame}: {kind: Setpiece; frame: number}) => 
       <path d="M215 139 V67 Q217 57 222 54 Q227 57 229 67 V139 Z" fill="#d7e5e7" stroke="#344e61" strokeWidth="1.5" />
       <path d="M218 74 H226 V92 H218 Z M218 99 H226 V125 H218 Z" fill="#335466" stroke="#80a6ae" strokeWidth=".8" />
       {[96, 130].map(y => <path key={y} d={`M213 ${y} H231`} stroke="#dca75c" strokeWidth="2" />)}
-      <path d="M229 111 Q241 111 246 118" fill="none" stroke="#db8055" strokeWidth="1.2" />
-      {shell(false)}{shell(true)}
-      <path d="M197 140 H247" stroke="#e0af68" strokeWidth="1.4" strokeDasharray="3 3" />
+      <path d={`M229 111 Q${241 + cablePull} ${111 - cablePull * .45} 246 118`} fill="none" stroke="#db8055" strokeWidth="1.2" />
+      {shell(false)}
+      <path d={`M197 ${latchY} H247`} stroke="#e0af68" strokeWidth="1.8" strokeDasharray="3 3" />
     </g>;
   }
   return null;
 };
 
-const RoverSprite = ({x, y, frame, fps, action, moving, body}: {x: number; y: number; frame: number; fps: number; action: string; moving: boolean; body?: string}) => {
+const RoverSprite = ({x, y, frame, fps, action, moving, body, scale, width, height}: {x: number; y: number; frame: number; fps: number; action: string; moving: boolean; body?: string; scale: number; width: number; height: number}) => {
   const spin = moving ? frame * 22 : 0;
   const reach = action === 'reach' || action === 'sample';
   const wave = Math.sin(frame / Math.max(1, fps) * (reach ? 3 : 1.5));
@@ -174,13 +193,13 @@ const RoverSprite = ({x, y, frame, fps, action, moving, body}: {x: number; y: nu
   const blink = action === 'signal' && frame % 16 < 8;
   const tilt = !moving && action === 'fall' ? Math.min(14, frame / Math.max(1, fps) * 9)
     : !moving && action === 'recover' ? Math.max(0, 14 - frame / Math.max(1, fps) * 7) : 0;
-  if (body) return <g transform={`translate(${Math.round(x)} ${Math.round(y)}) rotate(${tilt})`}>
-    <ellipse cx={0} cy={0} rx={29} ry={4} fill="#10202d" opacity={.48} />
+  if (body) return <g transform={`translate(${Math.round(x)} ${Math.round(y)}) scale(${scale}) rotate(${tilt})`}>
+    <ellipse cx={0} cy={0} rx={23} ry={3.2} fill="#10202d" opacity={.48} />
     <g transform={`translate(0 ${Math.sin(frame / Math.max(1, fps) * (moving ? 8 : 1.7)) * (moving ? .8 : .25)})`}>
-      <image href={body} x={-36} y={-48} width={72} height={48} preserveAspectRatio="xMidYMax meet" />
+      <image href={body} x={-width / 2} y={-height} width={width} height={height} preserveAspectRatio="xMidYMax meet" />
     </g>
   </g>;
-  return <g transform={`translate(${Math.round(x)} ${Math.round(y)}) rotate(${tilt})`}>
+  return <g transform={`translate(${Math.round(x)} ${Math.round(y)}) scale(${scale}) rotate(${tilt})`}>
     <ellipse cx={0} cy={0} rx={26} ry={2.2} fill="#10202d" opacity={.35} />
     {[-17, 17].map(wx => <g key={wx} transform={`translate(${wx} -7)`}>
       <circle r={7.4} fill="#182633" stroke="#7f9dad" strokeWidth={1.4} />
@@ -236,7 +255,9 @@ const IllustratedCharacter = ({member, frame, fps, index}: {member: CastMember; 
     : body.action === 'point' ? -19 + Math.sin(frame / Math.max(1, fps) * 2.2 + index) * 4
       : expressive ? Math.sin(frame / Math.max(1, fps) * 3.1 + index) * 7 : 0;
   const id = `body-${index}`;
-  const sheet = <image href={member.body} x={-22} y={-76} width={44} height={76} preserveAspectRatio="xMidYMax meet" />;
+  const actorHeight = member.actorHeight || 62;
+  const actorWidth = actorHeight * .61;
+  const sheet = <image href={member.body} x={-actorWidth / 2} y={-actorHeight} width={actorWidth} height={actorHeight} preserveAspectRatio="xMidYMax meet" />;
   return <g transform={`translate(${Math.round(body.pelvis.x)} ${Math.round(GROUND_Y + bob)}) scale(${body.facing} 1) rotate(${sway})`}>
     <defs>
       <clipPath id={`${id}-arm`}><rect x={8} y={-61} width={15} height={37} /></clipPath>
@@ -301,7 +322,7 @@ const Wash = ({light}: {light: Light}) => {
 };
 
 export const PixelWorld = ({
-  room, world, frame, fps, progress, vehicle, roverAction, roverBody, prop, cast, entering, setpiece, roverVisible, background,
+  room, world, frame, fps, progress, vehicle, roverAction, roverBody, prop, cast, entering, setpiece, roverVisible, background, stageLayout, actionEvent, shotDuration,
 }: {
   room: Room;
   world: WorldState;
@@ -317,22 +338,43 @@ export const PixelWorld = ({
   setpiece: Setpiece;
   roverVisible: boolean;
   background?: string;
+  stageLayout?: StageLayout;
+  actionEvent?: CartoonActionEvent;
+  shotDuration: number;
 }) => {
   const doorOpen = entering && progress >= 0.32 && progress < DOOR_PROGRESS;
   const showConsole = room === 'interior' || prop === 'console' || cast.some(member => member.pose.action === 'console');
-  const roverX = vehicle ? vehicle.x : setpiece === 'generic' ? ROVER_PARK_X : setpiece === 'fairing' ? 226 : 233;
-  const roverY = background || vehicle ? GROUND_Y : setpiece === 'vacuum' ? 123 : setpiece === 'vibration' ? 101 : setpiece === 'assembly' ? 124 : GROUND_Y;
+  const roverX = vehicle ? vehicle.x
+    : stageLayout ? Math.round(stageLayout.rover.x * 320)
+      : setpiece === 'generic' ? ROVER_PARK_X : setpiece === 'fairing' ? 226 : 233;
+  const floorY = (depth: number) => stageLayout
+    ? stageLayout.floor.far_y + (stageLayout.floor.near_y - stageLayout.floor.far_y) * Math.max(0, Math.min(1, depth))
+    : GROUND_Y;
+  const roverAnchor = stageLayout?.rover;
+  const platformShake = actionEvent?.kind === 'vibrate' && actionEvent.target === 'test_platform'
+    ? Math.sin(frame * Math.PI * 2 / 4) * 1.6 : 0;
+  const roverY = (roverAnchor?.surface === 'test_platform' ? 101 : floorY(roverAnchor?.depth ?? 0.5)) + platformShake;
+  const roverScale = roverAnchor ? 0.70 + roverAnchor.depth * 0.46 : 1;
   const showRover = roverVisible || Boolean(vehicle);
   return <g>
     {background ? <g>
       <image href={background} x={0} y={0} width={320} height={180} preserveAspectRatio="xMidYMid slice" />
       <Px x={0} y={0} w={320} h={180} fill="#14263a" opacity={.18} />
-      <Px x={0} y={149} w={320} h={31} fill="#142332" opacity={.32} />
     </g> : room === 'interior' ? <Interior world={world} /> : <Exterior world={world} doorOpen={doorOpen} />}
-    {(!background || setpiece === 'fairing') && <EngineeringSetpiece kind={setpiece} frame={frame} />}
+    {(!background || setpiece !== 'generic') && <EngineeringSetpiece kind={setpiece} frame={frame} duration={shotDuration} actionEvent={actionEvent} layer="back" />}
     {!background && showConsole && setpiece === 'generic' && <ConsoleDesk />}
-    {showRover && <RoverSprite x={roverX} y={roverY} frame={frame} fps={fps} action={vehicle ? 'drive' : roverAction} moving={Boolean(vehicle)} body={roverBody} />}
-    {cast.map((member, index) => <Character key={`${member.name}-${index}`} member={member} prop={prop} frame={frame} fps={fps} index={index} />)}
+    {showRover && <RoverSprite x={roverX} y={roverY} frame={frame} fps={fps} action={vehicle ? 'drive' : roverAction} moving={Boolean(vehicle)} body={roverBody} scale={roverScale}
+      width={stageLayout?.dimensions?.rover_width || 56} height={stageLayout?.dimensions?.rover_height || 38} />}
+    {cast.map((member, index) => {
+      const anchor = member.stage;
+      const ground = floorY(anchor?.depth ?? 0.5);
+      const scale = anchor ? 0.70 + anchor.depth * 0.46 : 1;
+      const x = member.pose.pelvis.x;
+      return <g key={`${member.name}-${index}`} transform={`translate(${Math.round(x)} ${Math.round(ground)}) scale(${scale}) translate(${-Math.round(x)} ${-GROUND_Y})`}>
+        <Character member={member} prop={prop} frame={frame} fps={fps} index={index} />
+      </g>;
+    })}
+    {setpiece === 'fairing' && <EngineeringSetpiece kind="fairing" frame={frame} duration={shotDuration} actionEvent={actionEvent} layer="front" />}
     <Wash light={world.light} />
     {rainDrops(world.weather, frame).map((drop, index) => <Px key={`rain-${index}`} x={drop.x} y={drop.y} w={1} h={3} fill="#d5e7f4" />)}
     {dustMotes(world.weather, frame).map((mote, index) => <Px key={`dust-${index}`} x={mote.x} y={mote.y} w={1} h={1} fill="#e6c98a" />)}

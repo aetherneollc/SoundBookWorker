@@ -33,6 +33,84 @@ def pixel_story_source(item: dict, public: Path) -> str:
     return source(item, public)
 
 
+def ensure_stage_contract(shot: dict) -> None:
+    """Upgrade stored v1 manifests so retries created before stage_layout still render safely."""
+    if not shot.get('pixel_story'):
+        return
+    cartoon = shot.get('cartoon') if isinstance(shot.get('cartoon'), dict) else None
+    if cartoon is None:
+        return
+    if not isinstance(cartoon.get('stage_layout'), dict):
+        place = f"{shot.get('location', '')} {shot.get('scene_title', '')} {shot.get('description', '')}"
+        setpiece = ('thermal_vacuum_chamber' if re.search(r'热真空|真空试验', place) else
+                    'vibration_table' if '振动' in place else
+                    'payload_fairing' if re.search(r'整流罩|载荷集成大厅|封舱|fairing', place, re.I) else
+                    'assembly_station' if re.search(r'装配|集成|assembly', place, re.I) else 'generic')
+        engineered = setpiece != 'generic'
+        actors = {}
+        for actor in cartoon.get('actors') or []:
+            if not isinstance(actor, dict) or not actor.get('name'):
+                continue
+            x = max(.38, min(.58, float(actor.get('from_x', .48)))) if engineered else max(.08, min(.78, float(actor.get('from_x', .42))))
+            actors[str(actor['name'])] = {'x': x, 'depth': .58, 'surface': 'floor'}
+        action = str((shot.get('rover') or {}).get('action') or '')
+        vibrating = setpiece == 'vibration_table' and action not in ('', 'idle')
+        cartoon['stage_layout'] = {
+            'version': 1, 'coordinate_space': {'width': 320, 'height': 180},
+            'dimensions': {'actor_height': 62, 'rover_width': 56, 'rover_height': 38},
+            'floor': {'far_y': 138, 'near_y': 162, 'vanishing_x': .5},
+            'actors': actors,
+            'rover': {'x': .66 if action else .62, 'depth': .32 if vibrating else .58,
+                      'surface': 'test_platform' if vibrating else 'floor'},
+            'setpiece': {'id': setpiece, 'depth': .55},
+        }
+    layout = cartoon['stage_layout']
+    layout.setdefault('version', 1)
+    layout.setdefault('coordinate_space', {'width': 320, 'height': 180})
+    layout.setdefault('dimensions', {'actor_height': 62, 'rover_width': 56, 'rover_height': 38})
+    layout.setdefault('floor', {'far_y': 138, 'near_y': 162, 'vanishing_x': .5})
+    layout.setdefault('actors', {})
+    layout.setdefault('rover', {'x': .62, 'depth': .58, 'surface': 'floor'})
+    layout.setdefault('setpiece', {'id': 'generic', 'depth': .55})
+    layout['dimensions'].setdefault('actor_height', 62)
+    layout['dimensions'].setdefault('rover_width', 56)
+    layout['dimensions'].setdefault('rover_height', 38)
+    layout['floor'].setdefault('far_y', 138)
+    layout['floor'].setdefault('near_y', 162)
+    layout['floor'].setdefault('vanishing_x', .5)
+    for anchor in [*layout['actors'].values(), layout['rover']]:
+        if isinstance(anchor, dict):
+            anchor.setdefault('x', .48)
+            anchor.setdefault('depth', .58)
+            anchor.setdefault('surface', 'floor')
+    cartoon.setdefault('stage_layout', layout)
+    shot['stage_layout'] = layout
+    if not isinstance(cartoon.get('action_event'), dict):
+        place = f"{shot.get('description', '')} {shot.get('scene_title', '')}"
+        rover_action = str((shot.get('rover') or {}).get('action') or '')
+        if re.search(r'合拢|关闭|闭合|封舱', place): kind, target = 'close', 'fairing'
+        elif re.search(r'打开|张开|分离', place): kind, target = 'open', 'fairing'
+        elif re.search(r'夹住|压住|夹线', place): kind, target = 'press', 'cable'
+        elif re.search(r'锁销|锁紧|固定|扣上', place): kind, target = 'secure', 'latch'
+        elif re.search(r'振动|震动|颤动', place): kind, target = 'vibrate', 'test_platform'
+        elif rover_action in ('fall', 'recover', 'stand'):
+            kind, target = ('fall' if rover_action == 'fall' else 'recover' if rover_action == 'recover' else 'move'), 'rover'
+        elif rover_action in ('sample', 'signal', 'drive', 'reach'):
+            kind, target = ({'sample': 'sample', 'signal': 'signal', 'drive': 'move', 'reach': 'reach'}[rover_action], 'rover')
+        else:
+            kind = target = ''
+            for actor in cartoon.get('actors') or []:
+                action = str(actor.get('action') or '') if isinstance(actor, dict) else ''
+                if action in ('work', 'console', 'carry', 'point'):
+                    kind, target = ({'work': 'reach', 'console': 'reach', 'carry': 'move', 'point': 'signal'}[action], 'panel' if action == 'console' else 'ground')
+                    break
+        if kind:
+            cartoon['action_event'] = {'kind': kind, 'subject': 'rover' if target == 'rover' else 'character',
+                'target': target, 'start': .08, 'contact': .52, 'end': .92,
+                'from_state': 'ready', 'to_state': {'close': 'closed', 'open': 'open', 'secure': 'secured',
+                    'press': 'released', 'vibrate': 'tested', 'sample': 'sampled', 'fall': 'fallen', 'recover': 'upright'}.get(kind, 'changed')}
+
+
 def parse_srt(path: Path, offset: float, fps: int) -> list[dict]:
     def secs(value: str) -> float:
         h, m, s, ms = map(int, re.split('[:,]', value))
@@ -62,6 +140,8 @@ def prepare(manifest: Path, output: Path) -> None:
     intro_seconds = max(2.8, media_duration(intro_voice)+.65) if intro_voice and doc.get('episode_title') else (2.8 if doc.get('episode_title') else 0)
     intro_frames = frame(intro_seconds, fps)
     shots = [dict(shot) for shot in doc['shots']]
+    for shot in shots:
+        ensure_stage_contract(shot)
     tracks = [dict(track) for track in doc.get('audio_tracks', [])]
     if doc.get('audio'):
         tracks.append({**doc['audio'], 'start_ms': 0, 'volume': 1, '_full_length': True})

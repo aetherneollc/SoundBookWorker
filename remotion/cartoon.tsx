@@ -9,7 +9,17 @@ export type CartoonLight = 'day' | 'night' | 'lamp';
 /** Optional pixel_story state. CartoonShot does not read it. */
 export type CartoonWorld = {room?: CartoonRoom; weather?: CartoonWeather; light?: CartoonLight};
 export type CartoonActorPlan = {name: string; action: CartoonAction; from_x: number; to_x: number; portrait?: string; mouth?: string; body?: string};
-export type CartoonPlan = {actors: CartoonActorPlan[]; prop?: 'tool' | 'battery' | 'sensor' | 'console' | 'crate' | 'none'; focus?: 'actor' | 'robot' | 'prop' | 'wide'; world?: CartoonWorld};
+export type StageAnchor = {x: number; depth: number; surface: 'floor' | 'test_platform'};
+export type StageLayout = {version: 1; coordinate_space: {width: 320; height: 180};
+  dimensions: {actor_height: number; rover_width: number; rover_height: number};
+  floor: {far_y: number; near_y: number; vanishing_x: number};
+  actors: Record<string, StageAnchor>; rover: StageAnchor; setpiece: {id: string; depth: number}};
+export type CartoonActionEvent = {kind: 'move' | 'reach' | 'press' | 'secure' | 'open' | 'close' | 'vibrate' | 'sample' | 'signal' | 'inspect' | 'fall' | 'recover';
+  subject: 'character' | 'rover' | 'environment';
+  target: 'fairing' | 'cable' | 'latch' | 'test_platform' | 'rover' | 'panel' | 'ground';
+  start: number; contact: number; end: number; from_state: string; to_state: string};
+export type CartoonPlan = {actors: CartoonActorPlan[]; prop?: 'tool' | 'battery' | 'sensor' | 'console' | 'crate' | 'none';
+  focus?: 'actor' | 'robot' | 'prop' | 'wide'; world?: CartoonWorld; stage_layout?: StageLayout; action_event?: CartoonActionEvent};
 type Cue = {from: number; to: number; value: string; speaker: string; scene_number: number};
 type Stage = {background: string; foreground?: string};
 type Shot = {from: number; duration: number; index: number; label?: string; scene_number?: number;

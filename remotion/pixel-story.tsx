@@ -1,5 +1,5 @@
 import {AbsoluteFill, staticFile, useCurrentFrame, useVideoConfig} from 'remotion';
-import type {CartoonPlan} from './cartoon';
+import type {CartoonActionEvent, CartoonPlan} from './cartoon';
 import {PixelWorld} from './game/scene';
 import {frameRoom, pose, poseProgress, resolveWorld, vehicleMotion, type PoseAction} from './game/pose';
 
@@ -14,6 +14,7 @@ type PixelShot = {
   location?: string;
   description?: string;
   cartoon: CartoonPlan;
+  stage_layout?: CartoonPlan['stage_layout'];
   cartoon_phase?: number;
   rover?: {action: string; speaker: string; body?: string};
 };
@@ -25,6 +26,7 @@ export const PixelStoryShot = ({shot, width, height, speech}: {shot: PixelShot; 
   const {fps} = useVideoConfig();
   const progress = poseProgress(frame, shot.duration);
   const world = resolveWorld(shot.cartoon.world);
+  const stageLayout = shot.stage_layout || shot.cartoon.stage_layout;
   const people = shot.cartoon.actors.filter(actor => !/阿拓|AT-1/i.test(actor.name));
   const cast = people.map(actor => ({
     name: actor.name,
@@ -39,6 +41,8 @@ export const PixelStoryShot = ({shot, width, height, speech}: {shot: PixelShot; 
       fromX: actor.from_x,
       toX: actor.to_x,
     }),
+    stage: stageLayout?.actors?.[actor.name],
+    actorHeight: stageLayout?.dimensions?.actor_height,
   }));
   const actions: PoseAction[] = people.map(actor => actor.action);
   const driver = cast.find(member => member.pose.action === 'drive');
@@ -46,12 +50,17 @@ export const PixelStoryShot = ({shot, width, height, speech}: {shot: PixelShot; 
   const vehicle = driver?.pose.vehicle ?? (driving ? vehicleMotion(progress) : null);
   const place = `${shot.location || ''} ${shot.scene_title || ''} ${shot.description || ''}`;
   const controlCutaway = /整流罩旁/.test(shot.location || '') && /控制室|control room/i.test(shot.description || '');
-  const setpiece = controlCutaway ? 'generic' : /热真空|真空试验|thermal.vacuum/i.test(place) ? 'vacuum'
-    : /振动|vibration/i.test(place) ? 'vibration'
-    : /整流罩|载荷集成大厅|封舱|fairing/i.test(place) ? 'fairing'
-    : /集成|装配|assembly|integration/i.test(place) ? 'assembly' : 'generic';
+  const layoutId = stageLayout?.setpiece.id;
+  const setpiece = layoutId === 'thermal_vacuum_chamber' ? 'vacuum'
+    : layoutId === 'vibration_table' ? 'vibration'
+      : layoutId === 'payload_fairing' ? 'fairing'
+        : layoutId === 'assembly_station' ? 'assembly'
+          : controlCutaway ? 'generic' : /热真空|真空试验|thermal.vacuum/i.test(place) ? 'vacuum'
+            : /振动|vibration/i.test(place) ? 'vibration'
+              : /整流罩|载荷集成大厅|封舱|fairing/i.test(place) ? 'fairing'
+                : /集成|装配|assembly|integration/i.test(place) ? 'assembly' : 'generic';
   const roverVisible = Boolean(shot.rover || vehicle || /阿拓|AT-1|机器人|月球车|探测车|rover/i.test(place));
-  const roverAnchor = vehicle?.x ?? (setpiece === 'generic' ? 100 : setpiece === 'fairing' ? 226 : 233);
+  const roverAnchor = vehicle?.x ?? (stageLayout?.rover.x ?? (setpiece === 'generic' ? 100 / 320 : setpiece === 'fairing' ? 226 / 320 : 233 / 320)) * 320;
   const focus = shot.cartoon.focus;
   const cameraEase = Math.min(1, frame / Math.max(1, fps * 0.8));
   const slowDrift = Math.min(1, frame / Math.max(1, shot.duration)) * 10;
@@ -82,6 +91,9 @@ export const PixelStoryShot = ({shot, width, height, speech}: {shot: PixelShot; 
         setpiece={setpiece}
         roverVisible={roverVisible}
         background={shot.src ? staticFile(shot.src) : undefined}
+        stageLayout={stageLayout}
+        actionEvent={shot.cartoon.action_event}
+        shotDuration={shot.duration}
       />
     </svg>
   </AbsoluteFill>;
