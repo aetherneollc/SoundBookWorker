@@ -128,10 +128,28 @@ const EngineeringSetpiece = ({kind, frame, duration, actionEvent, layer = 'back'
     const shake = actionEvent?.kind === 'vibrate' && actionEvent.target === 'test_platform'
       ? Math.sin(frame * Math.PI * 2 / 4) * 1.6 : 0;
     return <g transform={`translate(0 ${shake})`}>
+    {/* Read as a real test fixture, not a blank grey rectangle: the layered
+        platen, clamps, actuator blocks, and control strip stay legible at 720p. */}
     <Px x={182} y={100} w={102} h={10} fill="#162938" />
-    <Px x={190} y={110} w={86} h={22} fill="#66889b" />
-    {[194, 216, 238, 260].map(x => <Px key={x} x={x} y={132} w={8} h={16} fill="#dfac58" />)}
-    <Px x={177} y={146} w={112} h={5} fill="#243747" />
+    <Px x={186} y={103} w={94} h={4} fill="#8ba6ad" />
+    <Px x={190} y={108} w={86} h={23} fill="#527486" />
+    <Px x={190} y={108} w={86} h={3} fill="#b8c8c2" />
+    <Px x={190} y={128} w={86} h={3} fill="#263e4c" />
+    <Px x={193} y={112} w={80} h={2} fill="#7997a0" />
+    <Px x={193} y={125} w={80} h={2} fill="#385768" />
+    {[196, 215, 234, 253, 270].map(x => <g key={x}>
+      <Px x={x} y={111} w={2} h={2} fill="#e7c47b" />
+      <Px x={x} y={123} w={2} h={2} fill="#d5e0d5" />
+    </g>)}
+    <Px x={224} y={114} w={14} h={8} fill="#183447" />
+    <Px x={226} y={116} w={10} h={3} fill={Math.floor(frame / 12) % 2 ? '#efb867' : '#83c8be'} />
+    {[194, 216, 238, 260].map(x => <g key={x}>
+      <Px x={x} y={131} w={8} h={5} fill="#263b48" />
+      <Px x={x + 2} y={136} w={4} h={12} fill="#c58c47" />
+      <Px x={x} y={146} w={8} h={3} fill="#748c90" />
+    </g>)}
+    <Px x={177} y={149} w={112} h={4} fill="#243747" />
+    <Px x={181} y={153} w={104} h={2} fill="#758e94" />
     <Px x={180} y={40} w={5} h={60} fill="#93abb2" /><Px x={281} y={40} w={5} h={60} fill="#93abb2" />
     <Px x={180} y={40} w={106} h={6} fill="#93abb2" />
     <Px x={217} y={49} w={32} h={10} fill={Math.floor(frame / 12) % 2 ? '#efb867' : '#8bc8c0'} />
@@ -152,24 +170,25 @@ const EngineeringSetpiece = ({kind, frame, duration, actionEvent, layer = 'back'
         : actionEvent?.to_state === 'open' ? 16 : 4;
     const cablePull = actionEvent?.kind === 'press' && actionEvent.target === 'cable' ? progress * 7 : 0;
     const latchY = actionEvent?.kind === 'secure' && actionEvent.target === 'latch' ? 140 - progress * 6 : 140;
-    const shell = (mirror: boolean) => <g transform={mirror ? `translate(${260 + separation} 0) scale(-1 1)` : `translate(${184 - separation} 0)`}>
-      <path d="M0 141 L0 57 Q1 36 12 18 Q25 37 30 58 L30 141 Z" fill="url(#fairing-outer)" stroke="#344e61" strokeWidth="1.7" />
-      <path d="M3 137 L3 59 Q4 43 12 25 Q19 43 22 60 L22 137 Z" fill="url(#fairing-inner)" stroke="#6b8b98" strokeWidth="1" />
-      <path d="M22 59 L22 140" stroke="#2f4b5d" strokeWidth="2.8" />
-      <path d="M26 59 L26 140" stroke="#f2f5ef" strokeWidth="1" />
+    const shell = (mirror: boolean) => <g transform={mirror ? `translate(${260 + separation} 0) scale(-1 1)` : `translate(${184 - separation} 0)`} shapeRendering="crispEdges">
+      {/* Stair-stepped 16-bit silhouette and a compact, shared palette keep
+          the procedural engineering prop inside the same visual language as
+          the generated pixel-art plates. */}
+      <path d="M0 141V61H4V43H8V28H11V20H14V28H18V43H23V61H30V141Z" fill="#536f7e" stroke="#263f50" strokeWidth="2" />
+      <path d="M3 137V63H7V45H11V29H14V45H19V63H22V137Z" fill="#b7c9c6" />
+      <path d="M5 135V65H9V47H12V32H14V48H18V65H20V135Z" fill="#819fa6" />
+      <path d="M17 63H22V137H17Z" fill="#405e6d" />
+      <path d="M21 63H23V137H21Z" fill="#d7dfd2" />
       {[67, 81, 95, 109, 123, 136].map(y => <g key={y}>
-        <path d={`M4 ${y} Q12 ${y - 5} 22 ${y}`} fill="none" stroke="#7a9ba8" strokeWidth="1.2" />
-        <path d={`M6 ${y + 1} L12 ${y + 8} L20 ${y + 1}`} fill="none" stroke="#a7bdc0" strokeWidth=".5" />
+        <Px x={5} y={y} w={15} h={2} fill="#5d7e89" />
+        <Px x={7} y={y + 2} w={11} h={2} fill="#a7bcb9" />
+        <Px x={25} y={y} w={3} h={3} fill="#d2a25c" />
       </g>)}
-      {[72, 95, 118, 136].map(y => <circle key={y} cx={26} cy={y} r={1.25} fill="#d6a25e" stroke="#6e7470" strokeWidth=".45" />)}
-      <path d="M28 58 L34 58 M28 137 L34 137" stroke="#d39d51" strokeWidth="2" />
+      <Px x={27} y={58} w={5} h={3} fill="#d39d51" />
+      <Px x={27} y={137} w={5} h={3} fill="#d39d51" />
     </g>;
     if (layer === 'front') return <g>{shell(true)}</g>;
     return <g>
-      <defs>
-        <linearGradient id="fairing-outer" x1="0" x2="1" y1="0" y2="0"><stop stopColor="#faf9ec" /><stop offset=".47" stopColor="#d3e2e2" /><stop offset="1" stopColor="#7895a3" /></linearGradient>
-        <linearGradient id="fairing-inner" x1="0" x2="1" y1="0" y2="0"><stop stopColor="#e8f0eb" /><stop offset=".65" stopColor="#a8c0c4" /><stop offset="1" stopColor="#668796" /></linearGradient>
-      </defs>
       <ellipse cx="222" cy="148" rx="73" ry="5" fill="#182b39" opacity=".3" />
       <path d="M144 145 H300 M144 151 H300" stroke="#3d5866" strokeWidth="2" />
       {[158, 195, 249, 286].map(x => <path key={x} d={`M${x} 143 V153`} stroke="#8fa9ad" strokeWidth="1.5" />)}
