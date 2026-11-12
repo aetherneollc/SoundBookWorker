@@ -120,12 +120,27 @@ def validate_props(props: dict) -> tuple[list[str], dict]:
         if abs(first - start) > 1 or abs(last - end) > 2:
             issues.append(f'voice track {index} ({scene}:{dialogue}): captions do not cover the full speech audio')
     speech_cues = props.get('speech') if isinstance(props.get('speech'), list) else []
+    speech_groups: dict[tuple[int, int], list[dict]] = defaultdict(list)
     for index, cue in enumerate(speech_cues, 1):
         start, end = cue.get('from'), cue.get('to')
         if not isinstance(start, (int, float)) or not isinstance(end, (int, float)) or start < 0 or end <= start:
             issues.append(f'speech cue {index}: invalid frame range')
         elif duration and end > duration:
             issues.append(f'speech cue {index}: extends beyond episode duration')
+        if cue.get('scene_number') is not None and cue.get('dialogue_number') is not None:
+            speech_groups[(int(cue['scene_number']), int(cue['dialogue_number']))].append(cue)
+    animated_scenes = {int(shot.get('scene_number') or 0) for shot in shots if shot.get('pixel_story')}
+    for index, track in enumerate(speech_tracks, 1):
+        scene, dialogue = int(track.get('scene_number') or 0), int(track.get('dialogue_number') or 0)
+        if scene not in animated_scenes:
+            continue
+        cues = speech_groups.get((scene, dialogue), [])
+        if not cues:
+            issues.append(f'voice track {index} ({scene}:{dialogue}): no timed mouth cues')
+            continue
+        track_start, track_end = float(track['from']), float(track['from']) + float(track['duration'])
+        if any(float(cue['from']) < track_start - 1 or float(cue['to']) > track_end + 1 for cue in cues):
+            issues.append(f'voice track {index} ({scene}:{dialogue}): mouth cues exceed the dialogue audio')
     return issues, {'shot_count': len(shots), 'pixel_story_shot_count': pixel_shots,
                     'caption_count': len(captions), 'voice_track_count': len(speech_tracks),
                     'speech_cue_count': len(speech_cues),

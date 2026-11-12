@@ -67,6 +67,20 @@ class QualityReportTests(unittest.TestCase):
         self.assertIn('caption 1: extends beyond episode duration', issues)
         self.assertIn('speech cue 1: extends beyond episode duration', issues)
 
+    def test_pixel_story_voice_requires_mouth_cues_inside_dialogue_audio(self):
+        props = {'durationInFrames': 120, 'shots': [{**shot(1, 'wide'), 'from': 0, 'duration': 120}],
+                 'audio': [{'from': 12, 'duration': 48, 'scene_number': 1, 'dialogue_number': 2}],
+                 'captions': [{'from': 12, 'to': 60, 'scene_number': 1, 'dialogue_number': 2, 'text': '对白'}],
+                 'speech': [{'from': 18, 'to': 54, 'scene_number': 1, 'dialogue_number': 2}]}
+        issues, _ = validate_props(props)
+        self.assertEqual(issues, [])
+        props['speech'][0]['to'] = 62
+        issues, _ = validate_props(props)
+        self.assertIn('voice track 1 (1:2): mouth cues exceed the dialogue audio', issues)
+        props['speech'] = []
+        issues, _ = validate_props(props)
+        self.assertIn('voice track 1 (1:2): no timed mouth cues', issues)
+
     def test_action_evidence_saves_three_frames_and_motion_measure(self):
         import subprocess
         with tempfile.TemporaryDirectory() as tmp:

@@ -298,7 +298,8 @@ def prepare(manifest: Path, output: Path) -> None:
                 speech.append({'from': frame(start + cue['start'], fps),
                                'to': frame(start + cue['end'], fps),
                                'value': cue['value'], 'speaker': str(track['speaker']),
-                               'scene_number': int(track['scene_number'])})
+                               'scene_number': int(track['scene_number']),
+                               'dialogue_number': int(track.get('dialogue_number') or 0)})
     cta = doc.get('cta_card') if isinstance(doc.get('cta_card'), dict) else None
     cta_frames = frame(3.8, fps) if cta and str(cta.get('name', '')).strip() else 0
     if cta_frames and str(cta.get('url', '')).startswith('https://'):
