@@ -58,7 +58,17 @@ def make_sprite(path: Path, output: Path, session) -> bool:
 
 def make_rover_sprite(path: Path, output: Path, session) -> bool:
     source = Image.open(path).convert('RGBA')
-    if sum(source.getchannel('A').histogram()[:32]) / (source.width * source.height) >= .35:
+    corner = source.getpixel((8, 8))
+    green_screen = corner[1] > corner[0] + 15 and corner[1] > corner[2] + 12
+    if green_screen:
+        image = source.copy()
+        pixels = image.load()
+        for y in range(image.height):
+            for x in range(image.width):
+                r, g, b, _ = pixels[x, y]
+                if g > r + 15 and g > b + 10 and g > 75:
+                    pixels[x, y] = (r, g, b, 0)
+    elif sum(source.getchannel('A').histogram()[:32]) / (source.width * source.height) >= .35:
         image = source
     else:
         if session is None:
@@ -74,14 +84,14 @@ def make_rover_sprite(path: Path, output: Path, session) -> bool:
         return False
     image = image.crop(box)
     width, height = image.size
-    if not 1.45 <= width / height <= 3.4:
+    if not 1.1 <= width / height <= 3.4:
         return False
     if width < source.width * .35 or height < source.height * .20:
         return False
-    scale = min(246 / width, 112 / height)
+    scale = min(150 / width, 112 / height)
     image = image.resize((max(1, round(width * scale)), max(1, round(height * scale))), Image.Resampling.LANCZOS)
-    canvas = Image.new('RGBA', (256, 128), (0, 0, 0, 0))
-    canvas.alpha_composite(image, ((256 - image.width) // 2, 128 - image.height))
+    canvas = Image.new('RGBA', (160, 128), (0, 0, 0, 0))
+    canvas.alpha_composite(image, ((160 - image.width) // 2, 128 - image.height))
     output.parent.mkdir(parents=True, exist_ok=True)
     canvas.save(output)
     return True
