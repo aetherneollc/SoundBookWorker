@@ -117,6 +117,8 @@ def process(manifest: Path) -> None:
         output = Path('media') / f'pixel-actor-{Path(name).stem}.png'
         try:
             results[name] = str(output) if make_sprite(Path(name), output, session) else ''
+            if not results[name]:
+                print(f'Pixel sprite failed geometry or segmentation: {Path(name).name}', flush=True)
         except Exception as exc:
             print(f'Pixel sprite rejected for {Path(name).name}: {type(exc).__name__}', flush=True)
             results[name] = ''
@@ -125,6 +127,8 @@ def process(manifest: Path) -> None:
         output = Path('media') / f'pixel-rover-{Path(name).stem}.png'
         try:
             rover_results[name] = str(output) if make_rover_sprite(Path(name), output, session) else ''
+            if not rover_results[name]:
+                print(f'Rover sprite failed geometry or segmentation: {Path(name).name}', flush=True)
         except Exception as exc:
             print(f'Rover sprite rejected for {Path(name).name}: {type(exc).__name__}', flush=True)
             rover_results[name] = ''
