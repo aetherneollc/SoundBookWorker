@@ -31,19 +31,10 @@ def pixel_story_source(item: dict, public: Path) -> str:
     with Image.open(path) as image:
         if image.width <= 4 or image.height <= 4:
             return ''
-        image = ImageOps.fit(image.convert('RGB'), (160, 90), method=Image.Resampling.LANCZOS)
-        # A shared warm/cool palette prevents photo-like lighting and color noise
-        # from competing with the hand-built character and prop sprites.
-        colors = [
-            '#101a2a', '#1b2a3d', '#294158', '#3e5b70', '#577789', '#78919b',
-            '#9db2b4', '#d6dccd', '#f5e6bf', '#e8b66c', '#c97a56', '#85535d',
-            '#38554e', '#6a8055', '#b2a17b', '#f3f0e4', '#26303b', '#52616a',
-            '#a7a18e', '#d4c5a1', '#744d3c', '#a95f45', '#244a65', '#6c9e9e',
-        ]
-        palette = Image.new('P', (len(colors), 1))
-        palette.putpalette([int(colors[i][j:j + 2], 16) for i in range(len(colors)) for j in (1, 3, 5)] + [0] * (768 - 3 * len(colors)))
-        image = image.quantize(palette=palette, dither=Image.Dither.NONE).convert('RGB')
-        image = image.resize((320, 180), Image.Resampling.NEAREST)
+        image = ImageOps.fit(image.convert('RGB'), (320, 180), method=Image.Resampling.LANCZOS)
+        # Keep enough detail for signs of a workshop while removing photographic
+        # grain that conflicts with the crisp, layered game characters.
+        image = image.quantize(colors=48, method=Image.Quantize.MEDIANCUT, dither=Image.Dither.NONE).convert('RGB')
         digest = hashlib.sha256(image.tobytes()).hexdigest()[:20]
         target = Path('media') / f'pixel-plate-{digest}.png'
         target.parent.mkdir(parents=True, exist_ok=True)

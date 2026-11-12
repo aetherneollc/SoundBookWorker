@@ -30,7 +30,7 @@ class PixelPlateTests(unittest.TestCase):
             generated = root / 'public' / Path(url).name
             with Image.open(generated) as plate:
                 self.assertEqual(plate.size, (320, 180))
-                self.assertLessEqual(len(plate.getcolors(320 * 180) or []), 24)
+                self.assertLessEqual(len(plate.getcolors(320 * 180) or []), 48)
 
     def test_old_placeholder_keeps_the_procedural_backdrop(self):
         with tempfile.TemporaryDirectory() as tmp:
