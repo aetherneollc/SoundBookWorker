@@ -69,6 +69,14 @@ test('console plants the hand on the console anchor', () => {
   assert.deepEqual(body.hand, CONSOLE_ANCHOR);
 });
 
+test('timed action envelope visibly reaches and retracts the rigged hand', () => {
+  const base = {action: 'work' as const, frame: 24, duration: 48, fps: 24, fromX: 0.3, toX: 0.3};
+  const ready = pose({...base, interactionProgress: 0});
+  const contact = pose({...base, interactionProgress: 1});
+  assert.ok(contact.rightHand.x > ready.rightHand.x + 12);
+  assert.ok(contact.rightHand.y < ready.rightHand.y - 12);
+});
+
 test('rain drops fall and clear weather has none', () => {
   const first = rainDrops('rain', 2);
   const next = rainDrops('rain', 3);

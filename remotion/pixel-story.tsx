@@ -19,6 +19,16 @@ type PixelShot = {
   rover?: {action: string; speaker: string; body?: string};
 };
 
+const actionEnvelope = (event: CartoonActionEvent | undefined, progress: number) => {
+  if (!event) return undefined;
+  const start = event.start ?? 0.08;
+  const contact = event.contact ?? 0.52;
+  const end = event.end ?? 0.92;
+  if (progress <= start || progress >= end) return 0;
+  if (progress < contact) return Math.max(0, Math.min(1, (progress - start) / Math.max(0.01, contact - start)));
+  return Math.max(0, Math.min(1, (end - progress) / Math.max(0.01, end - contact)));
+};
+
 // Subtitles stay in video.tsx. Illustrated series assets are reused across shots;
 // the procedural rig remains a fallback when a free image request fails.
 export const PixelStoryShot = ({shot, width, height, speech}: {shot: PixelShot; width: number; height: number; speech: Cue[]}) => {
@@ -28,28 +38,34 @@ export const PixelStoryShot = ({shot, width, height, speech}: {shot: PixelShot; 
   const world = resolveWorld(shot.cartoon.world);
   const stageLayout = shot.stage_layout || shot.cartoon.stage_layout;
   const people = shot.cartoon.actors.filter(actor => !/阿拓|AT-1/i.test(actor.name));
+  const event = shot.cartoon.action_event;
+  const actorEvent = event?.subject !== 'rover' && event?.target !== 'rover' ? event : undefined;
+  const interactionProgress = actionEnvelope(actorEvent, progress);
+  const eventPoseAction = actorEvent && ['reach', 'press', 'secure', 'inspect'].includes(actorEvent.kind) ? 'work'
+    : actorEvent?.kind === 'signal' ? 'point' : undefined;
   const cast = people.map((actor, actorIndex) => ({
     name: actor.name,
     body: actor.body ? staticFile(actor.body) : undefined,
     speaking: speech.some(cue => cue.scene_number === shot.scene_number && cue.speaker === actor.name
       && cue.value !== 'X' && cue.value !== 'A' && shot.from + frame >= cue.from && shot.from + frame < cue.to),
     pose: pose({
-      action: actor.action,
+      action: actorIndex === 0 && eventPoseAction ? eventPoseAction : actor.action,
       frame,
       fps,
       duration: shot.duration,
       fromX: actor.from_x,
       toX: actor.to_x,
+      interactionProgress: actorIndex === 0 ? interactionProgress : undefined,
     }),
     stage: stageLayout?.actors?.[actor.name],
     actorHeight: stageLayout?.dimensions?.actor_height,
-    actionEvent: actorIndex === 0 ? shot.cartoon.action_event : undefined,
+    actionEvent: actorIndex === 0 ? actorEvent : undefined,
   }));
   const actions: PoseAction[] = people.map(actor => actor.action);
   const driver = cast.find(member => member.pose.action === 'drive');
   const driving = Boolean(driver) || shot.rover?.action === 'drive';
   const vehicle = driver?.pose.vehicle ?? (driving ? vehicleMotion(progress) : null);
-  const actionEvent = shot.cartoon.action_event;
+  const actionEvent = event;
   const eventRoverAction = actionEvent?.target === 'rover' || actionEvent?.subject === 'rover'
     ? actionEvent.kind === 'signal' ? 'signal'
       : actionEvent.kind === 'sample' || actionEvent.kind === 'reach' ? 'sample'

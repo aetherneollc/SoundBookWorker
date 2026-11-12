@@ -290,7 +290,7 @@ const IllustratedCharacter = ({member, frame, fps, index, duration}: {member: Ca
   const bob = walk ? Math.abs(stride) * .9 : Math.sin(frame / Math.max(1, fps) * (expressive ? 3.1 : 1.7) + index) * (expressive ? 1.1 : .35);
   const sway = body.action === 'react' ? Math.sin(frame / Math.max(1, fps) * 8) * 3
     : expressive ? Math.sin(frame / Math.max(1, fps) * 3.1 + index) * 2.5 : stride * 1.2;
-  const handMotion = actionTravel > 0 ? -12 - actionTravel * 58
+  const handMotion = actionTravel > 0 ? -12 - actionTravel * 88
     : body.action === 'work' ? -16 + Math.sin(frame / Math.max(1, fps) * 3.5 + index) * 22
     : body.action === 'point' ? -30 + Math.sin(frame / Math.max(1, fps) * 2.2 + index) * 12
       : expressive ? Math.sin(frame / Math.max(1, fps) * 3.1 + index) * 7 : 0;
@@ -298,7 +298,8 @@ const IllustratedCharacter = ({member, frame, fps, index, duration}: {member: Ca
   const actorHeight = member.actorHeight || 62;
   const actorWidth = actorHeight * .61;
   const sheet = <image href={member.body} x={-actorWidth / 2} y={-actorHeight} width={actorWidth} height={actorHeight} preserveAspectRatio="xMidYMax meet" style={{imageRendering: 'pixelated'}} />;
-  return <g transform={`translate(${Math.round(body.pelvis.x)} ${Math.round(GROUND_Y + bob)}) scale(${body.facing} 1) rotate(${sway})`}>
+  const actionLean = actionTravel > 0 ? -actionTravel * 4 : 0;
+  return <g transform={`translate(${Math.round(body.pelvis.x)} ${Math.round(GROUND_Y + bob)}) scale(${body.facing} 1) rotate(${sway + actionLean})`}>
     <defs>
       <clipPath id={`${id}-arm`}><rect x={8} y={-61} width={15} height={37} /></clipPath>
       <clipPath id={`${id}-torso`}><path d="M-22 -76 H22 V-61 H8 V-26 H-22 Z" /></clipPath>
