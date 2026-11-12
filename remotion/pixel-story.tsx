@@ -54,14 +54,15 @@ export const PixelStoryShot = ({shot, width, height, speech}: {shot: PixelShot; 
   const roverAnchor = vehicle?.x ?? (setpiece === 'generic' ? 100 : setpiece === 'fairing' ? 226 : 233);
   const focus = shot.cartoon.focus;
   const cameraEase = Math.min(1, frame / Math.max(1, fps * 0.8));
-  const slowDrift = Math.min(1, frame / Math.max(1, shot.duration)) * 5;
-  const actorWidths = [320, 275, 210];
-  const targetWidth = focus === 'wide' ? 320 : focus === 'actor' ? actorWidths[shot.index % actorWidths.length]
-    : focus === 'prop' ? 250 : 260;
+  const slowDrift = Math.min(1, frame / Math.max(1, shot.duration)) * 10;
+  const targetWidth = focus === 'wide' ? 320 : focus === 'actor' ? 210
+    : focus === 'robot' ? 200 : focus === 'prop' ? 190 : 235;
   const cameraWidth = 320 - (320 - targetWidth) * cameraEase;
   const cameraHeight = cameraWidth * 9 / 16;
+  const equipmentX = setpiece === 'vacuum' ? 115 : setpiece === 'fairing' ? 222
+    : setpiece === 'vibration' ? 230 : setpiece === 'assembly' ? 205 : 160;
   const targetX = focus === 'actor' ? cast[0]?.pose.pelvis.x ?? 160
-    : focus === 'robot' ? roverAnchor : focus === 'prop' ? 220 : 160;
+    : focus === 'robot' ? roverAnchor : focus === 'prop' ? equipmentX : 160;
   const cameraX = Math.max(0, Math.min(320 - cameraWidth, targetX - cameraWidth / 2 + (shot.index % 2 ? -slowDrift : slowDrift)));
   const cameraY = Math.max(0, 180 - cameraHeight - 7);
   return <AbsoluteFill style={{background: '#172236'}}>
