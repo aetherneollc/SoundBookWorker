@@ -315,7 +315,23 @@ const RoverSprite = ({x, y, frame, fps, action, actionProgress, moving, body, sc
   </g>;
 };
 
-const Held = ({body, prop}: {body: Pose; prop?: CartoonPlan['prop']}) => {
+const Held = ({body, prop, event, frame, duration}: {body: Pose; prop?: CartoonPlan['prop']; event?: CartoonActionEvent; frame: number; duration: number}) => {
+  if (event?.target === 'tablet') {
+    const x = body.pelvis.x + 10;
+    const y = body.pelvis.y - 27;
+    const progress = eventProgress(event, frame, duration);
+    const active = progress > .15 && progress < .95;
+    return <g>
+      <Px x={x - 12} y={y - 9} w={25} h={18} fill="#101c29" />
+      <Px x={x - 10} y={y - 7} w={21} h={14} fill="#6f9aa4" />
+      <Px x={x - 8} y={y - 5} w={17} h={10} fill="#173241" />
+      {[0, 1, 2].map(row => <g key={row}>
+        <Px x={x - 6} y={y - 3 + row * 3} w={active && row === 1 ? 12 : 8 + row} h={1.3}
+          fill={active && row === 1 ? '#f3c476' : '#7bc5bd'} />
+      </g>)}
+      <circle cx={x + 6} cy={y + 3} r={active ? 2 : 1.3} fill={active ? '#efb867' : '#b6d4cf'} />
+    </g>;
+  }
   if (body.action === 'carry') {
     const fill = prop === 'battery' ? '#efb867' : prop === 'sensor' ? '#85c9c2' : prop === 'tool' ? '#d9e3d5' : '#c48a52';
     return <g>
@@ -364,7 +380,7 @@ const Character = ({member, prop, frame, fps, duration, index}: {member: CastMem
     {limb(limbs.upperArm, body.rightShoulder.x, body.rightShoulder.y, body.rightArm)}
     {limb(limbs.forearm, body.rightElbow.x, body.rightElbow.y, body.rightForearm)}
     {limb(limbs.hand, body.rightHand.x, body.rightHand.y, body.rightForearm)}
-    <Held body={body} prop={prop} />
+    <Held body={body} prop={prop} event={member.actionEvent} frame={frame} duration={duration} />
   </g>;
   if (body.facing > 0) return draw;
   const origin = body.pelvis.x;

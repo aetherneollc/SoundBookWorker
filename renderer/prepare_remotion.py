@@ -56,6 +56,16 @@ def ensure_stage_contract(shot: dict) -> None:
     cartoon = shot.get('cartoon') if isinstance(shot.get('cartoon'), dict) else None
     if cartoon is None:
         return
+    place = f"{shot.get('location', '')} {shot.get('scene_title', '')} {shot.get('description', '')}"
+    if not isinstance(cartoon.get('world'), dict):
+        cartoon['world'] = {}
+    world = cartoon['world']
+    # Old manifests often carried the model's default exterior world even for
+    # control rooms and spacecraft cabins. Repair the scene from explicit text.
+    if re.search(r'控制室|控制间|控制舱|控制中心|主控台|控制台|主屏幕|航天器内部|飞船内部|舱内|cabin|control room', place, re.I):
+        world.update({'room': 'interior', 'light': 'lamp'})
+    elif re.search(r'月面|月球表面|地面发射场|室外|露天', place):
+        world['room'] = 'exterior'
     if not isinstance(cartoon.get('stage_layout'), dict):
         place = f"{shot.get('location', '')} {shot.get('scene_title', '')} {shot.get('description', '')}"
         setpiece = ('thermal_vacuum_chamber' if re.search(r'热真空|真空试验', place) else
@@ -88,6 +98,20 @@ def ensure_stage_contract(shot: dict) -> None:
     layout.setdefault('actors', {})
     layout.setdefault('rover', {'x': .62, 'depth': .58, 'surface': 'floor'})
     layout.setdefault('setpiece', {'id': 'generic', 'depth': .55})
+    # A pre-existing generic setpiece is only a fallback, not an instruction
+    # to erase the location encoded in the shot. In particular, orbital cabin
+    # shots must not inherit the same exterior test-yard background.
+    if layout['setpiece'].get('id') in ('', 'generic'):
+        if re.search(r'月球轨道|航天器内部|飞船内部|轨道舱|太空|orbit|spacecraft interior', place, re.I):
+            layout['setpiece']['id'] = 'orbit'
+        elif re.search(r'热真空|真空试验', place):
+            layout['setpiece']['id'] = 'thermal_vacuum_chamber'
+        elif re.search(r'振动|vibration', place, re.I):
+            layout['setpiece']['id'] = 'vibration_table'
+        elif re.search(r'整流罩|载荷集成大厅|封舱|fairing', place, re.I):
+            layout['setpiece']['id'] = 'payload_fairing'
+        elif re.search(r'装配|集成|assembly', place, re.I):
+            layout['setpiece']['id'] = 'assembly_station'
     layout['dimensions'].setdefault('actor_height', 62)
     layout['dimensions'].setdefault('rover_width', 56)
     layout['dimensions'].setdefault('rover_height', 38)
@@ -102,7 +126,6 @@ def ensure_stage_contract(shot: dict) -> None:
     cartoon.setdefault('stage_layout', layout)
     shot['stage_layout'] = layout
     if not isinstance(cartoon.get('action_event'), dict):
-        place = f"{shot.get('description', '')} {shot.get('scene_title', '')}"
         rover_action = str((shot.get('rover') or {}).get('action') or '')
         if re.search(r'合拢|关闭|闭合|封舱', place): kind, target = 'close', 'fairing'
         elif re.search(r'打开|张开|分离', place): kind, target = 'open', 'fairing'
@@ -125,6 +148,19 @@ def ensure_stage_contract(shot: dict) -> None:
                 'target': target, 'start': .08, 'contact': .52, 'end': .92,
                 'from_state': 'ready', 'to_state': {'close': 'closed', 'open': 'open', 'secure': 'secured',
                     'press': 'released', 'vibrate': 'tested', 'sample': 'sampled', 'fall': 'fallen', 'recover': 'upright'}.get(kind, 'changed')}
+    event = cartoon.get('action_event')
+    if isinstance(event, dict):
+        # Target and performer must agree with the action in the actual shot.
+        # The old planner assigned every event to actors[0], which silently
+        # made a second character's tablet operation disappear.
+        if re.search(r'平板|tablet', place, re.I):
+            event['target'] = 'tablet'
+            event['subject'] = 'character'
+        actors = [actor for actor in cartoon.get('actors', []) if isinstance(actor, dict) and actor.get('name')]
+        named = sorted(((str(actor['name']), place.find(str(actor['name']))) for actor in actors
+                        if place.find(str(actor['name'])) >= 0), key=lambda item: item[1])
+        if event.get('subject') == 'character' and named:
+            event['actor_name'] = named[0][0]
 
 
 def parse_srt(path: Path, offset: float, fps: int) -> list[dict]:

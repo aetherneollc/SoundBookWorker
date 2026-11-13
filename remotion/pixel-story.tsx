@@ -50,25 +50,28 @@ export const PixelStoryShot = ({shot, width, height, speech}: {shot: PixelShot; 
       ? {...rawEvent, subject: 'rover' as const}
       : rawEvent;
   const actorEvent = event?.subject === 'character' ? event : undefined;
+  const matchedActorIndex = actorEvent?.actor_name ? people.findIndex(actor => actor.name === actorEvent.actor_name) : -1;
+  const activeActorIndex = matchedActorIndex >= 0 ? matchedActorIndex : 0;
   const interactionProgress = actionEnvelope(actorEvent, progress);
   const eventPoseAction = actorEvent && ['reach', 'press', 'secure', 'inspect'].includes(actorEvent.kind)
       || actorEvent?.kind === 'move' && actorEvent.target === 'panel' ? 'work'
     : actorEvent?.kind === 'signal' ? 'point' : undefined;
-  const interactionTargetX = actorEvent?.target === 'rover' ? stageLayout?.rover.x ?? .66
+  const interactionTargetX = actorEvent?.target === 'tablet' ? people[activeActorIndex]?.from_x
+    : actorEvent?.target === 'rover' ? stageLayout?.rover.x ?? .66
     : actorEvent?.target === 'panel' ? event?.subject === 'rover' ? .72 : CONSOLE_ANCHOR.x / 320
       : ['fairing', 'cable', 'latch', 'test_platform'].includes(actorEvent?.target || '') ? .70 : undefined;
   const cast = people.map((actor, actorIndex) => {
     const actorStage = stageLayout?.actors?.[actor.name];
-    const action = actorIndex === 0 && eventPoseAction
+    const action = actorIndex === activeActorIndex && eventPoseAction
       ? interactionTargetX !== undefined && Math.abs(interactionTargetX - actor.from_x) > .13 ? 'walk' : eventPoseAction
       : actor.action;
-    const toX = actorIndex === 0 && interactionTargetX !== undefined
+    const toX = actorIndex === activeActorIndex && interactionTargetX !== undefined
       ? Math.max(0.08, Math.min(0.92, interactionTargetX + (actor.from_x <= interactionTargetX ? -.06 : .06))) : actor.to_x;
     const poseInput = {action, frame, fps, duration: shot.duration, fromX: actor.from_x, toX,
-      interactionProgress: actorIndex === 0 ? interactionProgress : undefined} as const;
+      interactionProgress: actorIndex === activeActorIndex ? interactionProgress : undefined} as const;
     const firstPose = pose(poseInput);
     let interactionTarget: Vec2 | undefined;
-    if (actorIndex === 0 && actorEvent?.target === 'panel') {
+    if (actorIndex === activeActorIndex && actorEvent?.target === 'panel') {
       const contactPoint = actorEvent.kind === 'press'
         ? {x: CONSOLE_ANCHOR.x + 11, y: CONSOLE_ANCHOR.y - 10.5}
         : {x: CONSOLE_ANCHOR.x, y: CONSOLE_ANCHOR.y - 19};
@@ -81,13 +84,23 @@ export const PixelStoryShot = ({shot, width, height, speech}: {shot: PixelShot; 
         y: GROUND_Y + (contactPoint.y - floor) / actorScale,
       };
     }
+    if (actorIndex === activeActorIndex && actorEvent?.target === 'tablet') {
+      const depth = actorStage?.depth ?? .5;
+      const depthScale = .70 + depth * .46;
+      const actorScale = (stageLayout?.dimensions?.actor_height || 52) / 52 * depthScale;
+      const target = {x: firstPose.pelvis.x + 10, y: firstPose.pelvis.y - 25};
+      interactionTarget = {
+        x: firstPose.pelvis.x + (target.x - firstPose.pelvis.x) / actorScale,
+        y: GROUND_Y + (target.y - firstPose.groundY) / actorScale,
+      };
+    }
     return {
       name: actor.name,
       speaking: speech.some(cue => cue.scene_number === shot.scene_number && cue.speaker === actor.name
         && cue.value !== 'X' && cue.value !== 'A' && shot.from + frame >= cue.from && shot.from + frame < cue.to),
       pose: pose({...poseInput, interactionTarget}),
       stage: actorStage,
-      actionEvent: actorIndex === 0 ? actorEvent : undefined,
+      actionEvent: actorIndex === activeActorIndex ? actorEvent : undefined,
     };
   });
   const actions: PoseAction[] = people.map(actor => actor.action);
@@ -112,6 +125,7 @@ export const PixelStoryShot = ({shot, width, height, speech}: {shot: PixelShot; 
     : layoutId === 'vibration_table' ? 'vibration'
       : layoutId === 'payload_fairing' ? 'fairing'
         : layoutId === 'assembly_station' ? 'assembly'
+          : layoutId === 'orbit' ? 'orbit'
           : controlCutaway ? 'generic' : /热真空|真空试验|thermal.vacuum/i.test(place) ? 'vacuum'
             : /振动|vibration/i.test(place) ? 'vibration'
               : /轨道|航天器内部|太空|orbit/i.test(place) ? 'orbit'
@@ -130,8 +144,8 @@ export const PixelStoryShot = ({shot, width, height, speech}: {shot: PixelShot; 
   const equipmentX = setpiece === 'vacuum' ? 115 : setpiece === 'fairing' ? 222
     : setpiece === 'vibration' ? 230 : setpiece === 'assembly' ? 205 : 160;
   const targetX = eventFocus && focus === 'wide' ? actionEvent?.subject === 'rover' ? roverAnchor
-    : interactionTargetX !== undefined ? ((cast[0]?.pose.pelvis.x ?? 160) + interactionTargetX * 320) / 2 : cast[0]?.pose.pelvis.x ?? 160
-    : focus === 'actor' ? cast[0]?.pose.pelvis.x ?? 160
+    : interactionTargetX !== undefined ? ((cast[activeActorIndex]?.pose.pelvis.x ?? 160) + interactionTargetX * 320) / 2 : cast[activeActorIndex]?.pose.pelvis.x ?? 160
+    : focus === 'actor' ? cast[activeActorIndex]?.pose.pelvis.x ?? 160
     : focus === 'robot' ? roverAnchor : focus === 'prop' ? equipmentX : 160;
   const cameraX = Math.max(0, Math.min(320 - cameraWidth, targetX - cameraWidth / 2 + (shot.index % 2 ? -slowDrift : slowDrift)));
   const cameraY = Math.max(0, 180 - cameraHeight - 7);

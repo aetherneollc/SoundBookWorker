@@ -16,7 +16,7 @@ export type StageLayout = {version: 1; coordinate_space: {width: 320; height: 18
   actors: Record<string, StageAnchor>; rover: StageAnchor; setpiece: {id: string; depth: number}};
 export type CartoonActionEvent = {kind: 'move' | 'reach' | 'press' | 'secure' | 'open' | 'close' | 'vibrate' | 'sample' | 'signal' | 'inspect' | 'fall' | 'recover';
   subject: 'character' | 'rover' | 'environment';
-  target: 'fairing' | 'cable' | 'latch' | 'test_platform' | 'rover' | 'panel' | 'ground';
+  target: 'fairing' | 'cable' | 'latch' | 'test_platform' | 'rover' | 'panel' | 'tablet' | 'ground'; actor_name?: string;
   start: number; contact: number; end: number; from_state: string; to_state: string};
 export type CartoonPlan = {actors: CartoonActorPlan[]; prop?: 'tool' | 'battery' | 'sensor' | 'console' | 'crate' | 'none';
   focus?: 'actor' | 'robot' | 'prop' | 'wide'; world?: CartoonWorld; stage_layout?: StageLayout; action_event?: CartoonActionEvent};
