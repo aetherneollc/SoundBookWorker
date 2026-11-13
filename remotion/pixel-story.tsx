@@ -120,6 +120,8 @@ export const PixelStoryShot = ({shot, width, height, speech}: {shot: PixelShot; 
     : /状态灯.{0,12}(?:琥珀|黄色|警示|amber)/i.test(shot.description || '') ? '#efb45a' : undefined;
   const roverStatusBlink = /状态灯.{0,12}(?:闪|规律亮|blink)/i.test(shot.description || '');
   const controlCutaway = /整流罩旁/.test(shot.location || '') && /控制室|control room/i.test(shot.description || '');
+  const groundControlScene = /地面控制|控制室|控制中心|控制台|主控台|control room/i.test(place);
+  const orbitScene = !groundControlScene && /月球轨道|航天器内部|飞船内部|轨道舱|太空|spacecraft interior/i.test(place);
   const layoutId = stageLayout?.setpiece.id;
   const setpiece = layoutId === 'thermal_vacuum_chamber' ? 'vacuum'
     : layoutId === 'vibration_table' ? 'vibration'
@@ -128,7 +130,7 @@ export const PixelStoryShot = ({shot, width, height, speech}: {shot: PixelShot; 
           : layoutId === 'orbit' ? 'orbit'
           : controlCutaway ? 'generic' : /热真空|真空试验|thermal.vacuum/i.test(place) ? 'vacuum'
             : /振动|vibration/i.test(place) ? 'vibration'
-              : /轨道|航天器内部|太空|orbit/i.test(place) ? 'orbit'
+              : orbitScene ? 'orbit'
               : /整流罩|载荷集成大厅|封舱|fairing/i.test(place) ? 'fairing'
                 : /集成|装配|assembly|integration/i.test(place) ? 'assembly' : 'generic';
   const roverVisible = Boolean(shot.rover || vehicle || /阿拓|AT-1|机器人|月球车|探测车|rover/i.test(place));

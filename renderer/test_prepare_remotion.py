@@ -49,6 +49,21 @@ class PrepareRemotionTests(unittest.TestCase):
         self.assertEqual(shot['cartoon']['world']['room'], 'interior')
         self.assertEqual(shot['cartoon']['stage_layout']['setpiece']['id'], 'orbit')
 
+    def test_ground_control_orbit_telemetry_is_not_mistaken_for_spacecraft_view(self):
+        shot = {
+            'scene_title': '姿态读数', 'location': '地球停泊轨道遥测阶段',
+            'description': '林岚在地面控制室主屏幕前按下 HOLD。', 'pixel_story': True,
+            'cartoon': {
+                'world': {'room': 'exterior', 'light': 'day'}, 'actors': [{'name': '林岚'}],
+                'stage_layout': {'setpiece': {'id': 'generic'}},
+            },
+        }
+
+        ensure_stage_contract(shot)
+
+        self.assertEqual(shot['cartoon']['stage_layout']['setpiece']['id'], 'generic')
+        self.assertEqual(shot['cartoon']['world']['room'], 'interior')
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -102,7 +102,11 @@ def ensure_stage_contract(shot: dict) -> None:
     # to erase the location encoded in the shot. In particular, orbital cabin
     # shots must not inherit the same exterior test-yard background.
     if layout['setpiece'].get('id') in ('', 'generic'):
-        if re.search(r'月球轨道|航天器内部|飞船内部|轨道舱|太空|orbit|spacecraft interior', place, re.I):
+        scene_text = f"{shot.get('scene_title', '')} {shot.get('description', '')}"
+        control_cutaway = re.search(r'地面控制|控制室|控制中心|控制台|主控台|control room', scene_text, re.I)
+        spacecraft_scene = re.search(r'航天器内部|飞船内部|轨道舱|太空|spacecraft interior|space', scene_text, re.I)
+        lunar_orbit_scene = re.search(r'月球轨道', scene_text) or ('月球轨道' in place and not control_cutaway)
+        if (spacecraft_scene or lunar_orbit_scene) and not control_cutaway:
             layout['setpiece']['id'] = 'orbit'
         elif re.search(r'热真空|真空试验', place):
             layout['setpiece']['id'] = 'thermal_vacuum_chamber'
