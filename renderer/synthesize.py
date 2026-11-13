@@ -36,6 +36,32 @@ def synthesize(manifest_path: Path) -> None:
     doc = json.loads(manifest_path.read_text(encoding="utf-8"))
     if doc.get("tts_engine") != "moss":
         return
+    language = str(doc.get("language"))
+    default_voice = DEFAULT_VOICE.get(language, "Weiguo")
+    output_dir = Path("media/moss")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    intro_text = str(doc.get("intro_tts_text") or "").strip()
+    intro_voice = str(doc.get("intro_tts_voice") or default_voice)
+    intro_output = output_dir / "intro.wav"
+    tracks = [(track, str(track.get("tts_voice") or default_voice), str(track.get("tts_text") or "").strip())
+              for track in doc.get("audio_tracks", []) if str(track.get("tts_text") or "").strip()]
+    cached_paths = [(track, output_dir / f"line-{speech_cache_id(language, voice, text)}.wav")
+                    for track, voice, text in tracks]
+    missing_intro = bool(intro_text) and (not intro_output.is_file() or intro_output.stat().st_size < 4096)
+    missing_lines = [(track, voice, text, output) for (track, voice, text), (_, output) in zip(tracks, cached_paths)
+                     if not output.is_file() or output.stat().st_size < 4096]
+
+    # On rerenders, exact episode caches already contain paced WAVs. Link those
+    # files to the manifest without importing or installing the MOSS runtime.
+    if not missing_intro and not missing_lines:
+        if intro_text:
+            doc["intro_voice_file"] = str(intro_output)
+        for track, output in cached_paths:
+            track["file"] = str(output)
+        manifest_path.write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
+        print(f"MOSS cache linked: {len(cached_paths)} speech tracks", flush=True)
+        return
+
     moss_dir = Path(os.environ.get("MOSS_REPO", "moss-tts-nano")).resolve()
     sys.path.insert(0, str(moss_dir))
     from onnx_tts_runtime import OnnxTtsRuntime  # type: ignore
@@ -48,18 +74,12 @@ def synthesize(manifest_path: Path) -> None:
     available_voices = {str(row["voice"]) for row in voice_rows}
     if not voice_rows:
         raise RuntimeError("MOSS model has no built-in voices")
-    language = str(doc.get("language"))
-    default_voice = DEFAULT_VOICE.get(language, "Weiguo")
     if default_voice not in available_voices:
         default_voice = str(voice_rows[0]["voice"])
-    output_dir = Path("media/moss")
-    output_dir.mkdir(parents=True, exist_ok=True)
-    intro_text = str(doc.get("intro_tts_text") or "").strip()
     if intro_text:
         intro_voice = str(doc.get("intro_tts_voice") or default_voice)
         if intro_voice not in available_voices:
             intro_voice = default_voice
-        intro_output = output_dir / "intro.wav"
         if not intro_output.is_file() or intro_output.stat().st_size < 4096:
             intro_result = runtime.synthesize(
                 text=intro_text, voice=intro_voice, output_audio_path=intro_output,
@@ -73,12 +93,9 @@ def synthesize(manifest_path: Path) -> None:
         doc["intro_voice_file"] = str(intro_output)
         print(f"MOSS intro: {len(intro_text)} characters, voice {intro_voice}", flush=True)
     count = 0
-    for track in doc.get("audio_tracks", []):
-        text = str(track.get("tts_text") or "").strip()
-        if not text:
-            continue
+    for track, requested_voice, text in tracks:
         count += 1
-        voice = str(track.get("tts_voice") or default_voice)
+        voice = requested_voice
         if voice not in available_voices:
             voice = default_voice
         # Cache speech by the exact text/voice/language, not by episode line number.
