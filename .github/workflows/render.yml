@@ -176,11 +176,13 @@ jobs:
           restore-keys: |
             moss-speech-v3-${{ runner.os }}-
       - name: Cache episode announcement
+        id: intro_cache
         uses: actions/cache@v4
         with:
           path: media/moss/intro.wav
           key: moss-intro-v1-${{ runner.os }}-${{ steps.speech_cache.outputs.intro_key }}
       - name: Install MOSS CPU runtime
+        if: ${{ hashFiles('manifest.json') != '' && !(steps.speech_cache_restore.outputs.cache-hit == 'true' && steps.intro_cache.outputs.cache-hit == 'true') }}
         run: |
           python - <<'PY'
           import json
@@ -199,6 +201,7 @@ jobs:
           fi
       - name: Generate MOSS speech
         id: speech_generate
+        if: ${{ hashFiles('manifest.json') != '' && !(steps.speech_cache_restore.outputs.cache-hit == 'true' && steps.intro_cache.outputs.cache-hit == 'true') }}
         run: |
           if [ "$(cat needs-moss)" = yes ]; then
             python renderer/synthesize.py manifest.json
