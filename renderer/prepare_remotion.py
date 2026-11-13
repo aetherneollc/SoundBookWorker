@@ -11,6 +11,13 @@ def frame(seconds: float, fps: int) -> int:
     return max(0, round(seconds * fps))
 
 
+def cue_frames(start: float, end: float, fps: int) -> tuple[int, int]:
+    """Keep short phoneme cues visible after converting seconds to frames."""
+    first = max(0, math.floor(start * fps))
+    last = max(first + 1, math.ceil(end * fps))
+    return first, last
+
+
 def source(item: dict, public: Path) -> str:
     path = Path(item['file']).resolve()
     if not path.is_file():
@@ -295,8 +302,9 @@ def prepare(manifest: Path, output: Path) -> None:
         audio.append(audio_entry)
         if not track.get('loop') and track.get('scene_number') is not None and track.get('speaker') and int(track['scene_number']) in animated_scenes:
             for cue in speech_cues(Path(track['file']), str(track.get('caption_text', '')), str(doc.get('language') or 'zh')):
-                speech.append({'from': frame(start + cue['start'], fps),
-                               'to': frame(start + cue['end'], fps),
+                cue_start, cue_end = cue_frames(start + cue['start'], start + cue['end'], fps)
+                speech.append({'from': cue_start,
+                               'to': cue_end,
                                'value': cue['value'], 'speaker': str(track['speaker']),
                                'scene_number': int(track['scene_number']),
                                'dialogue_number': int(track.get('dialogue_number') or 0)})
