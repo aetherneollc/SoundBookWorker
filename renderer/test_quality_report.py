@@ -44,6 +44,15 @@ class QualityReportTests(unittest.TestCase):
         self.assertIn('scene 1: fewer than two camera compositions', issues)
         self.assertIn('scene 1: fewer than two visible action events', issues)
 
+    def test_reports_and_gates_character_to_rover_scale_consistency(self):
+        props = {'shots': [shot(1, 'wide'), shot(1, 'actor'), shot(1, 'robot')]}
+        issues, summary = validate_props(props)
+        self.assertEqual(issues, [])
+        self.assertEqual(summary['world_scale']['actor_to_rover_height_ratio'], round(62 / 38, 3))
+        props['shots'][1]['cartoon']['stage_layout']['dimensions']['actor_height'] = 88
+        issues, _ = validate_props(props)
+        self.assertTrue(any('character-to-rover scale drifts more than 15%' in item for item in issues))
+
     def test_voice_captions_must_cover_audio_without_overflow(self):
         props = {'durationInFrames': 240, 'audio': [
             {'from': 24, 'duration': 48, 'scene_number': 1, 'dialogue_number': 1},
@@ -83,6 +92,7 @@ class QualityReportTests(unittest.TestCase):
 
     def test_action_evidence_saves_three_frames_and_motion_measure(self):
         import subprocess
+        from PIL import Image
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             video = root / 'sample.mp4'
@@ -103,6 +113,8 @@ class QualityReportTests(unittest.TestCase):
             self.assertEqual(evidence[0]['motion_signal'], 'visible_change')
             self.assertEqual(contact, 'action-contact.jpg')
             self.assertTrue((root / 'qa' / contact).is_file())
+            with Image.open(root / 'qa' / evidence[0]['frames'][0]) as image:
+                self.assertEqual(image.size, (256, 144))
 
     def test_missing_ffprobe_produces_a_report_instead_of_a_traceback(self):
         props = {'width': 1280, 'height': 720, 'fps': 24, 'durationInFrames': 24, 'shots': [shot(1, 'wide')]}

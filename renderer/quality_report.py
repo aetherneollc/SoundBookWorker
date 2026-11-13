@@ -60,6 +60,7 @@ def validate_props(props: dict) -> tuple[list[str], dict]:
     issues: list[str] = []
     shots = props.get('shots') if isinstance(props.get('shots'), list) else []
     per_scene: dict[int, dict[str, object]] = defaultdict(lambda: {'focus': set(), 'events': 0, 'shots': 0})
+    stage_dimensions: list[tuple[int, int, int]] = []
     pixel_shots = 0
     for index, shot in enumerate(shots, 1):
         if not shot.get('pixel_story'):
@@ -69,6 +70,11 @@ def validate_props(props: dict) -> tuple[list[str], dict]:
         state = per_scene[scene_number]
         state['shots'] = int(state['shots']) + 1
         cartoon = shot.get('cartoon') if isinstance(shot.get('cartoon'), dict) else {}
+        layout = stage_layout(shot)
+        if layout:
+            dimensions = layout.get('dimensions') or {}
+            if all(isinstance(dimensions.get(key), (int, float)) for key in ('actor_height', 'rover_width', 'rover_height')):
+                stage_dimensions.append((int(dimensions['actor_height']), int(dimensions['rover_width']), int(dimensions['rover_height'])))
         if cartoon.get('focus'):
             state['focus'].add(cartoon['focus'])  # type: ignore[union-attr]
         if cartoon.get('action_event'):
@@ -78,6 +84,17 @@ def validate_props(props: dict) -> tuple[list[str], dict]:
     if pixel_shots and pixel_shots != len(shots):
         # A scientific serial must not silently switch renderers half way through.
         issues.append(f'mixed renderer modes in one episode ({pixel_shots}/{len(shots)} pixel-story shots)')
+    world_scale = None
+    if stage_dimensions:
+        reference = stage_dimensions[0]
+        reference_ratio = reference[0] / max(1, reference[2])
+        world_scale = {'actor_height': reference[0], 'rover_width': reference[1], 'rover_height': reference[2],
+                       'actor_to_rover_height_ratio': round(reference_ratio, 3)}
+        for index, current in enumerate(stage_dimensions[1:], 2):
+            ratio = current[0] / max(1, current[2])
+            if abs(ratio / reference_ratio - 1) > .15:
+                issues.append(f'shot {index}: character-to-rover scale drifts more than 15%')
+                break
     for scene, state in sorted(per_scene.items()):
         if state['shots'] >= 3 and len(state['focus']) < 2:
             issues.append(f'scene {scene}: fewer than two camera compositions')
@@ -144,6 +161,7 @@ def validate_props(props: dict) -> tuple[list[str], dict]:
     return issues, {'shot_count': len(shots), 'pixel_story_shot_count': pixel_shots,
                     'caption_count': len(captions), 'voice_track_count': len(speech_tracks),
                     'speech_cue_count': len(speech_cues),
+                    'world_scale': world_scale,
                     'scene_count': len(per_scene), 'scenes': {
                         str(scene): {'shot_count': state['shots'], 'focuses': sorted(state['focus']),
                                      'action_event_count': state['events']}
@@ -204,7 +222,7 @@ def extract_action_evidence(video: Path, props: dict, directory: Path) -> tuple[
             name = f"action-shot-{index:03d}-{label}.jpg"
             target = directory / name
             command(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-ss', f'{seconds:.3f}', '-i', str(video),
-                     '-frames:v', '1', '-vf', 'scale=128:72', '-q:v', '5', str(target)])
+                     '-frames:v', '1', '-vf', 'scale=256:144', '-q:v', '5', str(target)])
             samples.append(target)
             files.append(target)
         def frame_difference(first: Path, last: Path) -> float:
@@ -237,7 +255,7 @@ def extract_action_evidence(video: Path, props: dict, directory: Path) -> tuple[
         })
     if not files:
         return evidence, None
-    columns = 12
+    columns = 6
     rows = math.ceil(len(files) / columns)
     sheet = directory / 'action-contact.jpg'
     subprocess.run(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-pattern_type', 'glob', '-i',
@@ -303,6 +321,9 @@ def run(manifest_path: Path, props_path: Path, video: Path, out_dir: Path) -> di
         'media': {'bytes': video.stat().st_size if video.is_file() else 0,
                   'duration_seconds': float(media.get('format', {}).get('duration') or 0) if media else 0,
                   'video_codec': next((s.get('codec_name') for s in media.get('streams', []) if s.get('codec_type') == 'video'), None) if media else None,
+                  'width': next((s.get('width') for s in media.get('streams', []) if s.get('codec_type') == 'video'), None) if media else None,
+                  'height': next((s.get('height') for s in media.get('streams', []) if s.get('codec_type') == 'video'), None) if media else None,
+                  'frame_rate': next((s.get('avg_frame_rate') for s in media.get('streams', []) if s.get('codec_type') == 'video'), None) if media else None,
                   'audio_codec': next((s.get('codec_name') for s in media.get('streams', []) if s.get('codec_type') == 'audio'), None) if media else None},
         'storyboard': storyboard,
         'exact_duplicate_center_frames': duplicate_count,
