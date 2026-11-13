@@ -58,7 +58,6 @@ export const PixelStoryShot = ({shot, width, height, speech}: {shot: PixelShot; 
       : ['fairing', 'cable', 'latch', 'test_platform'].includes(actorEvent?.target || '') ? .70 : undefined;
   const cast = people.map((actor, actorIndex) => ({
     name: actor.name,
-    body: actor.body ? staticFile(actor.body) : undefined,
     speaking: speech.some(cue => cue.scene_number === shot.scene_number && cue.speaker === actor.name
       && cue.value !== 'X' && cue.value !== 'A' && shot.from + frame >= cue.from && shot.from + frame < cue.to),
     pose: pose({
@@ -74,7 +73,6 @@ export const PixelStoryShot = ({shot, width, height, speech}: {shot: PixelShot; 
       interactionProgress: actorIndex === 0 ? interactionProgress : undefined,
     }),
     stage: stageLayout?.actors?.[actor.name],
-    actorHeight: stageLayout?.dimensions?.actor_height,
     actionEvent: actorIndex === 0 ? actorEvent : undefined,
   }));
   const actions: PoseAction[] = people.map(actor => actor.action);
