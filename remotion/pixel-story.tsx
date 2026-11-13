@@ -1,7 +1,7 @@
 import {AbsoluteFill, staticFile, useCurrentFrame, useVideoConfig} from 'remotion';
 import type {CartoonActionEvent, CartoonPlan} from './cartoon';
 import {PixelWorld} from './game/scene';
-import {frameRoom, pose, poseProgress, resolveWorld, vehicleMotion, type PoseAction} from './game/pose';
+import {CONSOLE_ANCHOR, frameRoom, pose, poseProgress, resolveWorld, vehicleMotion, type PoseAction} from './game/pose';
 
 type Cue = {from: number; to: number; value: string; speaker: string; scene_number: number};
 type PixelShot = {
@@ -38,13 +38,23 @@ export const PixelStoryShot = ({shot, width, height, speech}: {shot: PixelShot; 
   const world = resolveWorld(shot.cartoon.world);
   const stageLayout = shot.stage_layout || shot.cartoon.stage_layout;
   const people = shot.cartoon.actors.filter(actor => !/阿拓|AT-1/i.test(actor.name));
-  const event = shot.cartoon.action_event;
+  const robotActor = shot.cartoon.actors.some(actor => /阿拓|AT-1/i.test(actor.name));
+  const rawEvent = shot.cartoon.action_event;
+  // The model occasionally labels a human's console action as a rover action,
+  // or labels AT-1's arm movement as a human action. Normalize from the cast
+  // actually present so the action drives the visible actor in the scene.
+  const event = rawEvent && rawEvent.target === 'panel' && rawEvent.subject === 'rover'
+      && rawEvent.kind !== 'signal' && people.length
+    ? {...rawEvent, subject: 'character' as const}
+    : rawEvent && rawEvent.subject === 'character' && robotActor && !people.length
+      ? {...rawEvent, subject: 'rover' as const}
+      : rawEvent;
   const actorEvent = event?.subject === 'character' ? event : undefined;
   const interactionProgress = actionEnvelope(actorEvent, progress);
   const eventPoseAction = actorEvent && ['reach', 'press', 'secure', 'inspect'].includes(actorEvent.kind) ? 'work'
     : actorEvent?.kind === 'signal' ? 'point' : undefined;
   const interactionTargetX = actorEvent?.target === 'rover' ? stageLayout?.rover.x ?? .66
-    : actorEvent?.target === 'panel' ? .62
+    : actorEvent?.target === 'panel' ? event?.subject === 'rover' ? .72 : CONSOLE_ANCHOR.x / 320
       : ['fairing', 'cable', 'latch', 'test_platform'].includes(actorEvent?.target || '') ? .70 : undefined;
   const cast = people.map((actor, actorIndex) => ({
     name: actor.name,
@@ -80,6 +90,9 @@ export const PixelStoryShot = ({shot, width, height, speech}: {shot: PixelShot; 
     : undefined;
   const roverAction = eventRoverAction || (shot.rover?.action && shot.rover.action !== 'idle' ? shot.rover.action : 'idle');
   const place = `${shot.location || ''} ${shot.scene_title || ''} ${shot.description || ''}`;
+  const roverStatusColor = /状态灯.{0,12}(?:绿色|变为绿|就绪|green)/i.test(shot.description || '') ? '#67d889'
+    : /状态灯.{0,12}(?:琥珀|黄色|警示|amber)/i.test(shot.description || '') ? '#efb45a' : undefined;
+  const roverStatusBlink = /状态灯.{0,12}(?:闪|规律亮|blink)/i.test(shot.description || '');
   const controlCutaway = /整流罩旁/.test(shot.location || '') && /控制室|control room/i.test(shot.description || '');
   const layoutId = stageLayout?.setpiece.id;
   const setpiece = layoutId === 'thermal_vacuum_chamber' ? 'vacuum'
@@ -88,6 +101,7 @@ export const PixelStoryShot = ({shot, width, height, speech}: {shot: PixelShot; 
         : layoutId === 'assembly_station' ? 'assembly'
           : controlCutaway ? 'generic' : /热真空|真空试验|thermal.vacuum/i.test(place) ? 'vacuum'
             : /振动|vibration/i.test(place) ? 'vibration'
+              : /轨道|航天器内部|太空|orbit/i.test(place) ? 'orbit'
               : /整流罩|载荷集成大厅|封舱|fairing/i.test(place) ? 'fairing'
                 : /集成|装配|assembly|integration/i.test(place) ? 'assembly' : 'generic';
   const roverVisible = Boolean(shot.rover || vehicle || /阿拓|AT-1|机器人|月球车|探测车|rover/i.test(place));
@@ -118,7 +132,10 @@ export const PixelStoryShot = ({shot, width, height, speech}: {shot: PixelShot; 
         progress={progress}
         vehicle={vehicle}
         roverAction={roverAction}
-        roverBody={shot.rover?.body ? staticFile(shot.rover.body) : undefined}
+        roverBody={shot.rover?.body ? staticFile(shot.rover.body) : shot.cartoon.actors.find(actor => /阿拓|AT-1/i.test(actor.name))?.body
+          ? staticFile(shot.cartoon.actors.find(actor => /阿拓|AT-1/i.test(actor.name))!.body!) : undefined}
+        roverStatusColor={roverStatusColor}
+        roverStatusBlink={roverStatusBlink}
         prop={shot.cartoon.prop}
         cast={cast}
         entering={actions.includes('enter')}
@@ -126,7 +143,7 @@ export const PixelStoryShot = ({shot, width, height, speech}: {shot: PixelShot; 
         roverVisible={roverVisible}
         background={shot.src && setpiece === 'generic' && world.room !== 'interior' ? staticFile(shot.src) : undefined}
         stageLayout={stageLayout}
-        actionEvent={shot.cartoon.action_event}
+        actionEvent={event}
         shotDuration={shot.duration}
       />
     </svg>

@@ -101,20 +101,59 @@ const Interior = ({world, kind}: {world: WorldState; kind: Setpiece}) => {
   </g>;
 };
 
-const ConsoleDesk = () => {
+const ConsoleDesk = ({frame, duration, event}: {frame: number; duration: number; event?: CartoonActionEvent}) => {
   const x = CONSOLE_ANCHOR.x;
   const y = CONSOLE_ANCHOR.y;
+  const progress = eventProgress(event, frame, duration);
+  const pressing = event?.target === 'panel' && event.kind === 'press' && progress > 0.72;
+  const inspecting = event?.target === 'panel' && event.kind === 'inspect' && progress > 0.2;
+  const transferring = event?.target === 'panel' && ['move', 'press'].includes(event.kind) && progress > 0.25;
   return <g>
-    <Px x={x - 18} y={y - 10} w={36} h={22} fill="#172236" />
-    <Px x={x - 16} y={y - 8} w={32} h={16} fill="#1b3c4c" />
-    <Px x={x - 12} y={y - 4} w={16} h={3} fill="#85c9c2" />
-    <Px x={x + 6} y={y - 4} w={5} h={3} fill="#efb867" />
-    <Px x={x - 14} y={y + 12} w={4} h={GROUND_Y - (y + 12)} fill="#172236" />
-    <Px x={x + 10} y={y + 12} w={4} h={GROUND_Y - (y + 12)} fill="#172236" />
+    <Px x={x - 28} y={y - 29} w={56} h={36} fill="#101f2c" />
+    <Px x={x - 26} y={y - 27} w={52} h={32} fill="#1b3c4c" />
+    <Px x={x - 23} y={y - 24} w={46} h={20} fill="#142d3a" />
+    {[0, 1, 2].map((row) => <g key={row}>
+      <Px x={x - 20} y={y - 21 + row * 6} w={7 + row * 2} h={1.5} fill={inspecting && row === 1 ? '#f3c476' : '#85c9c2'} />
+      <Px x={x - 9} y={y - 21 + row * 6} w={8 + row} h={1.5} fill="#6d99a5" />
+      <Px x={x + 4} y={y - 21 + row * 6} w={12} h={1.5} fill={transferring && row === 2 ? '#f3c476' : '#557887'} />
+    </g>)}
+    <Px x={x + 9} y={y - 24} w={12} h={3} fill={transferring ? '#efb867' : '#315466'} />
+    <text x={x + 15} y={y - 21.5} fill="#152633" fontSize="3.2" textAnchor="middle" fontFamily="monospace">REVIEW</text>
+    <Px x={x - 22} y={y + 1} w={44} h={5} fill="#243d4a" />
+    <Px x={x - 19} y={y + 2} w={12} h={3} fill={pressing ? '#a8483a' : '#d47a54'} />
+    <text x={x - 13} y={y + 4.5} fill="#fff0d6" fontSize="3.4" textAnchor="middle" fontFamily="monospace">HOLD</text>
+    {[0, 1, 2, 3].map(i => <Px key={i} x={x + 1 + i * 5} y={y + 2} w={3} h={3} fill={i === 2 && pressing ? '#82d58f' : '#9eb8bc'} />)}
+    <Px x={x - 22} y={y + 7} w={5} h={GROUND_Y - (y + 7)} fill="#172236" />
+    <Px x={x + 17} y={y + 7} w={5} h={GROUND_Y - (y + 7)} fill="#172236" />
   </g>;
 };
 
-type Setpiece = 'generic' | 'vacuum' | 'vibration' | 'fairing' | 'assembly';
+type Setpiece = 'generic' | 'vacuum' | 'vibration' | 'fairing' | 'assembly' | 'orbit';
+
+const OrbitBackdrop = () => <g shapeRendering="crispEdges">
+  <Px x={0} y={0} w={320} h={180} fill="#081521" />
+  {[[22, 20], [61, 39], [107, 17], [152, 31], [280, 24], [301, 67], [34, 84], [267, 117], [182, 73], [123, 104], [294, 151], [71, 142]].map(([x, y], i) =>
+    <Px key={i} x={x} y={y} w={i % 4 === 0 ? 2 : 1} h={i % 4 === 0 ? 2 : 1} fill={i % 3 === 0 ? '#d8e7ec' : '#8da8b9'} />)}
+  <circle cx="40" cy="193" r="87" fill="#1c527d" stroke="#71bbd4" strokeWidth="5" />
+  <path d="M-34 140 Q38 91 115 132 Q145 147 164 184 Q82 178 6 214Z" fill="#3c8d9a" opacity=".75" />
+  <path d="M-4 150 Q22 135 47 140 M68 161 Q94 149 121 158" fill="none" stroke="#d7e1d4" strokeWidth="5" opacity=".7" />
+  <Px x={199} y={40} w={50} h={5} fill="#516e7e" /><Px x={218} y={27} w={5} h={33} fill="#516e7e" />
+  <Px x={195} y={36} w={58} h={3} fill="#a3bbc3" /><Px x={220} y={22} w={3} h={40} fill="#a3bbc3" />
+</g>;
+
+const StarTrackerPanel = ({frame, duration, event}: {frame: number; duration: number; event?: CartoonActionEvent}) => {
+  const progress = eventProgress(event, frame, duration);
+  const active = event?.target === 'panel' && (event.kind === 'reach' || event.kind === 'inspect') && progress > .35;
+  return <g shapeRendering="crispEdges">
+    <Px x={218} y={93} w={48} h={35} fill="#102331" /><Px x={221} y={96} w={42} h={29} fill="#254254" />
+    <Px x={225} y={100} w={34} h={20} fill="#0c1d2a" />
+    <Px x={229} y={104} w={7} h={2} fill="#87c8bb" /><Px x={240} y={104} w={14} h={2} fill="#a1b6bd" />
+    <Px x={229} y={110} w={7} h={2} fill={active ? '#f0b95f' : '#87c8bb'} /><Px x={240} y={110} w={14} h={2} fill="#8baab7" />
+    <Px x={229} y={116} w={25} h={1} fill="#648999" />
+    <circle cx="236" cy="121" r="2.5" fill={active ? '#61d889' : '#e9ad59'} stroke="#d9e8e5" strokeWidth=".8" />
+    <Px x={224} y={128} w={4} h={10} fill="#516e7e" /><Px x={255} y={128} w={4} h={10} fill="#516e7e" />
+  </g>;
+};
 
 const eventProgress = (event: CartoonActionEvent | undefined, frame: number, duration: number) => {
   if (!event) return 0;
@@ -134,6 +173,7 @@ const actionEnvelope = (event: CartoonActionEvent | undefined, frame: number, du
 };
 
 const EngineeringSetpiece = ({kind, frame, duration, actionEvent, layer = 'back'}: {kind: Setpiece; frame: number; duration: number; actionEvent?: CartoonActionEvent; layer?: 'back' | 'front'}) => {
+  if (kind === 'orbit') return null;
   if (kind === 'vacuum') return <g>
     <Px x={178} y={46} w={112} h={100} fill="#182633" />
     <Px x={184} y={52} w={100} h={88} fill="#a4bac3" />
@@ -222,19 +262,21 @@ const EngineeringSetpiece = ({kind, frame, duration, actionEvent, layer = 'back'
   return null;
 };
 
-const RoverSprite = ({x, y, frame, fps, action, actionProgress, moving, body, scale, width, height}: {x: number; y: number; frame: number; fps: number; action: string; actionProgress: number; moving: boolean; body?: string; scale: number; width: number; height: number}) => {
+const RoverSprite = ({x, y, frame, fps, action, actionProgress, moving, body, scale, width, height, statusColor, statusBlink}: {x: number; y: number; frame: number; fps: number; action: string; actionProgress: number; moving: boolean; body?: string; scale: number; width: number; height: number; statusColor?: string; statusBlink?: boolean}) => {
   const spin = moving ? frame * 22 : 0;
   const reach = action === 'reach' || action === 'sample';
   const wave = Math.sin(frame / Math.max(1, fps) * (reach ? 3 : 1.5));
   const arm = reach ? -34 - actionProgress * 48 + wave * 14 : -14 + wave * 8;
   const elbow = reach ? 28 + Math.sin(frame / Math.max(1, fps) * 2.1) * 8 : 10;
   const blink = action === 'signal' && frame % 16 < 8;
+  const statusVisible = statusColor && (!statusBlink || frame % 16 < 9);
   const tilt = !moving && action === 'fall' ? Math.min(14, frame / Math.max(1, fps) * 9)
     : !moving && action === 'recover' ? Math.max(0, 14 - frame / Math.max(1, fps) * 7) : 0;
   if (body) return <g transform={`translate(${Math.round(x)} ${Math.round(y)}) scale(${scale}) rotate(${tilt})`}>
     <ellipse cx={0} cy={0} rx={23} ry={3.2} fill="#10202d" opacity={.48} />
     <g transform={`translate(0 ${Math.sin(frame / Math.max(1, fps) * (moving ? 8 : 1.7)) * (moving ? .8 : .25)})`}>
       <image href={body} x={-width / 2} y={-height} width={width} height={height} preserveAspectRatio="xMidYMax meet" style={{imageRendering: 'pixelated'}} />
+      {statusVisible && <g><circle cx={0} cy={-height * .67} r={4.2} fill={statusColor} opacity={.22} /><circle cx={0} cy={-height * .67} r={2.2} fill={statusColor} stroke="#e4ece8" strokeWidth={.8} /></g>}
       {reach && <g transform={`translate(${width * .16} ${-height * .57}) rotate(${-8 - actionProgress * 54})`}>
         <path d="M0 0L9 0L17 -3L24 -3" fill="none" stroke="#172b3b" strokeWidth={5} strokeLinecap="square" />
         <path d="M0 0L9 0L17 -3L24 -3" fill="none" stroke="#d5e2df" strokeWidth={2.5} strokeLinecap="square" />
@@ -256,7 +298,7 @@ const RoverSprite = ({x, y, frame, fps, action, actionProgress, moving, body, sc
     <path d="M-17 -13H17" stroke="#ee9e48" strokeWidth={1.5} />
     <path d="M-12 -26L-9 -34H8L12 -26" fill="#2e5065" stroke="#233b4a" strokeWidth={1.2} />
     <path d="M-10 -34H10L8 -39H-8Z" fill="#cddfe2" stroke="#203c4b" strokeWidth={1.2} />
-    <path d="M-5 -38H5" stroke={blink ? '#f3b45d' : '#78d4e0'} strokeWidth={2} strokeLinecap="round" />
+    <path d="M-5 -38H5" stroke={statusVisible ? statusColor : blink ? '#f3b45d' : '#78d4e0'} strokeWidth={2} strokeLinecap="round" />
     <path d="M-22 -22L-28 -24M22 -22L28 -24" stroke="#a9c8ce" strokeWidth={1.8} strokeLinecap="round" />
     <g transform={`translate(22 -23) rotate(${arm})`}>
       <path d="M0 0L3 13" stroke="#203d4c" strokeWidth={5} strokeLinecap="round" />
@@ -377,7 +419,7 @@ const Wash = ({light}: {light: Light}) => {
 };
 
 export const PixelWorld = ({
-  room, world, frame, fps, progress, vehicle, roverAction, roverBody, prop, cast, entering, setpiece, roverVisible, background, stageLayout, actionEvent, shotDuration,
+  room, world, frame, fps, progress, vehicle, roverAction, roverBody, prop, cast, entering, setpiece, roverVisible, background, stageLayout, actionEvent, roverStatusColor, roverStatusBlink, shotDuration,
 }: {
   room: Room;
   world: WorldState;
@@ -395,6 +437,8 @@ export const PixelWorld = ({
   background?: string;
   stageLayout?: StageLayout;
   actionEvent?: CartoonActionEvent;
+  roverStatusColor?: string;
+  roverStatusBlink?: boolean;
   shotDuration: number;
 }) => {
   const doorOpen = entering && progress >= 0.32 && progress < DOOR_PROGRESS;
@@ -408,18 +452,20 @@ export const PixelWorld = ({
   const roverAnchor = stageLayout?.rover;
   const platformShake = actionEvent?.kind === 'vibrate' && actionEvent.target === 'test_platform'
     ? Math.sin(frame * Math.PI * 2 / 4) * 1.6 : 0;
-  const roverY = (roverAnchor?.surface === 'test_platform' ? 101 : floorY(roverAnchor?.depth ?? 0.5)) + platformShake;
+  const roverY = setpiece === 'orbit' ? 134 : (roverAnchor?.surface === 'test_platform' ? 101 : floorY(roverAnchor?.depth ?? 0.5)) + platformShake;
   const roverScale = roverAnchor ? 0.70 + roverAnchor.depth * 0.46 : 1;
   const showRover = roverVisible || Boolean(vehicle);
   return <g>
-    {background ? <g>
+    {setpiece === 'orbit' ? <OrbitBackdrop /> : background ? <g>
       <image href={background} x={0} y={0} width={320} height={180} preserveAspectRatio="xMidYMid slice" style={{imageRendering: 'pixelated'}} />
       <Px x={0} y={0} w={320} h={180} fill="#14263a" opacity={.18} />
     </g> : room === 'interior' ? <Interior world={world} kind={setpiece} /> : <Exterior world={world} doorOpen={doorOpen} />}
     {(!background || setpiece !== 'generic') && <EngineeringSetpiece kind={setpiece} frame={frame} duration={shotDuration} actionEvent={actionEvent} layer="back" />}
-    {!background && showConsole && setpiece === 'generic' && <ConsoleDesk />}
+    {setpiece === 'orbit' && <StarTrackerPanel frame={frame} duration={shotDuration} event={actionEvent} />}
+    {setpiece !== 'orbit' && showConsole && setpiece === 'generic' && (!background || actionEvent?.target === 'panel')
+      && <ConsoleDesk frame={frame} duration={shotDuration} event={actionEvent} />}
     {showRover && <RoverSprite x={roverX} y={roverY} frame={frame} fps={fps} action={vehicle ? 'drive' : roverAction} actionProgress={actionEnvelope(actionEvent?.subject === 'rover' ? actionEvent : undefined, frame, shotDuration)} moving={Boolean(vehicle)} body={roverBody} scale={roverScale}
-      width={stageLayout?.dimensions?.rover_width || 56} height={stageLayout?.dimensions?.rover_height || 38} />}
+      width={stageLayout?.dimensions?.rover_width || 56} height={stageLayout?.dimensions?.rover_height || 38} statusColor={roverStatusColor} statusBlink={roverStatusBlink} />}
     {cast.map((member, index) => {
       const anchor = member.stage;
       const ground = floorY(anchor?.depth ?? 0.5);
