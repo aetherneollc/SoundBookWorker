@@ -1,7 +1,7 @@
 import {AbsoluteFill, staticFile, useCurrentFrame, useVideoConfig} from 'remotion';
 import type {CartoonActionEvent, CartoonPlan} from './cartoon';
 import {PixelWorld} from './game/scene';
-import {CONSOLE_ANCHOR, frameRoom, pose, poseProgress, resolveWorld, vehicleMotion, type PoseAction} from './game/pose';
+import {CONSOLE_ANCHOR, GROUND_Y, frameRoom, pose, poseProgress, resolveWorld, vehicleMotion, type PoseAction, type Vec2} from './game/pose';
 
 type Cue = {from: number; to: number; value: string; speaker: string; scene_number: number};
 type PixelShot = {
@@ -51,30 +51,45 @@ export const PixelStoryShot = ({shot, width, height, speech}: {shot: PixelShot; 
       : rawEvent;
   const actorEvent = event?.subject === 'character' ? event : undefined;
   const interactionProgress = actionEnvelope(actorEvent, progress);
-  const eventPoseAction = actorEvent && ['reach', 'press', 'secure', 'inspect'].includes(actorEvent.kind) ? 'work'
+  const eventPoseAction = actorEvent && ['reach', 'press', 'secure', 'inspect'].includes(actorEvent.kind)
+      || actorEvent?.kind === 'move' && actorEvent.target === 'panel' ? 'work'
     : actorEvent?.kind === 'signal' ? 'point' : undefined;
   const interactionTargetX = actorEvent?.target === 'rover' ? stageLayout?.rover.x ?? .66
     : actorEvent?.target === 'panel' ? event?.subject === 'rover' ? .72 : CONSOLE_ANCHOR.x / 320
       : ['fairing', 'cable', 'latch', 'test_platform'].includes(actorEvent?.target || '') ? .70 : undefined;
-  const cast = people.map((actor, actorIndex) => ({
-    name: actor.name,
-    speaking: speech.some(cue => cue.scene_number === shot.scene_number && cue.speaker === actor.name
-      && cue.value !== 'X' && cue.value !== 'A' && shot.from + frame >= cue.from && shot.from + frame < cue.to),
-    pose: pose({
-      action: actorIndex === 0 && eventPoseAction
-        ? interactionTargetX !== undefined && Math.abs(interactionTargetX - actor.from_x) > .13 ? 'walk' : eventPoseAction
-        : actor.action,
-      frame,
-      fps,
-      duration: shot.duration,
-      fromX: actor.from_x,
-      toX: actorIndex === 0 && interactionTargetX !== undefined
-        ? Math.max(0.08, Math.min(0.92, interactionTargetX + (actor.from_x <= interactionTargetX ? -.06 : .06))) : actor.to_x,
-      interactionProgress: actorIndex === 0 ? interactionProgress : undefined,
-    }),
-    stage: stageLayout?.actors?.[actor.name],
-    actionEvent: actorIndex === 0 ? actorEvent : undefined,
-  }));
+  const cast = people.map((actor, actorIndex) => {
+    const actorStage = stageLayout?.actors?.[actor.name];
+    const action = actorIndex === 0 && eventPoseAction
+      ? interactionTargetX !== undefined && Math.abs(interactionTargetX - actor.from_x) > .13 ? 'walk' : eventPoseAction
+      : actor.action;
+    const toX = actorIndex === 0 && interactionTargetX !== undefined
+      ? Math.max(0.08, Math.min(0.92, interactionTargetX + (actor.from_x <= interactionTargetX ? -.06 : .06))) : actor.to_x;
+    const poseInput = {action, frame, fps, duration: shot.duration, fromX: actor.from_x, toX,
+      interactionProgress: actorIndex === 0 ? interactionProgress : undefined} as const;
+    const firstPose = pose(poseInput);
+    let interactionTarget: Vec2 | undefined;
+    if (actorIndex === 0 && actorEvent?.target === 'panel') {
+      const contactPoint = actorEvent.kind === 'press'
+        ? {x: CONSOLE_ANCHOR.x + 11, y: CONSOLE_ANCHOR.y - 10.5}
+        : {x: CONSOLE_ANCHOR.x, y: CONSOLE_ANCHOR.y - 19};
+      const depth = actorStage?.depth ?? .5;
+      const depthScale = .70 + depth * .46;
+      const actorScale = (stageLayout?.dimensions?.actor_height || 52) / 52 * depthScale;
+      const floor = stageLayout ? stageLayout.floor.far_y + (stageLayout.floor.near_y - stageLayout.floor.far_y) * depth : GROUND_Y;
+      interactionTarget = {
+        x: firstPose.pelvis.x + (contactPoint.x - firstPose.pelvis.x) / actorScale,
+        y: GROUND_Y + (contactPoint.y - floor) / actorScale,
+      };
+    }
+    return {
+      name: actor.name,
+      speaking: speech.some(cue => cue.scene_number === shot.scene_number && cue.speaker === actor.name
+        && cue.value !== 'X' && cue.value !== 'A' && shot.from + frame >= cue.from && shot.from + frame < cue.to),
+      pose: pose({...poseInput, interactionTarget}),
+      stage: actorStage,
+      actionEvent: actorIndex === 0 ? actorEvent : undefined,
+    };
+  });
   const actions: PoseAction[] = people.map(actor => actor.action);
   const driver = cast.find(member => member.pose.action === 'drive');
   const driving = Boolean(driver) || shot.rover?.action === 'drive';

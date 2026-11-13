@@ -35,6 +35,8 @@ export type PoseFrame = {
   toX?: number;
   /** 0..1 reach envelope supplied by a timed story action. */
   interactionProgress?: number;
+  /** Contact point in the unscaled stage coordinate system. */
+  interactionTarget?: Vec2;
 };
 
 export type VehicleMotion = {
@@ -310,7 +312,7 @@ export const pose = (input: PoseFrame): Pose => {
     if ((action === 'work' || action === 'walk') && side === 'right' && input.interactionProgress !== undefined) {
       const t = unit(input.interactionProgress, 1);
       const ready = {x: shoulder.x + 4, y: shoulder.y + 18};
-      const contact = {x: pelvis.x + 27, y: pelvis.y - 13};
+      const contact = input.interactionTarget ?? {x: pelvis.x + 27, y: pelvis.y - 13};
       return {x: ready.x + (contact.x - ready.x) * t, y: ready.y + (contact.y - ready.y) * t};
     }
     if (action === 'work' && side === 'right') return {x: pelvis.x + 18, y: pelvis.y - 2};

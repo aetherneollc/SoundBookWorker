@@ -108,6 +108,7 @@ const ConsoleDesk = ({frame, duration, event}: {frame: number; duration: number;
   const pressing = event?.target === 'panel' && event.kind === 'press' && progress > 0.72;
   const inspecting = event?.target === 'panel' && event.kind === 'inspect' && progress > 0.2;
   const transferring = event?.target === 'panel' && ['move', 'press'].includes(event.kind) && progress > 0.25;
+  const sending = event?.target === 'panel' && event.kind === 'press' && /send|发送|上传|回读/i.test(event.to_state);
   return <g>
     <Px x={x - 28} y={y - 29} w={56} h={36} fill="#101f2c" />
     <Px x={x - 26} y={y - 27} w={52} h={32} fill="#1b3c4c" />
@@ -120,9 +121,10 @@ const ConsoleDesk = ({frame, duration, event}: {frame: number; duration: number;
     <Px x={x + 9} y={y - 24} w={12} h={3} fill={transferring ? '#efb867' : '#315466'} />
     <text x={x + 15} y={y - 21.5} fill="#152633" fontSize="3.2" textAnchor="middle" fontFamily="monospace">REVIEW</text>
     <Px x={x - 22} y={y + 1} w={44} h={5} fill="#243d4a" />
-    <Px x={x - 19} y={y + 2} w={12} h={3} fill={pressing ? '#a8483a' : '#d47a54'} />
-    <text x={x - 13} y={y + 4.5} fill="#fff0d6" fontSize="3.4" textAnchor="middle" fontFamily="monospace">HOLD</text>
-    {[0, 1, 2, 3].map(i => <Px key={i} x={x + 1 + i * 5} y={y + 2} w={3} h={3} fill={i === 2 && pressing ? '#82d58f' : '#9eb8bc'} />)}
+    {[0, 1, 2].map(i => <Px key={i} x={x - 19 + i * 5} y={y + 2} w={3} h={3} fill={i === 1 && inspecting ? '#efb867' : '#9eb8bc'} />)}
+    <Px x={x + 1} y={y - 13} w={20} h={5} fill={pressing ? sending ? '#4e9c71' : '#a8483a' : '#d47a54'} />
+    <text x={x + 11} y={y - 9.5} fill="#fff0d6" fontSize="3.4" textAnchor="middle" fontFamily="monospace">{sending ? 'SEND' : 'HOLD'}</text>
+    {sending && progress > .7 && <g><Px x={x + 3} y={y - 26} w={17} h={5} fill="#285d52" /><text x={x + 11.5} y={y - 22.5} fill="#d9f2cf" fontSize="3.2" textAnchor="middle" fontFamily="monospace">ACK</text></g>}
     <Px x={x - 22} y={y + 7} w={5} h={GROUND_Y - (y + 7)} fill="#172236" />
     <Px x={x + 17} y={y + 7} w={5} h={GROUND_Y - (y + 7)} fill="#172236" />
   </g>;
@@ -276,7 +278,7 @@ const RoverSprite = ({x, y, frame, fps, action, actionProgress, moving, body, sc
     <ellipse cx={0} cy={0} rx={23} ry={3.2} fill="#10202d" opacity={.48} />
     <g transform={`translate(0 ${Math.sin(frame / Math.max(1, fps) * (moving ? 8 : 1.7)) * (moving ? .8 : .25)})`}>
       <image href={body} x={-width / 2} y={-height} width={width} height={height} preserveAspectRatio="xMidYMax meet" style={{imageRendering: 'pixelated'}} />
-      {statusVisible && <g><circle cx={0} cy={-height * .67} r={4.2} fill={statusColor} opacity={.22} /><circle cx={0} cy={-height * .67} r={2.2} fill={statusColor} stroke="#e4ece8" strokeWidth={.8} /></g>}
+      {statusVisible && <g><circle cx={0} cy={-height * .67} r={7} fill={statusColor} opacity={.28} /><circle cx={0} cy={-height * .67} r={3.6} fill={statusColor} stroke="#f1f5e9" strokeWidth={1.2} /></g>}
       {reach && <g transform={`translate(${width * .16} ${-height * .57}) rotate(${-8 - actionProgress * 54})`}>
         <path d="M0 0L9 0L17 -3L24 -3" fill="none" stroke="#172b3b" strokeWidth={5} strokeLinecap="square" />
         <path d="M0 0L9 0L17 -3L24 -3" fill="none" stroke="#d5e2df" strokeWidth={2.5} strokeLinecap="square" />
@@ -298,7 +300,7 @@ const RoverSprite = ({x, y, frame, fps, action, actionProgress, moving, body, sc
     <path d="M-17 -13H17" stroke="#ee9e48" strokeWidth={1.5} />
     <path d="M-12 -26L-9 -34H8L12 -26" fill="#2e5065" stroke="#233b4a" strokeWidth={1.2} />
     <path d="M-10 -34H10L8 -39H-8Z" fill="#cddfe2" stroke="#203c4b" strokeWidth={1.2} />
-    <path d="M-5 -38H5" stroke={statusVisible ? statusColor : blink ? '#f3b45d' : '#78d4e0'} strokeWidth={2} strokeLinecap="round" />
+    <path d="M-6 -38H6" stroke={statusVisible ? statusColor : blink ? '#f3b45d' : '#78d4e0'} strokeWidth={statusVisible ? 4 : 2} strokeLinecap="round" />
     <path d="M-22 -22L-28 -24M22 -22L28 -24" stroke="#a9c8ce" strokeWidth={1.8} strokeLinecap="round" />
     <g transform={`translate(22 -23) rotate(${arm})`}>
       <path d="M0 0L3 13" stroke="#203d4c" strokeWidth={5} strokeLinecap="round" />
