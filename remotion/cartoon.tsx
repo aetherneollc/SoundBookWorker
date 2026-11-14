@@ -1,14 +1,14 @@
 import React from 'react';
 import {AbsoluteFill, Img, interpolate, spring, staticFile, useCurrentFrame, useVideoConfig} from 'remotion';
-import {Rover, type RoverAction} from './rover';
+import {RobotPuppet, type RobotRig, type RoverAction} from './robot';
 
-export type CartoonAction = 'idle' | 'walk' | 'work' | 'point' | 'talk' | 'react' | 'carry' | 'console';
+export type CartoonAction = 'idle' | 'walk' | 'work' | 'point' | 'wave' | 'talk' | 'react' | 'carry' | 'console';
 export type CartoonActorPlan = {name: string; action: CartoonAction; from_x: number; to_x: number};
 export type CartoonPlan = {actors: CartoonActorPlan[]; prop?: 'tool' | 'battery' | 'sensor' | 'console' | 'crate' | 'none'; focus?: 'actor' | 'robot' | 'prop' | 'wide'};
 type Cue = {from: number; to: number; value: string; speaker: string; scene_number: number};
 type Stage = {background: string; foreground?: string};
 type Shot = {from: number; duration: number; index: number; label?: string; scene_number?: number;
-  stage?: Stage; src: string; rover?: {action: RoverAction; speaker: string}; cartoon: CartoonPlan; cartoon_phase?: number};
+  stage?: Stage; src: string; rover?: {action: RoverAction; speaker: string; rig?: RobotRig}; cartoon: CartoonPlan; cartoon_phase?: number};
 
 const clamp = {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'} as const;
 const eased = (frame: number, duration: number) => {
@@ -31,7 +31,7 @@ const Person = ({name, action, frame, fps, duration, fromX, toX, speaking, width
   const walking = action === 'walk' || Math.abs(toX - fromX) > .08;
   const stride = walking ? Math.sin(frame / fps * 10) : 0;
   const actionWave = Math.sin(frame / fps * (action === 'work' ? 8 : 3));
-  const wave = action === 'point' ? -52 : action === 'work' ? -25 + actionWave * 18
+  const wave = action === 'wave' ? -82 + actionWave * 16 : action === 'point' ? -52 : action === 'work' ? -25 + actionWave * 18
     : action === 'console' ? -39 + actionWave * 6 : action === 'carry' ? -34 : stride * 17;
   const leftArm = action === 'react' ? 44 + actionWave * 8 : walking ? -stride * 16 : -6 + Math.sin(frame / fps * 1.7) * 2;
   const x = interpolate(eased(frame, duration), [0, 1], [fromX, toX], clamp) * width;
@@ -116,7 +116,7 @@ const Prop = ({kind, frame, fps, width, height}: {kind: CartoonPlan['prop']; fra
   </svg>;
 };
 
-export const CartoonShot = ({shot, width, height, speech}: {shot: Shot; width: number; height: number; speech: Cue[]}) => {
+export const CartoonShot = ({shot, width, height, speech, robotRig}: {shot: Shot; width: number; height: number; speech: Cue[]; robotRig?: RobotRig | null}) => {
   const frame = useCurrentFrame(), {fps} = useVideoConfig();
   const stage = shot.stage;
   const p = eased(frame, shot.duration);
@@ -140,14 +140,13 @@ export const CartoonShot = ({shot, width, height, speech}: {shot: Shot; width: n
   return <AbsoluteFill style={{overflow: 'hidden', background: '#0c1c2c', fontFamily: '"Noto Sans CJK SC", sans-serif'}}>
     <AbsoluteFill style={{transform: `translate(${shiftX}px, ${shiftY}px) scale(${cam})`,
       transformOrigin: phase ? '50% 50%' : '50% 70%'}}>
-      {bg && <Img src={staticFile(bg)} style={{width: '100%', height: '100%', objectFit: 'cover',
-        filter: 'saturate(.67) contrast(.94) brightness(.86) blur(1.4px)'}} />}
-      <div style={{position: 'absolute', inset: 0, background: 'linear-gradient(0deg,#0c1a2a66,transparent 42%), #2049701c'}} />
+      {bg && <Img src={staticFile(bg)} style={{width: '100%', height: '100%', objectFit: 'cover'}} />}
+      <div style={{position: 'absolute', inset: 0, background: 'linear-gradient(0deg,#0c1a2a44,transparent 36%)'}} />
       <Prop kind={shot.cartoon.prop} frame={frame} fps={fps} width={width} height={height} />
       {shot.cartoon.actors.map((actor, i) => <Person key={`${actor.name}-${i}`} name={actor.name} action={actor.action}
         frame={motionFrame} fps={fps} duration={motionDuration} fromX={actor.from_x} toX={actor.to_x}
         speaking={active(actor.name)} width={width} height={height} index={i} />)}
-      {shot.rover && <Rover frame={motionFrame} fps={fps} duration={motionDuration} action={shot.rover.action}
+      {shot.rover && <RobotPuppet rig={shot.rover.rig ?? robotRig} frame={motionFrame} fps={fps} duration={motionDuration} action={shot.rover.action}
         speaking={active(shot.rover.speaker)} width={width*.50} height={height*.60} left="45%" />}
     </AbsoluteFill>
     {shot.label && <div style={{position: 'absolute', left: width*.055, top: height*.05, padding: '8px 15px',

@@ -1,11 +1,12 @@
 import React from 'react';
 import {AbsoluteFill, Img, Sequence, interpolate, spring, staticFile, useCurrentFrame, useVideoConfig} from 'remotion';
 import {Audio} from '@remotion/media';
-import {Rover, type RoverAction} from './rover';
+import {RobotPuppet, type RobotRig, type RoverAction} from './robot';
 import {CartoonShot, type CartoonPlan} from './cartoon';
+import {StoryShot, type StoryMotion, type StoryPlate} from './story';
 
-type LayerSet = {background: string; body: string; head?: string; arm_left?: string; arm_right?: string;
-  subject_x: number; subject_y: number; character?: string;
+type LayerSet = {background: string; body: string; body2?: string; head?: string; arm_left?: string; arm_right?: string;
+  subject_x: number; subject_y: number; subject2_x?: number; subject2_y?: number; character?: string;
   head_pivot_x?: number; head_pivot_y?: number; arm_left_pivot_x?: number; arm_left_pivot_y?: number;
   arm_right_pivot_x?: number; arm_right_pivot_y?: number;
   mouth?: Record<string, string>; mouth_mode?: 'led'; mouth_x?: number; mouth_y?: number; mouth_width?: number;
@@ -15,9 +16,9 @@ type StageActor = {cells: Record<string, string>; expression: string; talking: b
 type Stage = {background: string; foreground?: string; camera?: string; enter?: string;
   speaker?: string; line?: string; actors: StageActor[]};
 type Shot = {src: string; from: number; duration: number; index: number; camera?: string;
-  label?: string; fact_card?: string; section?: string; layers?: LayerSet; stage?: Stage; scene_number?: number;
-  technical_overlay?: boolean; rover?: {action: RoverAction; speaker: string}; storyboard?: string; storyboard_phase?: number;
-  cartoon?: CartoonPlan; cartoon_phase?: number};
+  label?: string; fact_card?: string; section?: string; layers?: LayerSet; stage?: Stage; plate?: StoryPlate; scene_number?: number;
+  technical_overlay?: boolean; rover?: {action: RoverAction; speaker: string; rig?: RobotRig}; storyboard?: string; storyboard_phase?: number;
+  cartoon?: CartoonPlan; cartoon_phase?: number; story_motion?: StoryMotion; story_motion_phase?: number};
 type Track = {src: string; from: number; volume: number; loop: boolean};
 type Caption = {from: number; to: number; text: string};
 type Speech = {from: number; to: number; value: string; speaker: string; scene_number: number};
@@ -25,7 +26,7 @@ type Card = {name: string; tagline?: string; url?: string; qr?: string};
 export type SoundBookProps = {width: number; height: number; fps: number; durationInFrames: number;
   introFrames: number; shots: Shot[]; audio: Track[]; captions: Caption[]; speech: Speech[];
   episodeNumber: number; title: string; language: string; cta: Card | null;
-  ctaFrom: number; ctaFrames: number};
+  ctaFrom: number; ctaFrames: number; robotRig?: RobotRig | null};
 
 const font = '"Noto Sans CJK SC", "Noto Sans", sans-serif';
 const clamp = {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'} as const;
@@ -148,7 +149,7 @@ const Intro = ({props}: {props: SoundBookProps}) => {
   </AbsoluteFill>;
 };
 
-const StageShot = ({shot, width, height, speech}: {shot: Shot; width: number; height: number; speech: Speech[]}) => {
+const StageShot = ({shot, width, height, speech, robotRig}: {shot: Shot; width: number; height: number; speech: Speech[]; robotRig?: RobotRig | null}) => {
   const frame = useCurrentFrame(), {fps} = useVideoConfig();
   const stage = shot.stage!;
   const p = Math.min(1, frame / Math.max(1, shot.duration - 1));
@@ -201,7 +202,7 @@ const StageShot = ({shot, width, height, speech}: {shot: Shot; width: number; he
           </div>
         </div>;
       })}
-      {shot.rover && <Rover frame={frame + (sciencePhase ? shot.duration : 0)} fps={fps}
+      {shot.rover && <RobotPuppet rig={shot.rover.rig ?? robotRig} frame={frame + (sciencePhase ? shot.duration : 0)} fps={fps}
         duration={shot.duration * (shot.storyboard_phase === undefined ? 1 : 2)} action={shot.rover.action}
         speaking={speech.some(cue => cue.scene_number === shot.scene_number && cue.speaker === shot.rover?.speaker
           && cue.value !== 'X' && cue.value !== 'A' && shot.from + frame >= cue.from && shot.from + frame < cue.to)}
@@ -259,7 +260,7 @@ const StageShot = ({shot, width, height, speech}: {shot: Shot; width: number; he
   </AbsoluteFill>;
 };
 
-const MotionShot = ({shot, width, height, speech}: {shot: Shot; width: number; height: number; speech: Speech[]}) => {
+const MotionShot = ({shot, width, height, speech, robotRig}: {shot: Shot; width: number; height: number; speech: Speech[]; robotRig?: RobotRig | null}) => {
   const frame = useCurrentFrame(), {fps} = useVideoConfig();
   const p = Math.min(1, frame / Math.max(1, shot.duration - 1));
   const camera = (shot.camera || '').toLowerCase();
@@ -329,7 +330,7 @@ const MotionShot = ({shot, width, height, speech}: {shot: Shot; width: number; h
         </div>}
     </> : <Img src={staticFile(shot.src)} style={{...imageStyle,
       transform: `scale(${scale}) translate(${panX}px,${panY}px)`}} />}
-    {shot.rover && <Rover frame={frame} fps={fps} duration={shot.duration} action={shot.rover.action}
+    {shot.rover && <RobotPuppet rig={shot.rover.rig ?? robotRig} frame={frame} fps={fps} duration={shot.duration} action={shot.rover.action}
       speaking={Boolean(speaking)} width={width * .50} height={height * .60} />}
     <div style={{position: 'absolute', inset: 0,
       background: 'linear-gradient(90deg,#0814268a,transparent 35%,transparent 70%,#07121e45),linear-gradient(0deg,#07111dc7,transparent 29%)'}} />
@@ -366,9 +367,9 @@ const CaptionLayer = ({captions, width, height}: {captions: Caption[]; width: nu
   const cue = captions.find(c => frame >= c.from && frame < c.to);
   if (!cue) return null;
   const reveal = spring({fps, frame: frame-cue.from, config: {damping: 20, stiffness: 200}});
-  return <div style={{position: 'absolute', left: width * .08, right: width * .08, bottom: height * .045,
-    minHeight: height * .11, padding: '12px 20px', borderRadius: 12, background: '#07111ee0',
-    color: '#fff', fontFamily: font, fontSize: Math.max(26, Math.round(height * .041)),
+  return <div style={{position: 'absolute', left: width * .08, right: width * .08, bottom: height * .014,
+    minHeight: height * .074, padding: '6px 20px', borderRadius: 10, background: '#07111ec4',
+    color: '#fff', fontFamily: font, fontSize: Math.max(24, Math.round(height * .035)),
     fontWeight: 850, textAlign: 'center', lineHeight: 1.4, textShadow: '0 2px 5px #000',
     transform: `translateY(${(1-reveal)*18}px)`, opacity: reveal,
     display: 'flex', justifyContent: 'center', alignItems: 'center'}}>{cue.text}</div>;
@@ -396,11 +397,25 @@ export const SoundBook = (props: SoundBookProps) => {
   const frame = useCurrentFrame();
   return <AbsoluteFill style={{background: '#07101f'}}>
     {props.introFrames > 0 && <Sequence from={0} durationInFrames={props.introFrames}><Intro props={props} /></Sequence>}
-    {props.shots.map(shot => <Sequence key={`${shot.index}-${shot.from}`} from={shot.from} durationInFrames={shot.duration}>
-      {shot.cartoon ? <CartoonShot shot={{...shot, cartoon: shot.cartoon}} width={props.width} height={props.height} speech={props.speech || []} />
-        : shot.stage ? <StageShot shot={shot} width={props.width} height={props.height} speech={props.speech || []} />
-        : <MotionShot shot={shot} width={props.width} height={props.height} speech={props.speech || []} />}
-    </Sequence>)}
+    {props.shots.map((shot, shotArrayIdx) => {
+      const motion = shot.story_motion;
+      const prevShot = shotArrayIdx > 0 ? props.shots[shotArrayIdx - 1] : undefined;
+      const nextShot = shotArrayIdx + 1 < props.shots.length ? props.shots[shotArrayIdx + 1] : undefined;
+      // Same-scene phase 0 -> phase 1 splits use a crisp 0-lead frame-accurate handoff so semi-transparent puppets never double-expose!
+      const isPhaseContinuation =
+        motion &&
+        shot.story_motion_phase === 1 &&
+        prevShot?.story_motion_phase === 0 &&
+        prevShot?.scene_number === shot.scene_number;
+      const isPuppetStory = Boolean(motion && (shot.plate || motion.actors?.some(a => Boolean(a.rig))));
+      const storyLead = shot.cartoon || !motion || isPhaseContinuation || isPuppetStory ? 0 : Math.min(6, shot.from);
+      return <Sequence key={`${shot.index}-${shot.from}`} from={shot.from - storyLead} durationInFrames={shot.duration + storyLead}>
+        {shot.cartoon ? <CartoonShot shot={{...shot, cartoon: shot.cartoon}} width={props.width} height={props.height} speech={props.speech || []} robotRig={props.robotRig} />
+          : motion ? <StoryShot shot={{...shot, story_motion: motion}} prevShot={prevShot && prevShot.story_motion ? {...prevShot, story_motion: prevShot.story_motion} : undefined} nextShot={nextShot && nextShot.story_motion ? {...nextShot, story_motion: nextShot.story_motion} : undefined} lead={storyLead} width={props.width} height={props.height} speech={props.speech || []} robotRig={props.robotRig} />
+          : shot.stage ? <StageShot shot={shot} width={props.width} height={props.height} speech={props.speech || []} robotRig={props.robotRig} />
+          : <MotionShot shot={shot} width={props.width} height={props.height} speech={props.speech || []} robotRig={props.robotRig} />}
+      </Sequence>;
+    })}
     {props.cta && props.ctaFrames > 0 && <Sequence from={props.ctaFrom} durationInFrames={props.ctaFrames}>
       <EndCard card={props.cta} frames={props.ctaFrames} />
     </Sequence>}

@@ -41,13 +41,34 @@ def _rhubarb(path: Path, text: str, language: str) -> list[dict] | None:
         return None
 
 
-def _energy(path: Path) -> list[dict]:
-    # This fallback drives simple open/close shapes. It never pretends to infer phonemes.
+def _read_mono_16k_samples(path: Path) -> tuple[list[int] | memoryview, int]:
+    if path.suffix.lower() == '.wav':
+        import wave
+        try:
+            with wave.open(str(path), 'rb') as wf:
+                channels = wf.getnchannels()
+                sampwidth = wf.getsampwidth()
+                rate = wf.getframerate()
+                raw = wf.readframes(wf.getnframes())
+            if sampwidth == 2 and rate > 0:
+                shorts = memoryview(raw).cast('h')
+                if channels == 1:
+                    return shorts, rate
+                mono = [int(sum(shorts[i + c] for c in range(channels)) / channels)
+                        for i in range(0, len(shorts) - channels + 1, channels)]
+                return mono, rate
+        except Exception:
+            pass
     pcm = subprocess.run(['ffmpeg', '-nostdin', '-v', 'error', '-i', str(path), '-ac', '1',
                           '-ar', '16000', '-f', 's16le', '-'], capture_output=True,
                          check=True, timeout=90).stdout
-    sample_rate, window = 16000, 800  # 50 ms
-    samples = memoryview(pcm).cast('h')
+    return memoryview(pcm).cast('h'), 16000
+
+
+def _energy(path: Path) -> list[dict]:
+    # This fallback drives simple open/close shapes. It never pretends to infer phonemes.
+    samples, sample_rate = _read_mono_16k_samples(path)
+    window = max(1, round(sample_rate * 0.05))  # 50 ms
     levels = []
     for start in range(0, len(samples), window):
         values = samples[start:start + window]

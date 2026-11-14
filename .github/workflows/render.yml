@@ -47,7 +47,7 @@ jobs:
           fc-cache -f "$HOME/.local/share/fonts"
           ffmpeg -version | head -n 1
       - name: Install S3 client
-        run: python -m pip install boto3 'qrcode[pil]'
+        run: python -m pip install boto3 'qrcode[pil]' 'opencv-python-headless==4.12.0.88'
       - name: Download manifest and media
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
@@ -65,56 +65,116 @@ jobs:
           doc=json.loads(Path('manifest.json').read_text())
           Path('media').mkdir(exist_ok=True)
           n=0
+          seen={}
+          def fetch(key):
+              global n
+              if not key or not isinstance(key, str):
+                  return None
+              if key in seen:
+                  return seen[key]
+              n+=1
+              name=f"media/{n:05d}-{Path(key).name}"
+              s3.download_file(bucket,key,name)
+              seen[key]=name
+              return name
+
           for group in [doc.get('shots',[]), [doc['audio']] if doc.get('audio') else [], doc.get('audio_tracks',[]), [doc['subtitle']] if doc.get('subtitle') else []]:
               for item in group:
-                  key=item.get('key')
-                  if key:
-                      n+=1
-                      name=f"media/{n:05d}-{Path(key).name}"
-                      s3.download_file(bucket,key,name)
-                      item['file']=name
+                  local=fetch(item.get('key'))
+                  if local:
+                      item['file']=local
+
+          for rig in doc.get('character_rigs', []):
+              if not isinstance(rig, dict):
+                  continue
+              local=fetch(rig.get('master_key') or rig.get('key'))
+              if local:
+                  rig['master_file']=local
+              side_local=fetch(rig.get('side_master_key'))
+              if side_local:
+                  rig['side_master_file']=side_local
+
+          robot_rig=doc.get('robot_rig')
+          if isinstance(robot_rig, dict):
+              m_local=fetch(robot_rig.get('master_key') or robot_rig.get('key'))
+              if m_local:
+                  robot_rig['master_file']=m_local
+              a_local=fetch(robot_rig.get('arm_key'))
+              if a_local:
+                  robot_rig['arm_file']=a_local
+          if doc.get('robot_rig_key'):
+              doc['robot_rig_file']=fetch(doc['robot_rig_key'])
+          if doc.get('robot_arm_key'):
+              doc['robot_arm_file']=fetch(doc['robot_arm_key'])
+
           # A character rig is a reusable set of R2 sprites, not a single image.
           for shot in doc.get('shots', []):
+              plate=shot.get('plate')
+              if isinstance(plate, dict):
+                  for part in ('plate','far','near'):
+                      local=fetch(plate.get(f'{part}_key'))
+                      if local:
+                          plate[f'{part}_file']=local
+              if shot.get('robot_rig_key'):
+                  shot['robot_rig_file']=fetch(shot['robot_rig_key'])
+              if shot.get('robot_arm_key'):
+                  shot['robot_arm_file']=fetch(shot['robot_arm_key'])
+              rover=shot.get('rover')
+              if isinstance(rover, dict):
+                  if rover.get('rig_key'):
+                      rover['rig_file']=fetch(rover['rig_key'])
+                  if rover.get('arm_key'):
+                      rover['arm_file']=fetch(rover['arm_key'])
+              sm=shot.get('story_motion')
+              if isinstance(sm, dict):
+                  if isinstance(sm.get('plate'), dict):
+                      for part in ('plate','far','near'):
+                          local=fetch(sm['plate'].get(f'{part}_key'))
+                          if local:
+                              sm['plate'][f'{part}_file']=local
+                  if sm.get('robot_rig_key'):
+                      sm['robot_rig_file']=fetch(sm['robot_rig_key'])
+                  if sm.get('robot_arm_key'):
+                      sm['robot_arm_file']=fetch(sm['robot_arm_key'])
+                  set_prop=sm.get('set_prop')
+                  if isinstance(set_prop, dict):
+                      prop_local=fetch(set_prop.get('prop_key'))
+                      if prop_local:
+                          set_prop['prop_file']=prop_local
+                  for actor in sm.get('actors', []):
+                      if not isinstance(actor, dict):
+                          continue
+                      if actor.get('rig_key'):
+                          actor['rig_file']=fetch(actor['rig_key'])
+                      if actor.get('side_rig_key'):
+                          actor['side_rig_file']=fetch(actor['side_rig_key'])
               layers=shot.get('character_layers')
-              if not isinstance(layers, dict):
-                  continue
-              for part in ('background','body','head','arm_left','arm_right'):
-                  key=layers.get(f'{part}_key')
-                  if key:
-                      n+=1
-                      name=f"media/{n:05d}-{Path(key).name}"
-                      s3.download_file(bucket,key,name)
-                      layers[f'{part}_file']=name
-              if isinstance(layers.get('mouth_keys'), dict):
-                  layers['mouth_files']={}
-                  for shape,key in layers['mouth_keys'].items():
-                      if shape not in 'ABCDEFGHX' or not key:
-                          continue
-                      n+=1
-                      name=f"media/{n:05d}-{Path(key).name}"
-                      s3.download_file(bucket,key,name)
-                      layers['mouth_files'][shape]=name
-          for shot in doc.get('shots', []):
+              if isinstance(layers, dict):
+                  for part in ('background','body','head','arm_left','arm_right'):
+                      local=fetch(layers.get(f'{part}_key'))
+                      if local:
+                          layers[f'{part}_file']=local
+                  if isinstance(layers.get('mouth_keys'), dict):
+                      layers['mouth_files']={}
+                      for shape,key in layers['mouth_keys'].items():
+                          if shape not in 'ABCDEFGHX' or not key:
+                              continue
+                          local=fetch(key)
+                          if local:
+                              layers['mouth_files'][shape]=local
               stage=shot.get('stage')
-              if not isinstance(stage, dict):
-                  continue
-              for part in ('background','foreground'):
-                  key=stage.get(f'{part}_key')
-                  if key:
-                      n+=1
-                      name=f"media/{n:05d}-{Path(key).name}"
-                      s3.download_file(bucket,key,name)
-                      stage[f'{part}_file']=name
-              for actor in stage.get('cast', []):
-                  if not isinstance(actor, dict) or not isinstance(actor.get('cells'), dict):
-                      continue
-                  for slot,key in list(actor['cells'].items()):
-                      if not key:
+              if isinstance(stage, dict):
+                  for part in ('background','foreground'):
+                      local=fetch(stage.get(f'{part}_key'))
+                      if local:
+                          stage[f'{part}_file']=local
+                  for actor in stage.get('cast', []):
+                      if not isinstance(actor, dict) or not isinstance(actor.get('cells'), dict):
                           continue
-                      n+=1
-                      name=f"media/{n:05d}-{Path(key).name}"
-                      s3.download_file(bucket,key,name)
-                      actor['cells'][slot]=name
+                      for slot,key in list(actor['cells'].items()):
+                          local=fetch(key)
+                          if local:
+                              actor['cells'][slot]=local
           Path('manifest.json').write_text(json.dumps(doc))
           PY
       - name: Cache MOSS models
@@ -145,6 +205,36 @@ jobs:
           if [ "$(cat needs-moss)" = yes ]; then
             python renderer/synthesize.py manifest.json
           fi
+      - name: Cache RTMPose wholebody models
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/rtmlib
+          key: rtmlib-wholebody-onnx-v1-${{ runner.os }}
+      - name: Rig character and robot masters
+        run: |
+          if python - <<'PY'
+          import json
+          from pathlib import Path
+          doc=json.loads(Path('manifest.json').read_text())
+          has_char=bool(doc.get('character_rigs')) or any(
+              any(isinstance(a, dict) and (a.get('rig_file') or a.get('side_rig_file'))
+                  for a in (s.get('story_motion') or {}).get('actors', []))
+              for s in doc.get('shots', []) if isinstance(s, dict)
+          )
+          has_robot=bool(doc.get('robot_rig') or doc.get('robot_rig_file')) or any(
+              s.get('robot_rig_file')
+              or (isinstance(s.get('rover'), dict) and s['rover'].get('rig_file'))
+              or (isinstance(s.get('story_motion'), dict) and s['story_motion'].get('robot_rig_file'))
+              for s in doc.get('shots', []) if isinstance(s, dict)
+          )
+          if not (has_char or has_robot):
+              raise SystemExit(1)
+          PY
+          then
+            python -m pip install 'opencv-python-headless==4.12.0.88' onnxruntime rtmlib || python -m pip install 'opencv-python-headless==4.12.0.88'
+            python renderer/rig_characters.py manifest.json
+            python renderer/rig_robot.py manifest.json
+          fi
       - name: Cache anime segmentation model
         uses: actions/cache@v4
         with:
@@ -157,10 +247,16 @@ jobs:
           import json
           from pathlib import Path
           shots=json.loads(Path('manifest.json').read_text()).get('shots', [])
-          if not any(shot.get('file') and not shot.get('stage') and not shot.get('rover')
-                     and not shot.get('fact_card') and not shot.get('label')
-                     and not (isinstance(shot.get('character_layers'), dict)
-                              and shot['character_layers'].get('body_file')) for shot in shots):
+          def needs_cutout(shot):
+              if not shot.get('file') or shot.get('stage') or shot.get('plate') or shot.get('fact_card') or shot.get('label'):
+                  return False
+              if isinstance(shot.get('character_layers'), dict) and shot['character_layers'].get('body_file'):
+                  return False
+              sm = shot.get('story_motion')
+              if isinstance(sm, dict):
+                  return not any(isinstance(a, dict) and (a.get('rig_key') or a.get('rig_file') or a.get('rig_json')) for a in sm.get('actors', []))
+              return not shot.get('rover')
+          if not any(needs_cutout(s) for s in shots if isinstance(s, dict)):
               raise SystemExit(1)
           PY
           then
@@ -175,9 +271,20 @@ jobs:
           if python - <<'PY'
           import json
           from pathlib import Path
-          shots=json.loads(Path('manifest.json').read_text()).get('shots', [])
-          if not any(s.get('rover') or (isinstance(s.get('character_layers'), dict) and
-                     (s['character_layers'].get('mouth_files') or s['character_layers'].get('mouth_mode') == 'led')) for s in shots):
+          doc=json.loads(Path('manifest.json').read_text())
+          shots=doc.get('shots', [])
+          has_puppet_rigs=bool(doc.get('character_rigs')) or any(
+              isinstance(s.get('story_motion'), dict) and any(
+                  isinstance(a, dict) and (a.get('rig_key') or a.get('rig_file') or a.get('rig_json'))
+                  for a in s['story_motion'].get('actors', [])
+              )
+              for s in shots if isinstance(s, dict)
+          )
+          if not (has_puppet_rigs or any(
+              s.get('rover') or (isinstance(s.get('character_layers'), dict) and
+              (s['character_layers'].get('mouth_files') or s['character_layers'].get('mouth_mode') == 'led'))
+              for s in shots if isinstance(s, dict)
+          )):
               raise SystemExit(1)
           PY
           then

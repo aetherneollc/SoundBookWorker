@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Turn the existing manifest into a frame-accurate Remotion composition."""
 from __future__ import annotations
-import json, math, re, shutil, subprocess, sys
+import json, math, os, re, shutil, subprocess, sys
 from pathlib import Path
+from calibrate_plate import calibrate_plate_file
 from render import media_duration, subtitle_chunks, write_intro_chime
+from rig_characters import rig_character_master
 from voice_cues import speech_cues
 
 
@@ -15,7 +17,9 @@ def source(item: dict, public: Path) -> str:
     path = Path(item['file']).resolve()
     if not path.is_file():
         raise FileNotFoundError(path)
-    target = public / path.name
+    # Prefix rig subdirectory name so multiple char-<hash>/head.png or robot-<hash>/body.png never collide
+    prefix = f'{path.parent.name}-' if path.parent.name.startswith(('char-', 'robot-')) else ''
+    target = public / f'{prefix}{path.name}'
     if path != target.resolve():
         shutil.copy2(path, target)
     return f'media/{target.name}'
@@ -36,6 +40,124 @@ def parse_srt(path: Path, offset: float, fps: int) -> list[dict]:
     return cues
 
 
+def _prepare_char_rig(rig_json_str: str, public: Path, cache: dict[str, dict]) -> dict | None:
+    rig_path = Path(rig_json_str)
+    if not rig_path.is_file():
+        return None
+    cache_key = str(rig_path.resolve())
+    if cache_key in cache:
+        return cache[cache_key]
+    raw = json.loads(rig_path.read_text(encoding='utf-8'))
+    parts_out = {}
+    for part_name, spec in (raw.get('parts') or {}).items():
+        if not isinstance(spec, dict):
+            continue
+        pfile = spec.get('file') or spec.get('src')
+        if not pfile or not Path(str(pfile)).is_file():
+            continue
+        parts_out[str(part_name)] = {
+            'src': source({'file': str(pfile)}, public),
+            'pivot': list(spec.get('pivot') or [0.5, 0.5]),
+        }
+    if not parts_out:
+        return None
+    prepared_rig = {
+        'level': str(raw.get('level') or 'sprite'),
+        'width': int(raw.get('width') or 768),
+        'height': int(raw.get('height') or 1024),
+        'anchor_x': float(raw.get('anchor_x', 0.5)),
+        'foot_y': float(raw.get('foot_y', 0.96)),
+        'head_top_y': float(raw.get('head_top_y', 0.04)),
+        'native_facing': str(raw.get('native_facing') or 'right'),
+        'parts': parts_out,
+        **({'face': raw['face']} if isinstance(raw.get('face'), dict) else {}),
+        **({'ankles': raw['ankles']} if isinstance(raw.get('ankles'), dict) else {}),
+        **({'wrists': raw['wrists']} if isinstance(raw.get('wrists'), dict) else {}),
+        **({'view_angle': raw['view_angle']} if isinstance(raw.get('view_angle'), str) else {}),
+    }
+    cache[cache_key] = prepared_rig
+    return prepared_rig
+
+
+def _ensure_side_rig_json(
+    item: dict,
+    side_file_key: str,
+    cache_root: Path,
+    cache: dict[str, str],
+) -> str | None:
+    existing = item.get('side_rig_json')
+    if existing and Path(str(existing)).is_file():
+        return str(existing)
+    side_file = item.get(side_file_key)
+    if not side_file or not Path(str(side_file)).is_file():
+        return None
+    resolved = str(Path(str(side_file)).resolve())
+    if resolved not in cache:
+        cache[resolved] = str(rig_character_master(Path(str(side_file)), cache_root=cache_root))
+    return cache[resolved]
+
+
+def _prepare_robot_rig(rig_json_str: str, public: Path, cache: dict[str, dict]) -> dict | None:
+    rig_path = Path(rig_json_str)
+    if not rig_path.is_file():
+        return None
+    cache_key = str(rig_path.resolve())
+    if cache_key in cache:
+        return cache[cache_key]
+    raw = json.loads(rig_path.read_text(encoding='utf-8'))
+    body_file = raw.get('body_file') or (raw.get('body') if isinstance(raw.get('body'), str) else None)
+    if isinstance(raw.get('body'), dict):
+        body_file = raw['body'].get('file') or raw['body'].get('src')
+    if not body_file or not Path(str(body_file)).is_file():
+        return None
+    wheels_out = []
+    for w_item in raw.get('wheels') or []:
+        if not isinstance(w_item, dict):
+            continue
+        wf = w_item.get('file') or w_item.get('src')
+        if not wf or not Path(str(wf)).is_file():
+            continue
+        wheel_out = {
+            'src': source({'file': str(wf)}, public),
+            'cx': float(w_item.get('cx', 0.5)),
+            'cy': float(w_item.get('cy', 0.85)),
+            'r': float(w_item.get('r', 0.08)),
+        }
+        for metric in ('rx', 'ry', 'tilt_deg'):
+            if isinstance(w_item.get(metric), (int, float)):
+                wheel_out[metric] = float(w_item[metric])
+        tire_file = w_item.get('tire_file')
+        if tire_file and Path(str(tire_file)).is_file():
+            wheel_out['tire_src'] = source({'file': str(tire_file)}, public)
+        wheels_out.append(wheel_out)
+    prepared_robot: dict = {
+        'level': str(raw.get('level') or ('wheeled' if len(wheels_out) >= 2 else 'sprite')),
+        'width': int(raw.get('width') or 1024),
+        'height': int(raw.get('height') or 1024),
+        'anchor_x': float(raw.get('anchor_x', 0.5)),
+        'foot_y': float(raw.get('foot_y', 0.92)),
+        'native_facing': str(raw.get('native_facing') or 'right'),
+        'body': source({'file': str(body_file)}, public),
+        'body_pivot': list(raw.get('body_pivot') or [0.5, 0.72]),
+        'wheels': wheels_out,
+    }
+    if isinstance(raw.get('content_top'), (int, float)):
+        prepared_robot['content_top'] = float(raw['content_top'])
+    if isinstance(raw.get('signal_point'), list) and len(raw['signal_point']) >= 2:
+        prepared_robot['signal_point'] = [float(raw['signal_point'][0]), float(raw['signal_point'][1])]
+    for opt_name in ('mast', 'arm'):
+        opt = raw.get(opt_name)
+        if isinstance(opt, dict):
+            of = opt.get('file') or opt.get('src')
+            if of and Path(str(of)).is_file():
+                prepared_robot[opt_name] = {
+                    'src': source({'file': str(of)}, public),
+                    'pivot': list(opt.get('pivot') or [0.5, 0.5]),
+                }
+    cache[cache_key] = prepared_robot
+    return prepared_robot
+
+
 def prepare(manifest: Path, output: Path) -> None:
     doc = json.loads(manifest.read_text(encoding='utf-8'))
     if doc.get('version') != 1 or not doc.get('shots'):
@@ -46,6 +168,50 @@ def prepare(manifest: Path, output: Path) -> None:
     public = Path('public/media'); public.mkdir(parents=True, exist_ok=True)
     for old in public.iterdir():
         if old.is_file(): old.unlink()
+
+    char_rig_cache: dict[str, dict] = {}
+    side_rig_json_cache: dict[str, str] = {}
+    robot_rig_cache: dict[str, dict] = {}
+    plate_metrics_cache: dict[str, dict] = {}
+    rig_cache_root = Path(os.environ.get('SOUNDBOOK_RIG_CACHE', 'media/rigs'))
+    char_by_id: dict[str, dict] = {}
+    char_by_name: dict[str, dict] = {}
+    side_by_id: dict[str, dict] = {}
+    side_by_name: dict[str, dict] = {}
+    side_by_key: dict[str, dict] = {}
+    for entry in doc.get('character_rigs') or []:
+        if not isinstance(entry, dict):
+            continue
+        crig = (
+            _prepare_char_rig(str(entry['rig_json']), public, char_rig_cache)
+            if entry.get('rig_json') else None
+        )
+        if crig:
+            if entry.get('id'):
+                char_by_id[str(entry['id'])] = crig
+            if entry.get('name'):
+                char_by_name[str(entry['name'])] = crig
+        side_json = _ensure_side_rig_json(
+            entry, 'side_master_file', rig_cache_root, side_rig_json_cache,
+        )
+        side_rig = (
+            _prepare_char_rig(side_json, public, char_rig_cache)
+            if side_json else None
+        )
+        if side_rig:
+            if entry.get('id'):
+                side_by_id[str(entry['id'])] = side_rig
+            if entry.get('name'):
+                side_by_name[str(entry['name'])] = side_rig
+            for key_name in ('side_master_key', 'side_rig_key'):
+                if entry.get(key_name):
+                    side_by_key[str(entry[key_name])] = side_rig
+
+    global_robot_json = doc.get('robot_rig_json') or (
+        doc['robot_rig'].get('rig_json') if isinstance(doc.get('robot_rig'), dict) else None
+    )
+    global_robot_rig = _prepare_robot_rig(str(global_robot_json), public, robot_rig_cache) if global_robot_json else None
+
     intro_voice = Path(doc['intro_voice_file']) if doc.get('intro_voice_file') else None
     intro_seconds = max(2.8, media_duration(intro_voice)+.65) if intro_voice and doc.get('episode_title') else (2.8 if doc.get('episode_title') else 0)
     intro_frames = frame(intro_seconds, fps)
@@ -92,9 +258,114 @@ def prepare(manifest: Path, output: Path) -> None:
     timeline = []; cursor_frame = intro_frames
     for i, shot in enumerate(shots):
         duration_frames = max(1, frame(min(300, max(.25, float(shot.get('duration', 4)))), fps))
-        src = source(shot, public) if shot.get('file') else ''
+        src = source(shot, public) if shot.get('file') and Path(str(shot['file'])).is_file() else ''
         prepared = {**shot, 'src': src, 'from': cursor_frame,
                     'duration': duration_frames, 'index': i}
+
+        raw_plate = shot.get('plate') if isinstance(shot.get('plate'), dict) else (
+            shot['story_motion'].get('plate')
+            if isinstance(shot.get('story_motion'), dict) and isinstance(shot['story_motion'].get('plate'), dict)
+            else None
+        )
+        if raw_plate:
+            plate_file = raw_plate.get('plate_file') or raw_plate.get('file')
+            if plate_file:
+                plate_key = str(Path(str(plate_file)).resolve())
+                if plate_key not in plate_metrics_cache:
+                    plate_metrics_cache[plate_key] = calibrate_plate_file(Path(str(plate_file)))
+                prepared['plate_metrics'] = plate_metrics_cache[plate_key]
+            if plate_file and Path(str(plate_file)).is_file():
+                prepared_plate: dict[str, str] = {'src': source({'file': str(plate_file)}, public)}
+                if raw_plate.get('far_file') and Path(str(raw_plate['far_file'])).is_file():
+                    prepared_plate['far'] = source({'file': str(raw_plate['far_file'])}, public)
+                if raw_plate.get('near_file') and Path(str(raw_plate['near_file'])).is_file():
+                    prepared_plate['near'] = source({'file': str(raw_plate['near_file'])}, public)
+                prepared['plate'] = prepared_plate
+                if not prepared['src']:
+                    prepared['src'] = prepared_plate['src']
+
+        shot_robot_json = (
+            shot.get('robot_rig_json')
+            or (shot['rover'].get('rig_json') if isinstance(shot.get('rover'), dict) else None)
+            or (shot['story_motion'].get('robot_rig_json') if isinstance(shot.get('story_motion'), dict) else None)
+        )
+        shot_robot_rig = (
+            _prepare_robot_rig(str(shot_robot_json), public, robot_rig_cache)
+            if shot_robot_json else global_robot_rig
+        )
+        if shot_robot_rig and global_robot_rig is None:
+            global_robot_rig = shot_robot_rig
+
+        if isinstance(shot.get('rover'), dict):
+            rv_clean = {k: v for k, v in shot['rover'].items()
+                        if not k.endswith('_file') and not k.endswith('_key') and k != 'rig_json'}
+            if shot_robot_rig:
+                rv_clean['rig'] = shot_robot_rig
+            prepared['rover'] = rv_clean
+
+        if isinstance(shot.get('story_motion'), dict):
+            sm_clean = {k: v for k, v in shot['story_motion'].items()
+                        if not k.endswith('_file') and not k.endswith('_key') and k not in ('robot_rig_json', 'plate')}
+            raw_set_prop = shot['story_motion'].get('set_prop')
+            if isinstance(raw_set_prop, dict):
+                set_prop = {k: v for k, v in raw_set_prop.items()
+                            if not k.endswith('_file') and not k.endswith('_key')}
+                prop_file = raw_set_prop.get('prop_file')
+                if prop_file and Path(str(prop_file)).is_file():
+                    set_prop['prop_src'] = source({'file': str(prop_file)}, public)
+                sm_clean['set_prop'] = set_prop
+            prepared_actors = []
+            for actor in shot['story_motion'].get('actors') or []:
+                if not isinstance(actor, dict):
+                    continue
+                ac = {k: v for k, v in actor.items()
+                      if not k.endswith('_file') and not k.endswith('_key')
+                      and k not in ('rig_json', 'side_rig_json')}
+                actor_rig = None
+                if actor.get('rig_json'):
+                    actor_rig = _prepare_char_rig(str(actor['rig_json']), public, char_rig_cache)
+                if not actor_rig and actor.get('character_id'):
+                    actor_rig = char_by_id.get(str(actor['character_id']))
+                if not actor_rig and actor.get('name'):
+                    aname = str(actor['name'])
+                    actor_rig = char_by_name.get(aname)
+                    if not actor_rig:
+                        for cname, crig in char_by_name.items():
+                            if cname and (cname in aname or aname in cname):
+                                actor_rig = crig
+                                break
+                if actor_rig:
+                    ac['rig'] = actor_rig
+                side_rig = None
+                side_json = _ensure_side_rig_json(
+                    actor, 'side_rig_file', rig_cache_root, side_rig_json_cache,
+                )
+                if side_json:
+                    side_rig = _prepare_char_rig(side_json, public, char_rig_cache)
+                if not side_rig and actor.get('side_rig_key'):
+                    side_rig = side_by_key.get(str(actor['side_rig_key']))
+                if not side_rig and actor.get('character_id'):
+                    side_rig = side_by_id.get(str(actor['character_id']))
+                if not side_rig and actor.get('name'):
+                    aname = str(actor['name'])
+                    side_rig = side_by_name.get(aname)
+                    if not side_rig:
+                        for cname, candidate in side_by_name.items():
+                            if cname and (cname in aname or aname in cname):
+                                side_rig = candidate
+                                break
+                if side_rig:
+                    ac['side_rig'] = side_rig
+                prepared_actors.append(ac)
+            sm_clean['actors'] = prepared_actors
+            if shot_robot_rig:
+                sm_clean['robot_rig'] = shot_robot_rig
+            prepared['story_motion'] = sm_clean
+
+        prepared.pop('robot_rig_json', None)
+        prepared.pop('robot_rig_file', None)
+        prepared.pop('robot_arm_file', None)
+
         stage = shot.get('stage') if isinstance(shot.get('stage'), dict) else None
         if stage and stage.get('background_file') and Path(stage['background_file']).is_file():
             actors = []
@@ -129,8 +400,8 @@ def prepare(manifest: Path, output: Path) -> None:
         if isinstance(shot.get('character_layers'), dict):
             layers = dict(shot['character_layers'])
             if all(layers.get(k) and Path(layers[k]).is_file() for k in ('background_file', 'body_file')):
-                for file_key, src_key in [('background_file', 'background'), ('body_file', 'body'), ('head_file', 'head'),
-                                          ('arm_left_file', 'arm_left'), ('arm_right_file', 'arm_right')]:
+                for file_key, src_key in [('background_file', 'background'), ('body_file', 'body'), ('body2_file', 'body2'),
+                                          ('head_file', 'head'), ('arm_left_file', 'arm_left'), ('arm_right_file', 'arm_right')]:
                     if layers.get(file_key) and Path(layers[file_key]).is_file():
                         layers[src_key] = source({'file': layers[file_key]}, public)
                 if isinstance(layers.get('mouth_files'), dict):
@@ -143,7 +414,8 @@ def prepare(manifest: Path, output: Path) -> None:
         timeline.append(prepared)
         cursor_frame += duration_frames
     if doc.get('motion_policy') == 'majority':
-        moving = [shot for shot in timeline if shot.get('cartoon') or shot.get('rover') or shot.get('stage') or shot.get('layers')]
+        moving = [shot for shot in timeline if shot.get('cartoon') or shot.get('story_motion') or shot.get('rover')
+                  or shot.get('stage') or shot.get('layers')]
         if len(moving) * 2 < len(timeline):
             raise ValueError(f'Motion quality gate: only {len(moving)}/{len(timeline)} shots have an articulated subject')
     audio = []
@@ -154,8 +426,9 @@ def prepare(manifest: Path, output: Path) -> None:
         if intro_voice:
             audio.append({'src': source({'file': str(intro_voice)}, public), 'from': frame(.22, fps), 'volume': 1, 'loop': False})
     animated_scenes = {int(shot.get('scene_number', 0)) for shot in timeline
-                       if shot.get('cartoon') or shot.get('rover') or shot.get('stage') or (isinstance(shot.get('layers'), dict) and
-                       (shot['layers'].get('mouth') or shot['layers'].get('mouth_mode') == 'led'))}
+                       if shot.get('cartoon') or shot.get('story_motion') or shot.get('rover') or shot.get('stage')
+                       or (isinstance(shot.get('layers'), dict) and
+                           (shot['layers'].get('mouth') or shot['layers'].get('mouth_mode') == 'led'))}
     speech = []
     for track in tracks:
         if not track.get('file'):
@@ -182,7 +455,8 @@ def prepare(manifest: Path, output: Path) -> None:
              'introFrames': intro_frames, 'shots': timeline, 'audio': audio, 'captions': captions, 'speech': speech,
              'episodeNumber': int(doc.get('episode_number') or 1), 'title': str(doc.get('episode_title') or ''),
              'language': str(doc.get('language') or 'zh'), 'cta': cta if cta_frames else None,
-             'ctaFrom': cursor_frame, 'ctaFrames': cta_frames}
+             'ctaFrom': cursor_frame, 'ctaFrames': cta_frames,
+             **({'robotRig': global_robot_rig} if global_robot_rig else {})}
     output.write_text(json.dumps(props, ensure_ascii=False), encoding='utf-8')
     print(f"Prepared {len(timeline)} shots, {len(audio)} audio tracks, {len(captions)} captions, {props['durationInFrames']} frames")
 
