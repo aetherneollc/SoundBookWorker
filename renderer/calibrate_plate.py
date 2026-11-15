@@ -2,7 +2,14 @@
 """Measure a location plate's walkable floor, horizon and room light for metric staging.
 
 The output `plate_metrics` lets Remotion scale humans, the rover and set props
-with one perspective law on the plate's own floor:
+with one perspective law on the plate's own floor.
+
+It also records furniture already painted on the plate, so story props can sit
+inside it instead of covering it:
+
+    screens: [{x, y, w, h}, ...]   # dark back-wall monitors, top-left, fractions of the frame
+    cabinet_top_y: float | null    # waist-high cabinet / ledge lip
+    cabinets: [{x, y, w, h}, ...]  # those runs, y at the lip, h down the face
 
     S(y) = clamp((y - horizon_y) / (mid_y - horizon_y), 0.68, 1.22)
     figure_height(y, stature) = ref_mid_figure_height * S(y) * stature
@@ -197,6 +204,146 @@ def _median_chroma_rgb(pixels: np.ndarray, fallback: tuple[int, int, int]) -> li
     return [int(round(_clamp(c * level, 0, 255))) for c in chroma]
 
 
+def _span_runs(mask: np.ndarray, min_width: int, bridge: int) -> list[tuple[int, int]]:
+    """True-runs on a 1D mask, joining holes shorter than `bridge` pixels."""
+    closed = mask.astype(bool).copy()
+    index = 0
+    width = int(closed.size)
+    while index < width:
+        if closed[index]:
+            index += 1
+            continue
+        end = index
+        while end < width and not closed[end]:
+            end += 1
+        if index > 0 and end < width and (end - index) <= bridge:
+            closed[index:end] = True
+        index = end
+    runs: list[tuple[int, int]] = []
+    index = 0
+    while index < width:
+        if not closed[index]:
+            index += 1
+            continue
+        end = index
+        while end < width and closed[end]:
+            end += 1
+        if end - index >= min_width:
+            runs.append((index, end))
+        index = end
+    return runs
+
+
+def _detect_screens(rgb: np.ndarray) -> list[dict]:
+    """Dark filled rectangles on the back wall. Window frames and ceiling bands are not screens."""
+    if cv2 is None:
+        return []
+    lum = rgb.astype(np.float32).mean(axis=2)
+    y0 = int(WORK_H * 0.28)
+    y1 = int(WORK_H * 0.58)
+    if y1 - y0 < 24:
+        return []
+    wall = lum[y0:y1, int(WORK_W * 0.05):int(WORK_W * 0.95)]
+    wall_med = float(np.median(wall)) if wall.size else 0.0
+    # Monitors sit well below the wall tone. A dark ceiling or night plate has no bright wall to compare.
+    threshold = min(100.0, wall_med - 42.0)
+    if threshold < 48.0:
+        return []
+    mask = np.zeros(lum.shape, np.uint8)
+    mask[y0:y1] = np.where(lum[y0:y1] < threshold, 255, 0).astype(np.uint8)
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 5))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+    count, _labels, stats, _centroids = cv2.connectedComponentsWithStats(mask, 8)
+    found: list[tuple[float, dict]] = []
+    for index in range(1, int(count)):
+        x, y, w, h, area = (int(v) for v in stats[index])
+        if area < 2800 or w < 8 or h < 8:
+            continue
+        # A window mullion touches both edges of the search band and is mostly bright inside.
+        if y <= y0 + 2 and y + h >= y1 - 2:
+            continue
+        fill = float(area) / float(w * h)
+        if fill < 0.55:
+            continue
+        xn, yn = x / WORK_W, y / WORK_H
+        wn, hn = w / WORK_W, h / WORK_H
+        aspect = wn / max(1e-6, hn)
+        if not (0.045 <= wn <= 0.22 and 0.055 <= hn <= 0.30 and 0.32 <= aspect <= 3.3):
+            continue
+        patch = lum[y:y + h, x:x + w]
+        dark = patch[patch < threshold]
+        if dark.size == 0:
+            continue
+        mean_dark = float(dark.mean())
+        if mean_dark > min(threshold - 18.0, 72.0):
+            continue
+        found.append((float(area), {
+            'x': round(xn, 4),
+            'y': round(yn, 4),
+            'w': round(wn, 4),
+            'h': round(hn, 4),
+        }))
+    found.sort(key=lambda item: item[0], reverse=True)
+    screens = [rect for _area, rect in found[:8]]
+    screens.sort(key=lambda rect: (rect['x'], rect['y']))
+    return screens
+
+
+def _detect_cabinet(rgb: np.ndarray) -> tuple[float | None, list[dict]]:
+    """Waist-high cabinet lip and the horizontal runs that hang from it."""
+    floor = rgb[int(WORK_H * 0.90):int(WORK_H * 0.96), int(WORK_W * 0.18):int(WORK_W * 0.82)]
+    if floor.size == 0:
+        return None, []
+    floor_rgb = floor.astype(np.float32).mean(axis=(0, 1))
+    gray = rgb.astype(np.float32).mean(axis=2)
+    gradient = np.abs(np.diff(gray, axis=0, prepend=gray[:1]))
+    y_lo, y_hi = int(WORK_H * 0.57), int(WORK_H * 0.74)
+    x0, x1 = int(WORK_W * 0.02), int(WORK_W * 0.98)
+    votes = np.full(WORK_W, -1, dtype=np.int32)
+    for x in range(x0, x1):
+        column = gradient[y_lo:y_hi, x]
+        if column.size == 0:
+            continue
+        peak = int(np.argmax(column))
+        strength = float(column[peak])
+        if strength < 16.0:
+            continue
+        row = y_lo + peak
+        below = rgb[min(WORK_H - 1, row + 3):min(WORK_H, row + 18), max(0, x - 2):min(WORK_W, x + 3)]
+        above = rgb[max(0, row - 16):max(0, row - 2), max(0, x - 2):min(WORK_W, x + 3)]
+        if below.size == 0 or above.size == 0:
+            continue
+        below_rgb = below.astype(np.float32).mean(axis=(0, 1))
+        above_rgb = above.astype(np.float32).mean(axis=(0, 1))
+        if float(np.linalg.norm(below_rgb - floor_rgb)) < 26.0:
+            continue
+        lip = float(np.linalg.norm(above_rgb - below_rgb))
+        if lip < 10.0 and strength < 36.0:
+            continue
+        votes[x] = row
+    voted = votes[votes >= 0]
+    if voted.size < WORK_W * 0.12:
+        return None, []
+    top_px = int(np.median(voted))
+    top_y = top_px / WORK_H
+    y_face0 = min(WORK_H - 2, top_px + 4)
+    y_face1 = min(WORK_H - 1, top_px + int(WORK_H * 0.13))
+    if y_face1 - y_face0 < 8:
+        return round(top_y, 4), []
+    face = rgb[y_face0:y_face1].astype(np.float32)
+    distance = np.linalg.norm(face - floor_rgb, axis=2)
+    occupied = (distance > 24.0).mean(axis=0) > 0.72
+    runs = _span_runs(occupied, min_width=int(WORK_W * 0.05), bridge=16)
+    height = round(min(0.16, max(0.08, (y_face1 - top_px) / WORK_H)), 4)
+    cabinets = [{
+        'x': round(start / WORK_W, 4),
+        'y': round(top_y, 4),
+        'w': round((end - start) / WORK_W, 4),
+        'h': height,
+    } for start, end in runs]
+    return round(top_y, 4), cabinets
+
+
 def _light_profile(ambient: list[int]) -> tuple[str, list[int], float]:
     r, g, b = (float(c) for c in ambient)
     mean = max(1.0, (r + g + b) / 3)
@@ -249,6 +396,15 @@ def calibrate_rgb(rgb: np.ndarray) -> dict:
     floor_rgb = _median_chroma_rgb(floor, DEFAULT_FLOOR)
     light_temp, tint_rgb, tint_strength = _light_profile(ambient_rgb)
 
+    screens: list[dict] = []
+    cabinet_top_y = None
+    cabinets: list[dict] = []
+    try:
+        screens = _detect_screens(rgb)
+        cabinet_top_y, cabinets = _detect_cabinet(rgb)
+    except Exception:
+        screens, cabinet_top_y, cabinets = [], None, []
+
     return {
         'version': 1,
         'horizon_y': round(horizon_y, 4),
@@ -265,6 +421,9 @@ def calibrate_rgb(rgb: np.ndarray) -> dict:
         'tint_rgb': tint_rgb,
         'tint_strength': tint_strength,
         'light_temp': light_temp,
+        'screens': screens,
+        'cabinet_top_y': cabinet_top_y,
+        'cabinets': cabinets,
         'detection': {
             'opencv': cv2 is not None,
             'horizon_raw': None if horizon_raw is None else round(float(horizon_raw), 4),
@@ -274,6 +433,8 @@ def calibrate_rgb(rgb: np.ndarray) -> dict:
             'vanishing_support': round(float(vp.get('support') or 0.0), 3),
             'slanted_lines': int(vp.get('count') or 0),
             'back_wall_span': None if span is None else round(span, 4),
+            'screen_count': len(screens),
+            'cabinet_runs': len(cabinets),
         },
     }
 
@@ -289,6 +450,7 @@ def default_metrics() -> dict:
         'scale_bounds': list(SCALE_BOUNDS), 'deep_corridor': False,
         'ambient_rgb': list(DEFAULT_AMBIENT), 'floor_rgb': list(DEFAULT_FLOOR),
         'tint_rgb': tint_rgb, 'tint_strength': tint_strength, 'light_temp': light_temp,
+        'screens': [], 'cabinet_top_y': None, 'cabinets': [],
     }
 
 

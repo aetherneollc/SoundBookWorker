@@ -6,6 +6,7 @@ import type {
   PuppetDepth,
   PuppetFacing,
 } from './puppet';
+import {faceClipsAfterWalk, facingAfterTravel, markBesideRover, ROVER_BODY_HALF} from './puppet_motion';
 
 /**
  * Deterministic shot choreography compiler.
@@ -136,13 +137,13 @@ const closeSafeType = (type: PuppetClipType, speaking: boolean): PuppetClipType 
   return type;
 };
 
+/** Target wins. Authored facing is only the fallback when nothing is there to look at. */
 const facingToward = (x: number, target: number | undefined, fallback?: PuppetFacing): PuppetFacing | undefined => {
-  if (fallback) return fallback;
-  if (target === undefined || Math.abs(target - x) < 0.04) return undefined;
-  return target < x ? 'left' : 'right';
+  if (target !== undefined && Number.isFinite(target) && Math.abs(target - x) >= 0.001) {
+    return target < x ? 'left' : 'right';
+  }
+  return fallback;
 };
-
-const FACING_DEADZONE = 0.04;
 
 /**
  * Stamp each clip with its camera pose (profile while travelling, three-quarter once settled),
@@ -162,6 +163,10 @@ const orientClip = (
   const {partnerX, propTargetX, robotX, drive, authored} = opts;
   const moving = clip.type === 'walk' || (clip.type === 'carry' && Math.abs(clip.toX - clip.fromX) > 0.005);
   const pose: 'side' | 'three_quarter' = clip.pose ?? (moving ? 'side' : 'three_quarter');
+  // A planted profile keeps the travel facing. The turn to the rover happens on the next beat.
+  if (!moving && pose === 'side') {
+    return {...clip, pose: 'side'};
+  }
 
   let target: number | undefined;
   if (moving) {
@@ -178,9 +183,11 @@ const orientClip = (
   if (clip.targetX !== undefined && Number.isFinite(clip.targetX)) target = clip.targetX;
 
   let facing = clip.facing;
-  const keepAuthoredFacing = authored && clip.facing !== undefined;
+  const arrivalBeat =
+    !moving && (clip.type === 'settle' || clip.type === 'talk' || clip.type === 'listen' || clip.type === 'idle');
+  const keepAuthoredFacing = authored && clip.facing !== undefined && !arrivalBeat;
   if (!keepAuthoredFacing && !moving && clip.type !== 'carry' && target !== undefined) {
-    if (Math.abs(target - clip.fromX) >= FACING_DEADZONE) {
+    if (Math.abs(target - clip.fromX) >= 0.001) {
       facing = target < clip.fromX ? 'left' : 'right';
     }
   } else if (moving && facing === undefined) {
@@ -278,11 +285,17 @@ export const compileShotChoreography = (input: ShotChoreographyInput): ShotChore
       endX = startX;
     }
 
+    if (!drive && robotX !== undefined && framing === 'wide' && !stationaryAction) {
+      endX = markBesideRover(startX, endX, robotX);
+    }
+
     let dist = Math.abs(endX - startX);
     const minDist = baseAction === 'carry' ? CARRY_MIN_DIST : WALK_MIN_DIST;
     let wantsWalk = framing === 'wide' && !drive && dist >= minDist;
     if (wantsWalk && dist > ENTRANCE_MAX_TRAVEL) {
-      startX = clampX(endX - Math.sign(endX - startX) * ENTRANCE_PULLED_TRAVEL);
+      const pulled = clampX(endX - Math.sign(endX - startX || 1) * ENTRANCE_PULLED_TRAVEL);
+      const pulledIntoRover = robotX !== undefined && Math.abs(pulled - robotX) < ROVER_BODY_HALF;
+      if (!pulledIntoRover) startX = pulled;
       dist = Math.abs(endX - startX);
     }
     if (!wantsWalk) {
@@ -333,7 +346,10 @@ export const compileShotChoreography = (input: ShotChoreographyInput): ShotChore
     if (!c.wantsWalk) return 0;
     const cap = Math.min(c.baseAction === 'carry' ? 1.6 : 1.65, totalSeconds * 0.42);
     const seconds = Math.min(cap, Math.max(1.0, 0.85 + c.walkDist * 3.2));
-    return Math.max(1, Math.min(total - 1, Math.round(seconds * fps)));
+    let frames = Math.max(1, Math.min(total - 1, Math.round(seconds * fps)));
+    // Land before the one-second frame so the side plant is already still.
+    if (total >= fps * 2) frames = Math.min(frames, fps);
+    return frames;
   };
   const walkWindows = contexts.map(c => {
     const frames = walkFramesFor(c);
@@ -397,10 +413,35 @@ export const compileShotChoreography = (input: ShotChoreographyInput): ShotChore
         fromScale: entrance ? 0.93 : undefined,
         toScale: entrance ? 1.0 : undefined,
         facing: travelFacing,
+        pose: 'side',
       });
-      const settleEnd = Math.min(total, walkFrames + SETTLE_FRAMES);
-      fixed.push({type: 'settle', startFrame: walkFrames, endFrame: settleEnd, fromX: c.endX, toX: c.endX, facing: travelFacing});
-      cursor = settleEnd;
+      // Hold the feet-together profile through 1.0s, then turn to the front master before 1.6s.
+      const turnAt = Math.min(total - 1, Math.max(walkFrames + 4, Math.round(fps * 1.35)));
+      const frontStart = turnAt > walkFrames ? turnAt : walkFrames;
+      if (frontStart > walkFrames) {
+        fixed.push({
+          type: 'idle',
+          startFrame: walkFrames,
+          endFrame: frontStart,
+          fromX: c.endX,
+          toX: c.endX,
+          facing: travelFacing,
+          pose: 'side',
+        });
+      }
+      const settleEnd = Math.min(total, frontStart + SETTLE_FRAMES);
+      const arrivedFacing = facingAfterTravel(c.endX, partnerX, travelFacing);
+      fixed.push({
+        type: 'settle',
+        startFrame: frontStart,
+        endFrame: Math.max(frontStart + 1, settleEnd),
+        fromX: c.endX,
+        toX: c.endX,
+        facing: arrivedFacing,
+        pose: 'three_quarter',
+        targetX: partnerX,
+      });
+      cursor = Math.max(frontStart + 1, settleEnd);
     }
 
     // One-shot punctuation gesture.
@@ -520,14 +561,17 @@ export const compileShotChoreography = (input: ShotChoreographyInput): ShotChore
     const authored = Boolean(contexts[i].actor.clips && contexts[i].actor.clips!.length > 0);
     return {
       ...plan,
-      clips: plan.clips.map(clip =>
-        orientClip(clip, {
-          partnerX: plan.partnerX,
-          propTargetX: input.propTargetX,
-          robotX,
-          drive,
-          authored,
-        }),
+      clips: faceClipsAfterWalk(
+        plan.clips.map(clip =>
+          orientClip(clip, {
+            partnerX: plan.partnerX,
+            propTargetX: input.propTargetX,
+            robotX,
+            drive,
+            authored,
+          }),
+        ),
+        plan.partnerX ?? robotX,
       ),
     };
   });

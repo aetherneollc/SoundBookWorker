@@ -1,5 +1,28 @@
 import React from 'react';
 import {Img, random, spring, staticFile} from 'remotion';
+import {
+  TURN_EDGE_SCALE_X,
+  aimDegrees,
+  ambientMultiplyColor,
+  contactShadowBackground,
+  feetPlantedForTurn,
+  forearmClipPolygon,
+  gazeAddress,
+  handModesForClip,
+  handSizeForForearm,
+  lockedFigureBox,
+  pointArmLiftDegrees,
+  pointTarget,
+  resolveSideToFrontTurn,
+  shoulderLockScale,
+  shoulderNorm,
+  sideShoeLiftPx,
+  sideStrideDegrees,
+  sideTogetherDegrees,
+  type HandKind,
+  type ScreenGlass,
+  type TurnStage,
+} from './puppet_motion';
 
 export type PuppetAction = 'idle' | 'listen' | 'talk' | 'walk' | 'settle' | 'point' | 'wave' | 'work' | 'carry' | 'console' | 'react';
 export type PuppetDepth = 'far' | 'mid' | 'near';
@@ -112,14 +135,15 @@ const VisemeMouth = ({
   const skin = rgbCss(face.skin_rgb, 'rgb(242, 212, 194)');
   const line = rgbCss(face.line_rgb, 'rgb(36, 28, 34)');
   const shape = speaking ? (cue || 'B').toUpperCase() : (cue === 'A' ? 'A' : 'X');
+  const openMouth = speaking && shape !== 'X' && shape !== 'A';
 
-  // Subtle feathered skin mask hides only the static closed mouth line without a noticeable chin patch
-  const padX = mw * 0.08;
-  const padY = mh * 0.24;
+  // Closed mouths stay a thin line. Open visemes grow so speech reads against that line.
+  const padX = mw * (openMouth ? 0.22 : 0.06);
+  const padY = mh * (openMouth ? 0.85 : 0.16);
   const leftPct = (mx - padX) * 100;
-  const topPct = (my - padY * 0.5) * 100;
+  const topPct = (my - padY * (openMouth ? 0.85 : 0.35)) * 100;
   const widthPct = (mw + padX * 2) * 100;
-  const heightPct = (mh + padY * 1.1) * 100;
+  const heightPct = (mh + padY * (openMouth ? 1.7 : 0.7)) * 100;
 
   return (
     <div
@@ -132,16 +156,18 @@ const VisemeMouth = ({
         pointerEvents: 'none',
       }}
     >
-      {/* Feathered skin patch masks only the static closed mouth stroke in head.png */}
-      <div
-        style={{
-          position: 'absolute',
-          inset: '14% 12%',
-          borderRadius: '50%',
-          background: skin,
-          filter: 'blur(0.8px)',
-        }}
-      />
+      {/* Closed mouth: a skin patch hides the painted line. Open visemes replace it. */}
+      {!openMouth && (
+        <div
+          style={{
+            position: 'absolute',
+            inset: '22% 16%',
+            borderRadius: '50%',
+            background: skin,
+            filter: 'blur(0.6px)',
+          }}
+        />
+      )}
       <svg
         width="100%"
         height="100%"
@@ -151,78 +177,79 @@ const VisemeMouth = ({
       >
         {shape === 'X' && (
           <path
-            d="M 24 34 Q 50 40 76 33"
+            d="M 30 36 L 70 36"
             fill="none"
             stroke={line}
-            strokeWidth="5.5"
+            strokeWidth="2.6"
             strokeLinecap="round"
           />
         )}
         {shape === 'A' && (
           <path
-            d="M 20 35 Q 50 37 80 35"
+            d="M 26 36 L 74 36"
             fill="none"
             stroke={line}
-            strokeWidth="6.2"
+            strokeWidth="3.4"
             strokeLinecap="round"
           />
         )}
         {shape === 'B' && (
           <>
-            <rect x="23" y="25" width="54" height="20" rx="9" fill="#6b2937" stroke={line} strokeWidth="5" />
-            <path d="M 28 29 H 72" stroke="#faf7f5" strokeWidth="4.5" strokeLinecap="round" />
+            <rect x="18" y="16" width="64" height="36" rx="14" fill="#3d1018" stroke={line} strokeWidth="5" />
+            <path d="M 26 22 H 74" stroke="#faf7f5" strokeWidth="5" strokeLinecap="round" />
+            <ellipse cx="50" cy="40" rx="16" ry="8" fill="#c45a68" />
           </>
         )}
         {shape === 'C' && (
           <>
             <path
-              d="M 21 24 Q 50 20 79 24 Q 82 52 50 54 Q 18 52 21 24 Z"
-              fill="#632331"
+              d="M 14 14 Q 50 6 86 14 Q 92 58 50 64 Q 8 58 14 14 Z"
+              fill="#3a1018"
               stroke={line}
               strokeWidth="5"
               strokeLinejoin="round"
             />
-            <path d="M 29 26 H 71" stroke="#f9f6f4" strokeWidth="4" strokeLinecap="round" />
-            <ellipse cx="50" cy="46" rx="18" ry="6.5" fill="#d46c77" />
+            <path d="M 24 18 H 76" stroke="#f9f6f4" strokeWidth="5" strokeLinecap="round" />
+            <ellipse cx="50" cy="46" rx="22" ry="12" fill="#e07a86" />
           </>
         )}
         {shape === 'D' && (
           <>
             <path
-              d="M 19 19 Q 50 14 81 19 Q 86 60 50 63 Q 14 60 19 19 Z"
-              fill="#591e2c"
+              d="M 10 8 Q 50 0 90 8 Q 98 62 50 70 Q 2 62 10 8 Z"
+              fill="#2c0c14"
               stroke={line}
               strokeWidth="5.2"
               strokeLinejoin="round"
             />
-            <path d="M 28 22 H 72" stroke="#faf8f6" strokeWidth="4.5" strokeLinecap="round" />
-            <ellipse cx="50" cy="52" rx="21" ry="9" fill="#dc737e" />
+            <path d="M 22 14 H 78" stroke="#faf8f6" strokeWidth="5.5" strokeLinecap="round" />
+            <ellipse cx="50" cy="48" rx="26" ry="16" fill="#e56d7c" />
           </>
         )}
         {shape === 'E' && (
           <>
-            <ellipse cx="50" cy="37" rx="22" ry="17" fill="#612230" stroke={line} strokeWidth="5" />
-            <ellipse cx="50" cy="46" rx="13" ry="6" fill="#d46c77" />
+            <ellipse cx="50" cy="36" rx="28" ry="26" fill="#3a1018" stroke={line} strokeWidth="5" />
+            <ellipse cx="50" cy="48" rx="16" ry="10" fill="#e07a86" />
           </>
         )}
         {shape === 'F' && (
-          <ellipse cx="50" cy="36" rx="13" ry="13" fill="#5e212f" stroke={line} strokeWidth="5.2" />
+          <ellipse cx="50" cy="36" rx="18" ry="22" fill="#3d121c" stroke={line} strokeWidth="5.2" />
         )}
         {shape === 'G' && (
           <>
-            <rect x="25" y="27" width="50" height="15" rx="7" fill="#682735" stroke={line} strokeWidth="4.8" />
-            <rect x="29" y="28" width="42" height="6" rx="2" fill="#fbf9f7" />
+            <rect x="16" y="18" width="68" height="28" rx="10" fill="#3d121c" stroke={line} strokeWidth="5" />
+            <rect x="22" y="20" width="56" height="10" rx="3" fill="#fbf9f7" />
           </>
         )}
         {shape === 'H' && (
           <>
             <path
-              d="M 22 23 Q 50 19 78 23 Q 80 51 50 53 Q 20 51 22 23 Z"
-              fill="#622331"
+              d="M 12 12 Q 50 4 88 12 Q 94 58 50 66 Q 6 58 12 12 Z"
+              fill="#3a1018"
               stroke={line}
               strokeWidth="5"
             />
-            <ellipse cx="50" cy="41" rx="17" ry="9" fill="#df7882" />
+            <ellipse cx="50" cy="44" rx="24" ry="16" fill="#e56d7c" />
           </>
         )}
       </svg>
@@ -365,8 +392,8 @@ const neutralPose = (
   const armDrift = Math.sin((t * Math.PI * 2) / 4.8 + seedOffset * 0.71);
   return {
     bobY: 0,
-    torsoRot: slowSway * 0.28 * nativeDir * secondary,
-    breathScaleY: 1 + 0.0028 * slowBreath * breathDamping,
+    torsoRot: slowSway * 1.6 * nativeDir * secondary,
+    breathScaleY: 1 + 0.045 * slowBreath * breathDamping,
     headRot: -slowSway * 0.22 * nativeDir * secondary,
     leadUpperArm: (ARM_REST_UPPER + armDrift * 0.42 * secondary) * nativeDir,
     leadLowerArm: (ARM_REST_LOWER + armDrift * 0.24 * secondary) * nativeDir,
@@ -554,22 +581,13 @@ const evaluateActionPose = ({
     pose.bobY += Math.sin(settleProgress * Math.PI) * 1.8;
     pose.torsoRot *= 0.35;
     pose.headRot *= 0.35;
-  } else if (type === 'work') {
-    const workPulse = 0.5 + 0.5 * Math.sin(t * Math.PI * 2 * 0.82 + seedOffset);
-    pose.torsoRot = (2.2 + workPulse * 0.8) * nativeDir;
-    pose.headRot = (1.4 + workPulse * 0.6) * nativeDir;
-    pose.leadUpperArm = (-19 - workPulse * 5) * nativeDir;
-    pose.leadLowerArm = (-22 - workPulse * 7) * nativeDir;
-    pose.backUpperArm = (-14 - (1 - workPulse) * 4) * nativeDir;
-    pose.backLowerArm = (-18 - (1 - workPulse) * 5) * nativeDir;
-  } else if (type === 'console') {
-    const consolePulse = 0.5 + 0.5 * Math.sin(t * Math.PI * 2 * 0.7 + seedOffset);
-    pose.torsoRot = 2.3 * nativeDir;
-    pose.headRot = (1.8 + consolePulse * 0.7) * nativeDir;
-    pose.leadUpperArm = (-22 - consolePulse * 3) * nativeDir;
-    pose.leadLowerArm = (-25 - consolePulse * 5) * nativeDir;
-    pose.backUpperArm = (-18 - (1 - consolePulse) * 2) * nativeDir;
-    pose.backLowerArm = (-21 - (1 - consolePulse) * 4) * nativeDir;
+  } else if (type === 'work' || type === 'console') {
+    const deskPulse = 0.5 + 0.5 * Math.sin(t * Math.PI * 2 * 0.7 + seedOffset);
+    pose.torsoRot = (1.6 + deskPulse * 0.4) * nativeDir;
+    pose.headRot = (2.4 + deskPulse * 0.5) * nativeDir;
+    // Near hand drops onto the desktop. The far arm stays at the hanging rest for a half-fist.
+    pose.leadUpperArm = (-8 - deskPulse) * nativeDir;
+    pose.leadLowerArm = (-46 - deskPulse * 3) * nativeDir;
   } else if (type === 'carry') {
     const carryBreath = Math.sin(t * Math.PI * 2 * 0.55 + seedOffset) * 0.8;
     pose.leadUpperArm = (-22 + carryBreath) * nativeDir;
@@ -639,21 +657,22 @@ const applyWalkingGait = ({
 
   const carryMultiplier = clip.type === 'carry' ? 0.76 : 1;
 
-  // True side-profile stride: legs scissor in the picture plane (no front-view foreshortening cheat).
+  // The side drawing is a baked stride. Feet-together is zero; the cycle swings around that.
   if (rig.view_angle === 'side') {
     const phi = stepProgress * Math.PI;
     const sL = Math.cos(phi);
     const sR = -sL;
-    const strideDeg = 12.5 * carryMultiplier * envelope;
+    const strideDeg = sideStrideDegrees(envelope, carryMultiplier);
+    const plant = sidePlantAngles(rig, boxW, boxH);
     const flexNormL = Math.max(0, -Math.sin(phi)) * envelope;
     const flexNormR = Math.max(0, Math.sin(phi)) * envelope;
-    const flexMax = 16 * carryMultiplier;
-    const sideLiftPx = targetFigureH * 0.03 * carryMultiplier;
+    const flexMax = 4 * carryMultiplier;
+    const sideLiftPx = sideShoeLiftPx(targetFigureH, carryMultiplier);
     const sideDip = 2 * carryMultiplier * envelope * Math.cos(phi) ** 2;
     const out = {...pose};
     out.bobY = sideDip;
-    out.upperLegL = -sL * strideDeg * localForward;
-    out.upperLegR = -sR * strideDeg * localForward;
+    out.upperLegL = plant.upperLegL - sL * strideDeg * localForward;
+    out.upperLegR = plant.upperLegR - sR * strideDeg * localForward;
     out.lowerLegL = flexNormL * flexMax * localForward;
     out.lowerLegR = flexNormR * flexMax * localForward;
     out.footL = -flexNormL * flexMax * 0.2 * localForward;
@@ -745,6 +764,16 @@ const applyWalkingGait = ({
   return result;
 };
 
+/** Degrees that close a side-view baked stride so both ankles stack under the body. */
+const sidePlantAngles = (rig: CharacterRig, boxW: number, boxH: number) => {
+  const togetherX = rig.anchor_x * boxW;
+  const leg = (side: LegSide) => {
+    const geometry = legGeometry(rig, side, boxW, boxH);
+    return sideTogetherDegrees(geometry.hip.x, geometry.hip.y, geometry.ankle.x, geometry.ankle.y, togetherX);
+  };
+  return {upperLegL: leg('l'), upperLegR: leg('r')};
+};
+
 /** Planted clips never leave the floor: body dips compress both thighs, rises are dropped. */
 const plantStationaryPose = (pose: PuppetPose, rig: CharacterRig): PuppetPose => {
   if (rig.level !== 'full') return pose;
@@ -806,6 +835,15 @@ const evaluateClipPose = (clip: PuppetClip, context: PoseContext): PuppetPose =>
     });
   } else {
     pose = plantStationaryPose(pose, context.rig);
+    if (context.rig.view_angle === 'side') {
+      const plant = sidePlantAngles(context.rig, context.boxW, context.boxH);
+      pose.upperLegL = plant.upperLegL;
+      pose.upperLegR = plant.upperLegR;
+      pose.lowerLegL = 0;
+      pose.lowerLegR = 0;
+      pose.footL = 0;
+      pose.footR = 0;
+    }
   }
   return pose;
 };
@@ -879,6 +917,8 @@ const LimbChain = ({
   fallbackUpper,
   fallbackLower,
   fallbackFoot,
+  clipPath,
+  hand,
 }: {
   upper?: PuppetPart;
   lower?: PuppetPart;
@@ -892,6 +932,8 @@ const LimbChain = ({
   fallbackUpper: [number, number];
   fallbackLower: [number, number];
   fallbackFoot?: [number, number];
+  clipPath?: string;
+  hand?: React.ReactNode;
 }) => {
   if (!upper && !lower && !foot) return null;
   const lift = upperLengthPx > 0 ? clampValue(liftPx, 0, upperLengthPx * 0.3) : 0;
@@ -924,7 +966,10 @@ const LimbChain = ({
             transform: `translateY(${-lift}px) rotate(${lowerDeg}deg)`,
           }}
         >
-          {lower && <Img src={staticFile(lower.src)} style={partImgStyle} />}
+          {hand}
+          {lower && (
+            <Img src={staticFile(lower.src)} style={clipPath ? {...partImgStyle, clipPath} : partImgStyle} />
+          )}
           {foot && (
             <div
               style={{
@@ -941,19 +986,6 @@ const LimbChain = ({
       )}
     </div>
   );
-};
-
-/** 5-frame cushioned anime turnaround: scaleX squash (1 -> 0.75 -> 1) with a small body dip, rig/flip swap at the middle frame. */
-const TURN_SCALE_X = [0.9, 0.78, 0.75, 0.78, 0.9];
-const TURN_DIP_PX = [1.2, 2.5, 1.6, 0.6, 0];
-
-type GestureHandKind = 'point' | 'wave' | 'console';
-
-const gestureHandKind = (type: PuppetClipType): GestureHandKind | null => {
-  if (type === 'point') return 'point';
-  if (type === 'wave') return 'wave';
-  if (type === 'console' || type === 'work') return 'console';
-  return null;
 };
 
 const shadeRgb = (rgb: [number, number, number] | undefined, k: number, fallback: string) =>
@@ -975,7 +1007,7 @@ const AnimeGestureHand = ({
   rotateDeg,
   mirror,
 }: {
-  kind: GestureHandKind;
+  kind: HandKind;
   face: PuppetFace;
   left: number;
   top: number;
@@ -1019,16 +1051,23 @@ const AnimeGestureHand = ({
         style={{position: 'absolute', inset: 0, overflow: 'visible'}}
       >
         <g stroke={line} strokeWidth={sw} strokeLinejoin="round" strokeLinecap="round">
+          {(kind === 'fist' || kind === 'desk') && (
+            <>
+              <path d="M 30 8 H 72 Q 86 28 78 54 Q 72 82 50 84 Q 28 82 22 54 Q 14 28 30 8 Z" fill={skin} />
+              <path d="M 34 30 H 68 Q 74 48 64 62 H 36 Q 26 48 34 30 Z" fill={shade} stroke="none" />
+              <path d="M 38 36 H 64 M 36 48 H 66" fill="none" strokeWidth={2.2} />
+              <ellipse cx="24" cy="50" rx="11" ry="15" fill={skin} />
+            </>
+          )}
           {kind === 'point' && (
             <>
-              <path d="M 66 26 Q 87 32 83 55 Q 80 64 70 58 Z" fill={skin} />
-              <path d="M 31 6 L 69 6 Q 74 36 72 54 Q 70 72 54 74 L 42 74 Q 28 72 29 50 Q 29 28 31 6 Z" fill={skin} />
-              <path d="M 58 18 Q 71 40 66 64 Q 62 70 54 72 Q 66 52 58 18 Z" fill={shade} stroke="none" />
-              <rect x="50" y="46" width="25" height="30" rx="11" fill={skin} />
-              <path d="M 53 57 H 71 M 53 66 H 70" fill="none" strokeWidth={2.2} />
-              <rect x="31" y="46" width="18" height="68" rx="9" fill={skin} />
-              <path d="M 34 66 H 46" fill="none" strokeWidth={2.2} />
-              <path d="M 44 54 Q 47 82 44 106" fill="none" stroke={shade} strokeWidth={2.6} opacity={0.65} />
+              <path d="M 26 16 C 20 18 16 34 20 52 C 24 74 36 84 52 86 C 72 84 86 68 86 46 C 88 28 76 16 60 14 Z" fill={skin} />
+              <path d="M 34 34 H 74 Q 78 52 68 64 H 38 Q 28 52 34 34 Z" fill={shade} stroke="none" />
+              <path d="M 40 40 H 70 M 38 52 H 68" fill="none" strokeWidth={2} />
+              <rect x="42" y="64" width="16" height="46" rx="8" fill={skin} />
+              <path d="M 50 72 V 104" fill="none" stroke={shade} strokeWidth={2.4} />
+              <ellipse cx="50" cy="112" rx="8" ry="7" fill={skin} />
+              <path d="M 22 40 Q 6 50 12 68 Q 22 74 32 60 Q 28 48 22 40 Z" fill={skin} />
             </>
           )}
           {kind === 'wave' && (
@@ -1040,17 +1079,6 @@ const AnimeGestureHand = ({
               {finger(39, 58, 11, 60, 'f1')}
               {finger(51, 58, 11, 55, 'f2')}
               {finger(63, 58, 10, 42, 'f3')}
-            </>
-          )}
-          {kind === 'console' && (
-            <>
-              <path d="M 68 30 Q 84 38 81 56 Q 79 63 71 58 Q 72 48 66 42 Z" fill={skin} />
-              <path d="M 30 6 L 70 6 Q 75 36 72 56 Q 69 74 50 74 Q 31 74 28 56 Q 26 36 30 6 Z" fill={skin} />
-              <path d="M 60 16 Q 73 40 67 64 Q 63 72 52 73 Q 67 52 60 16 Z" fill={shade} stroke="none" />
-              {finger(28, 60, 11, 34, 'f0')}
-              {finger(40, 60, 11, 44, 'f1')}
-              {finger(52, 60, 11, 40, 'f2')}
-              {finger(64, 60, 10, 30, 'f3')}
             </>
           )}
         </g>
@@ -1076,6 +1104,8 @@ export const Puppet = ({
   mouthCue = 'X',
   cameraMoving = false,
   partnerX,
+  gazeX,
+  aimScreen,
   width,
   height,
   index = 0,
@@ -1085,6 +1115,7 @@ export const Puppet = ({
   floorYOverride,
   renderPass = 'all',
   ambientTint,
+  floorRgb,
 }: {
   name: string;
   rig: CharacterRig;
@@ -1103,6 +1134,10 @@ export const Puppet = ({
   mouthCue?: string;
   cameraMoving?: boolean;
   partnerX?: number;
+  /** Live stage X to look at. Used while a rover drives so the head follows the body. */
+  gazeX?: number;
+  /** Painted monitor glass. A pointing finger aims at its center. */
+  aimScreen?: ScreenGlass;
   width: number;
   height: number;
   index?: number;
@@ -1116,7 +1151,9 @@ export const Puppet = ({
    * 'arms_over_desk': ONLY lead forearm + gesture hand (no ground shadow).
    */
   renderPass?: 'all' | 'body_behind_desk' | 'arms_over_desk';
-  ambientTint?: string;
+  ambientTint?: string | [number, number, number];
+  /** Plate floor colour. Contact shadow is tinted from it when the shot provides one. */
+  floorRgb?: string | [number, number, number];
 }) => {
   const stagePlane = DEPTH_STAGE[depth] || DEPTH_STAGE.mid;
   const stature = Number.isFinite(statureScale) && statureScale > 0 ? statureScale : 1;
@@ -1197,40 +1234,29 @@ export const Puppet = ({
   const activeRig = rigForClip(activeClip);
   const desiredFacing = facingForClip(activeClip, activeXNorm);
 
-  // ---- 5-frame turnaround window around a rig / facing change ---------------------------------
+  // ---- 8-frame turn: planted side, one thin edge, then the front drawing ----------------------
   const activeIndex = timeline.indexOf(activeClip);
   const prevClip = activeIndex > 0 ? timeline[activeIndex - 1] : undefined;
   const nextClip = activeIndex >= 0 && activeIndex < timeline.length - 1 ? timeline[activeIndex + 1] : undefined;
-  const stateChanged = (aRig: CharacterRig, aFacing: PuppetFacing, bRig: CharacterRig, bFacing: PuppetFacing) =>
-    aRig !== bRig || aFacing !== bFacing;
-  let turnD: number | null = null;
-  const sinceStart = timelineFrame - activeClip.startFrame;
-  if (prevClip && sinceStart >= 0 && sinceStart <= 2) {
-    if (stateChanged(rigForClip(prevClip), facingForClip(prevClip, prevClip.toX), activeRig, desiredFacing)) {
-      turnD = sinceStart;
-    }
+  const isSidePose = (clip: PuppetClip) => clip.pose === 'side' && Boolean(sideRig);
+  let turnStage: TurnStage = 'none';
+  if (prevClip && isSidePose(prevClip) && !isSidePose(activeClip)) {
+    turnStage = resolveSideToFrontTurn(timelineFrame, activeClip.startFrame, true, true);
   }
-  if (turnD === null && nextClip) {
-    const untilNext = nextClip.startFrame - timelineFrame;
-    if (
-      untilNext >= 1 &&
-      untilNext <= 2 &&
-      stateChanged(activeRig, desiredFacing, rigForClip(nextClip), facingForClip(nextClip, nextClip.fromX))
-    ) {
-      turnD = -untilNext;
-    }
+  if (turnStage === 'none' && nextClip && isSidePose(activeClip) && !isSidePose(nextClip)) {
+    turnStage = resolveSideToFrontTurn(timelineFrame, nextClip.startFrame, true, true);
   }
-  const turnScaleX = turnD === null ? 1 : TURN_SCALE_X[turnD + 2];
-  const turnDip = turnD === null ? 0 : TURN_DIP_PX[turnD + 2];
 
-  // ---- Rig geometry for the rig actually on screen -------------------------------------------
-  const rigSpan = Math.max(0.35, activeRig.foot_y - activeRig.head_top_y);
-  const boxH = targetFigureH / rigSpan;
-  const aspect = Math.max(
-    0.35,
-    Math.min(2.0, (activeRig.width || 768) / Math.max(1, activeRig.height || 1024)),
-  );
-  const boxW = boxH * aspect;
+  // Lock head-to-toe height and the layout box to the three-quarter master across the swap.
+  const fit = lockedFigureBox({
+    master: rig,
+    active: activeRig,
+    targetFigureH,
+  });
+  const boxH = fit.boxH;
+  const boxW = fit.boxW;
+  const heightScale = fit.heightScale;
+  const shoulderScale = shoulderLockScale(shoulderNorm(activeRig), shoulderNorm(rig));
 
   const nativeFacing = nativeOf(activeRig);
   const travelDirection = Math.sign(activeClip.toX - activeClip.fromX);
@@ -1261,23 +1287,37 @@ export const Puppet = ({
     index,
   });
   const blinkClosure = computeBlinkClosure(name || `actor-${index}`, timelineFrame, fps);
-
-  // ---- 2.5D head yaw / gaze toward partner, console or rover ----------------------------------
-  const gazeTargetX =
-    typeof activeClip.targetX === 'number' && Number.isFinite(activeClip.targetX)
-      ? activeClip.targetX
-      : partnerX;
-  let gazeLocal = 0;
-  let gazeStrength = 0;
-  if (typeof gazeTargetX === 'number') {
-    const dx = gazeTargetX - activeXNorm;
-    if (Math.abs(dx) > 0.015) {
-      gazeLocal = Math.sign(dx) * flipX;
-      gazeStrength = smoothstep(Math.abs(dx) / 0.12);
-    }
+  if (feetPlantedForTurn(turnStage)) {
+    const plant = activeRig.view_angle === 'side' ? sidePlantAngles(activeRig, boxW, boxH) : {upperLegL: 0, upperLegR: 0};
+    angles.upperLegL = plant.upperLegL;
+    angles.lowerLegL = 0;
+    angles.footL = 0;
+    angles.upperLegR = plant.upperLegR;
+    angles.lowerLegR = 0;
+    angles.footR = 0;
+    angles.thighLiftL = Math.max(0, angles.bobY);
+    angles.thighLiftR = Math.max(0, angles.bobY);
+    angles.leadUpperArm = ARM_REST_UPPER * nativeDir;
+    angles.leadLowerArm = ARM_REST_LOWER * nativeDir;
+    angles.backUpperArm = -ARM_REST_UPPER * nativeDir;
+    angles.backLowerArm = -ARM_REST_LOWER * nativeDir;
   }
-  const neckShiftPx = 2.2 * gazeLocal * gazeStrength;
-  const gazeTiltDeg = 1.8 * gazeLocal * gazeStrength;
+
+  // Head and torso address the rover or the partner after the turn, not the camera.
+  // Profile frames stay in profile; the nod starts once the front drawing is up.
+  const gazeTargetX =
+    typeof gazeX === 'number' && Number.isFinite(gazeX)
+      ? gazeX
+      : typeof activeClip.targetX === 'number' && Number.isFinite(activeClip.targetX)
+        ? activeClip.targetX
+        : partnerX;
+  const profileHold = activeRig.view_angle === 'side' || turnStage === 'planted-side' || turnStage === 'edge';
+  const gazeDx = typeof gazeTargetX === 'number' ? gazeTargetX - activeXNorm : 0;
+  const address = profileHold ? {neckPx: 0, headDeg: 0, torsoDeg: 0, nodDeg: 0} : gazeAddress(gazeDx, flipX, typeof gazeTargetX === 'number');
+  const neckShiftPx = address.neckPx;
+  const gazeTiltDeg = address.headDeg;
+  const gazeNodDeg = address.nodDeg;
+  if (!activeMoves && !profileHold) angles.torsoRot += address.torsoDeg;
 
   const left = worldX - activeRig.anchor_x * boxW;
   const top = floorPxY - activeRig.foot_y * boxH;
@@ -1291,6 +1331,8 @@ export const Puppet = ({
   const parts = activeRig.parts || {};
   const torsoPart = parts.torso || parts.body;
   const headPart = parts.head;
+  const leadLowerPart = parts[`lower_arm_${leadSuffix}`];
+  const leadUpperPart = parts[`upper_arm_${leadSuffix}`];
   const thighLength = (side: LegSide) => {
     const geometry = legGeometry(activeRig, side, boxW, boxH);
     return Math.max(0, geometry.knee.y - geometry.hip.y);
@@ -1313,60 +1355,99 @@ export const Puppet = ({
   const fallbackAnkle = (side: LegSide): [number, number] =>
     activeRig.ankles?.[side] ?? [fallbackKnee(side)[0], activeRig.foot_y - 0.05];
 
-  // ---- Gesture hand overlay (point / wave / console / work) ------------------------------------
-  const leadLowerPart = parts[`lower_arm_${leadSuffix}`];
-  const leadUpperPart = parts[`upper_arm_${leadSuffix}`];
-  const wrist = activeRig.wrists?.[leadSuffix];
-  const handKind = gestureHandKind(activeClip.type);
-  const armDeviation = Math.abs(
-    angles.leadUpperArm + angles.leadLowerArm - nativeDir * (ARM_REST_UPPER + ARM_REST_LOWER),
-  );
-  const showGestureHand = Boolean(
-    handKind && activeRig.face && wrist && leadLowerPart && activeRig.level !== 'sprite' && armDeviation >= 12,
-  );
-  let handNode: React.ReactNode = null;
-  let forearmClip: string | undefined;
-  if (showGestureHand && handKind && wrist && activeRig.face && leadLowerPart) {
+  // ---- Skin half-fists on both wrists; point aims at the gesture target -----------------------
+  const handModes = handModesForClip(activeClip.type);
+  const drawHands = Boolean(activeRig.face && activeRig.wrists && activeRig.level !== 'sprite');
+  const wristHand = (suffix: 'l' | 'r', kind: HandKind) => {
+    const wrist = activeRig.wrists?.[suffix];
+    const lowerPart = parts[`lower_arm_${suffix}`];
+    if (!drawHands || !wrist || !lowerPart || !activeRig.face) return null;
     const radiusPx = Math.max(6, (activeRig.wrists?.radius ?? 0.024) * boxW);
-    const handSize = radiusPx * 5.2;
     const wristPx = {x: wrist[0] * boxW, y: wrist[1] * boxH};
-    const elbowPivot = leadLowerPart.pivot;
-    const elbowPx = {x: elbowPivot[0] * boxW, y: elbowPivot[1] * boxH};
+    const elbowPx = {x: lowerPart.pivot[0] * boxW, y: lowerPart.pivot[1] * boxH};
+    const forearmPx = Math.max(16, Math.hypot(wristPx.x - elbowPx.x, wristPx.y - elbowPx.y));
+    const handSize = handSizeForForearm(forearmPx, kind);
     let ux = wristPx.x - elbowPx.x;
     let uy = wristPx.y - elbowPx.y;
-    const len = Math.hypot(ux, uy);
-    if (len > 4) {
-      ux /= len;
-      uy /= len;
-    } else {
-      ux = 0;
-      uy = 1;
-    }
-    // Forearm bitmap direction -> hand rotation (fingers continue along the forearm axis).
+    const len = Math.hypot(ux, uy) || 1;
+    ux /= len;
+    uy /= len;
     const axisDeg = (Math.atan2(-ux, uy) * 180) / Math.PI;
-    const extraDeg = handKind === 'console' ? -18 * nativeDir : 0;
-    // Remove the clenched rest fist beyond the cuff: keep the half-plane behind the wrist.
-    const cutX = wristPx.x + ux * radiusPx * 0.35;
-    const cutY = wristPx.y + uy * radiusPx * 0.35;
-    const vx = -uy;
-    const vy = ux;
-    const L = (boxW + boxH) * 2;
-    const pts = [
-      [cutX + vx * L, cutY + vy * L],
-      [cutX - vx * L, cutY - vy * L],
-      [cutX - vx * L - ux * L, cutY - vy * L - uy * L],
-      [cutX + vx * L - ux * L, cutY + vy * L - uy * L],
-    ];
-    forearmClip = `polygon(${pts.map(p => `${p[0].toFixed(1)}px ${p[1].toFixed(1)}px`).join(', ')})`;
-    handNode = (
+    return {
+      clip: forearmClipPolygon(wristPx, elbowPx, radiusPx, boxW, boxH),
+      wristPx,
+      node: (
+        <AnimeGestureHand
+          kind={kind}
+          face={activeRig.face}
+          left={wristPx.x - handSize / 2}
+          top={wristPx.y - handSize * 1.2 * 0.1167}
+          size={handSize}
+          rotateDeg={axisDeg}
+          mirror={suffix === 'r' ? 1 : -1}
+        />
+      ),
+    };
+  };
+  const leadHand = wristHand(leadSuffix, handModes.lead === 'point' ? 'fist' : handModes.lead);
+  const backHand = wristHand(backSuffix, handModes.back);
+  const forearmClip = leadHand?.clip;
+  const backClip = backHand?.clip;
+  const handNode = handModes.lead === 'point' ? null : leadHand?.node;
+  const backHandNode = backHand?.node;
+  let aimHand: React.ReactNode = null;
+  if (handModes.lead === 'point' && leadHand && activeRig.face && leadLowerPart) {
+    const rotateAround = (point: {x: number; y: number}, origin: {x: number; y: number}, deg: number) => {
+      const rad = (deg * Math.PI) / 180;
+      const c = Math.cos(rad);
+      const s = Math.sin(rad);
+      const dx = point.x - origin.x;
+      const dy = point.y - origin.y;
+      return {x: origin.x + dx * c - dy * s, y: origin.y + dx * s + dy * c};
+    };
+    const shoulderPx = {
+      x: (leadUpperPart?.pivot?.[0] ?? activeRig.anchor_x + 0.1) * boxW,
+      y: (leadUpperPart?.pivot?.[1] ?? 0.24) * boxH,
+    };
+    const bob = (phaseContinuation ? 0 : (1 - enter) * 4) + angles.bobY;
+    const aim = pointTarget(activeClip.targetX ?? partnerX, activeXNorm, width, height, aimScreen);
+    const originX = activeRig.anchor_x * boxW;
+    const originY = activeRig.foot_y * boxH;
+    const shoulderScreen = {
+      x: left + originX + (shoulderPx.x - originX) * flipX * shoulderScale,
+      y: top + originY + (shoulderPx.y - originY) * heightScale + bob,
+    };
+    // A target above the shoulder raises the hanging arm until local +y aims at the glass.
+    if (pointArmLiftDegrees(shoulderScreen.y, aim.y) > 0) {
+      angles.leadUpperArm = aimDegrees(shoulderScreen.x, shoulderScreen.y, aim.x, aim.y) * flipX;
+      angles.leadLowerArm = 0;
+    }
+    const torsoPivot = torsoPart?.pivot ?? [activeRig.anchor_x, 0.54];
+    let posed = rotateAround(leadHand.wristPx, {
+      x: leadLowerPart.pivot[0] * boxW,
+      y: leadLowerPart.pivot[1] * boxH,
+    }, angles.leadLowerArm);
+    posed = rotateAround(posed, shoulderPx, angles.leadUpperArm);
+    posed = rotateAround(posed, {x: torsoPivot[0] * boxW, y: torsoPivot[1] * boxH}, angles.torsoRot);
+    posed = {
+      x: originX + (posed.x - originX) * flipX * shoulderScale,
+      y: originY + (posed.y - originY) * heightScale,
+    };
+    const screenWrist = {x: left + posed.x, y: top + posed.y + bob};
+    const forearmPx = Math.max(16, Math.hypot(
+      leadHand.wristPx.x - leadLowerPart.pivot[0] * boxW,
+      leadHand.wristPx.y - leadLowerPart.pivot[1] * boxH,
+    ));
+    const handSize = handSizeForForearm(forearmPx, 'point');
+    aimHand = (
       <AnimeGestureHand
-        kind={handKind}
+        kind="point"
         face={activeRig.face}
-        left={wristPx.x - handSize / 2}
-        top={wristPx.y - handSize * 1.2 * 0.1167}
+        left={screenWrist.x - handSize / 2}
+        top={screenWrist.y - handSize * 1.2 * 0.1167}
         size={handSize}
-        rotateDeg={axisDeg + extraDeg}
-        mirror={nativeDir}
+        rotateDeg={aimDegrees(screenWrist.x, screenWrist.y, aim.x, aim.y)}
+        mirror={desiredFacing === 'right' ? 1 : -1}
       />
     );
   }
@@ -1376,24 +1457,30 @@ export const Puppet = ({
   if (!showBody && activeRig.level === 'sprite') return null;
 
   const tintId = `puppet-tint-${index}-${renderPass}`;
-  const tintFilter = ambientTint ? `url(#${tintId})` : '';
+  const multiplyColor = ambientMultiplyColor(ambientTint);
+  const tintFilter = multiplyColor ? `url(#${tintId})` : '';
   const dropShadow = showBody ? 'drop-shadow(0 6px 8px rgba(6, 12, 22, 0.28))' : '';
   const rootFilter = [tintFilter, dropShadow].filter(Boolean).join(' ') || undefined;
+  const bobY = (phaseContinuation ? 0 : (1 - enter) * 4) + angles.bobY;
+  const sideNative = sideRig ? nativeOf(sideRig) : desiredFacing;
+  const outgoingFacing = prevClip ? facingForClip(prevClip, prevClip.toX) : desiredFacing;
+  const sideFlip = outgoingFacing !== sideNative ? -1 : 1;
+  const sideFit = sideRig ? lockedFigureBox({master: rig, active: sideRig, targetFigureH}) : fit;
 
   return (
     <div style={{position: 'absolute', inset: 0, pointerEvents: 'none'}}>
-      {ambientTint && (
+      {multiplyColor && (
         <svg width={0} height={0} style={{position: 'absolute'}} aria-hidden>
           <defs>
             <filter id={tintId} colorInterpolationFilters="sRGB" x="-5%" y="-5%" width="110%" height="110%">
-              <feFlood floodColor={ambientTint} floodOpacity={0.16} result="tint" />
+              <feFlood floodColor={multiplyColor} floodOpacity={1} result="tint" />
               <feBlend in="tint" in2="SourceGraphic" mode="multiply" result="blend" />
               <feComposite in="blend" in2="SourceGraphic" operator="in" />
             </filter>
           </defs>
         </svg>
       )}
-      {/* Grounded contact shadow on the location plate floor */}
+      {/* Contact shadow tinted by the plate floor when floor_rgb is provided */}
       {showBody && (
         <div
           style={{
@@ -1403,7 +1490,7 @@ export const Puppet = ({
             width: shadowW,
             height: shadowH,
             borderRadius: '50%',
-            background: 'radial-gradient(ellipse, rgba(6, 12, 22, 0.44) 0%, rgba(6, 12, 22, 0.16) 52%, rgba(6, 12, 22, 0) 76%)',
+            background: contactShadowBackground(floorRgb),
             transform: `scale(${shadowScale})`,
             filter: 'blur(2px)',
           }}
@@ -1419,7 +1506,7 @@ export const Puppet = ({
           width: boxW,
           height: boxH,
           transformOrigin: `${activeRig.anchor_x * 100}% ${activeRig.foot_y * 100}%`,
-          transform: `translateY(${(phaseContinuation ? 0 : (1 - enter) * 4) + angles.bobY}px) scale(${approachScale}) scaleX(${flipX * turnScaleX})`,
+          transform: `translateY(${bobY}px) scale(${approachScale}) scaleX(${flipX * shoulderScale}) scaleY(${heightScale})`,
           filter: rootFilter,
         }}
       >
@@ -1429,7 +1516,7 @@ export const Puppet = ({
               position: 'absolute',
               inset: 0,
               transformOrigin: `${activeRig.anchor_x * 100}% ${activeRig.foot_y * 100}%`,
-              transform: `translateY(${turnDip}px) rotate(${angles.torsoRot * 0.6}deg) scaleY(${angles.breathScaleY})`,
+              transform: `rotate(${angles.torsoRot * 0.6}deg) scaleY(${angles.breathScaleY})`,
             }}
           >
             {torsoPart && <Img src={staticFile(torsoPart.src)} style={partImgStyle} />}
@@ -1476,7 +1563,7 @@ export const Puppet = ({
                 position: 'absolute',
                 inset: 0,
                 transformOrigin: pivotOrigin(torsoPart, [activeRig.anchor_x, 0.54]),
-                transform: `translateY(${turnDip}px) rotate(${angles.torsoRot}deg) scaleY(${angles.breathScaleY})`,
+                transform: `rotate(${angles.torsoRot}deg) scaleY(${angles.breathScaleY})`,
               }}
             >
               {showBody && (
@@ -1487,6 +1574,8 @@ export const Puppet = ({
                   lowerDeg={angles.backLowerArm}
                   fallbackUpper={[activeRig.anchor_x - 0.1, 0.24]}
                   fallbackLower={[activeRig.anchor_x - 0.14, 0.38]}
+                  clipPath={backClip}
+                  hand={backHandNode}
                 />
               )}
 
@@ -1510,7 +1599,7 @@ export const Puppet = ({
                     position: 'absolute',
                     inset: 0,
                     transformOrigin: pivotOrigin(headPart, [activeRig.anchor_x, 0.18]),
-                    transform: `translateX(${neckShiftPx}px) rotate(${angles.headRot + gazeTiltDeg}deg)`,
+                    transform: `perspective(640px) translateX(${neckShiftPx}px) translateY(${Math.abs(gazeNodDeg) * 0.45}px) rotateX(${gazeNodDeg}deg) rotate(${angles.headRot + gazeTiltDeg}deg)`,
                   }}
                 >
                   <Img src={staticFile(headPart.src)} style={partImgStyle} />
@@ -1550,6 +1639,29 @@ export const Puppet = ({
           </>
         )}
       </div>
+      {showBody && turnStage === 'edge' && sideRig && (
+        <div
+          style={{
+            position: 'absolute',
+            left: worldX - sideRig.anchor_x * sideFit.boxW,
+            top: floorPxY - sideRig.foot_y * sideFit.boxH,
+            width: sideFit.boxW,
+            height: sideFit.boxH,
+            transformOrigin: `${sideRig.anchor_x * 100}% ${sideRig.foot_y * 100}%`,
+            transform: `translateY(${bobY}px) scale(${approachScale}) scaleX(${sideFlip * TURN_EDGE_SCALE_X}) scaleY(${sideFit.heightScale})`,
+            filter: rootFilter,
+          }}
+        >
+          {Object.entries(sideRig.parts || {}).map(([name, part]) => (
+            <Img key={name} src={staticFile(part.src)} style={partImgStyle} />
+          ))}
+        </div>
+      )}
+      {showArmsPass && aimHand && (
+        <div style={{position: 'absolute', inset: 0, filter: rootFilter, pointerEvents: 'none'}}>
+          {aimHand}
+        </div>
+      )}
     </div>
   );
 };

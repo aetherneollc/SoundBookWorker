@@ -1,8 +1,11 @@
 import React from 'react';
 import {Img, staticFile} from 'remotion';
+import {insetScreenGlass} from './puppet_motion';
 
 export type StagePropKind = 'console_desk' | 'telemetry_screen' | 'workbench';
 export type StageRgb = [number, number, number];
+/** Normalized top-left rectangle on the 1280×720 plate. */
+export type StageRect = {x: number; y: number; w: number; h: number};
 
 export type StagePropProps = {
   frame: number;
@@ -214,67 +217,129 @@ export const ConsoleHoloOverlay = (props: StagePropProps) => {
 
 export type TelemetryScreenPropProps = StagePropProps & {
   screenY?: number;
+  /** Painted monitor on the location plate. Curves and the lock label stay inside it. */
+  screenRect?: StageRect;
+  /** Rect is already the inset glass in this layer's coordinate space. Do not inset again. */
+  glassReady?: boolean;
 };
 
-/** Wall/pillar display that changes from dim standby to a four-wheel suspension lock diagnostic. */
+const TELEMETRY_CURVES = [
+  'M14 46 C34 26 50 60 70 38 S102 28 122 44 S142 56 146 34',
+  'M14 56 C34 40 52 68 72 50 S104 42 124 56 S142 66 146 46',
+  'M14 66 C36 52 54 76 74 60 S106 54 126 66 S144 76 146 58',
+  'M14 76 C38 64 56 84 78 72 S108 66 128 76 S144 84 146 70',
+];
+
+/** Curves and “4W LOCK” inside a plate monitor. No second bezel. */
 export const TelemetryScreenProp = (props: TelemetryScreenPropProps) => {
-  const width = clamp(props.humanHeightPx * 0.72, props.sceneWidth * 0.2, props.sceneWidth * 0.3);
-  const height = clamp(props.sceneHeight * 0.22, 122, props.humanHeightPx * 0.48);
-  const top = clamp(props.screenY ?? 0.34, 0.3, 0.5) * props.sceneHeight;
+  const raw = props.screenRect;
+  const rect =
+    raw && raw.w > 0.015 && raw.h > 0.015
+      ? props.glassReady
+        ? raw
+        : insetScreenGlass(raw)
+      : undefined;
+  const fitted = Boolean(rect);
+  const width = fitted && rect
+    ? rect.w * props.sceneWidth
+    : clamp(props.sceneWidth * 0.12, 88, props.sceneWidth * 0.14);
+  const height = fitted && rect
+    ? rect.h * props.sceneHeight
+    : clamp(props.sceneHeight * 0.075, 40, props.sceneHeight * 0.1);
+  const left = fitted && rect ? rect.x * props.sceneWidth : props.x * props.sceneWidth - width / 2;
+  const top = fitted && rect
+    ? rect.y * props.sceneHeight
+    : clamp(props.screenY ?? 0.36, 0.28, 0.52) * props.sceneHeight;
   const pulse = 0.74 + 0.26 * Math.sin((props.frame / Math.max(1, props.fps)) * Math.PI * 3.6);
-  const glow = props.active ? 0.8 + pulse * 0.2 : 0.16;
+  const glow = props.active ? 0.85 + pulse * 0.15 : 0.28;
   const dash = -((props.frame * 2.2) % 36);
-  const curves = [
-    'M58 112 C89 75 116 137 148 91 S206 69 245 104 S303 126 338 80',
-    'M58 124 C88 94 119 145 151 107 S207 91 246 118 S301 139 338 101',
-    'M58 136 C92 111 121 154 153 121 S209 108 247 132 S302 150 338 119',
-    'M58 148 C94 129 124 160 156 136 S211 125 250 145 S304 158 338 137',
-  ];
   return (
     <div
       style={{
         position: 'absolute',
-        left: props.x * props.sceneWidth - width / 2,
+        left,
         top,
         width,
         height,
+        overflow: 'hidden',
         pointerEvents: 'none',
-        filter: props.active
-          ? `drop-shadow(0 0 ${10 + pulse * 7}px rgba(88, 240, 172, .38))`
-          : 'drop-shadow(0 6px 7px rgba(9, 19, 31, .3))',
       }}
     >
-      {props.propSrc && <PropCutout src={props.propSrc} ambientTint={props.ambientTint} />}
-      <svg width="100%" height="100%" viewBox="0 0 400 190" preserveAspectRatio="none">
-        <path d="M15 18 H385 V172 H15 Z" fill="#435d70" stroke={INK} strokeWidth="8" />
-        <path d="M31 34 H369 V155 H31 Z" fill="#132c3b" stroke={INK} strokeWidth="5" />
-        <path d="M31 34 H369 V155 H31 Z" fill={tint(props.ambientTint, 0.12)} />
-        {[0, 1, 2, 3].map(i => (
+      <svg
+        width={width}
+        height={height}
+        viewBox="0 0 160 96"
+        preserveAspectRatio="xMidYMid meet"
+        overflow="hidden"
+        style={{display: 'block', overflow: 'hidden'}}
+      >
+        <defs>
+          <clipPath id="telemetry-glass">
+            <rect x="0" y="0" width="160" height="96" />
+          </clipPath>
+        </defs>
+        <g clipPath="url(#telemetry-glass)">
+        {TELEMETRY_CURVES.map((d, i) => (
           <path
             key={i}
-            d={curves[i]}
+            d={d}
             fill="none"
             stroke={i === 3 ? AMBER : GREEN}
-            strokeWidth={props.active ? 4 : 2.5}
+            strokeWidth={props.active ? 5 : 3}
             strokeDasharray={props.active ? '13 5' : '4 10'}
             strokeDashoffset={props.active ? dash - i * 7 : 0}
             strokeLinecap="round"
             opacity={glow * (1 - i * 0.08)}
           />
         ))}
-        {[72, 150, 228, 306].map((cx, i) => (
-          <g key={cx} opacity={props.active ? 0.95 : 0.24}>
-            <circle cx={cx} cy="57" r="13" fill="#203f4f" stroke={GREEN} strokeWidth="3" />
-            <path d={`M${cx - 7} 57 H${cx + 7} M${cx} 50 V64`} stroke={i === 3 ? AMBER : GREEN} strokeWidth="3" />
-          </g>
-        ))}
-        <g opacity={props.active ? 0.92 + pulse * 0.08 : 0.3}>
-          <path d="M274 39 H359 V68 H274 Z" fill={props.active ? '#315f4d' : '#344853'} stroke={INK} strokeWidth="3" />
-          <text x="316.5" y="59" textAnchor="middle" fill={props.active ? '#d9fff0' : '#81929a'} fontSize="15" fontWeight="900">
-            4W LOCK
-          </text>
+        <text
+          x="80"
+          y="30"
+          textAnchor="middle"
+          fill={props.active ? '#d9fff0' : '#c5ddd4'}
+          fontSize="22"
+          fontWeight="900"
+          opacity={props.active ? 0.95 : 0.55}
+        >
+          4W LOCK
+        </text>
         </g>
-        <circle cx="379" cy="95" r={props.active ? 5.5 + pulse * 1.5 : 4} fill={props.active ? AMBER : '#566871'} />
+      </svg>
+    </div>
+  );
+};
+
+export type CabinetHoloStripProps = StagePropProps & {
+  cabinetTopY: number;
+  spanX?: number;
+  spanW?: number;
+};
+
+/** A thin trace sitting on a cabinet that is already painted on the plate. */
+export const CabinetHoloStrip = (props: CabinetHoloStripProps) => {
+  const spanLeft = (props.spanX ?? 0.04) * props.sceneWidth;
+  const spanWidth = (props.spanW ?? 0.4) * props.sceneWidth;
+  const width = clamp(Math.min(spanWidth * 0.62, props.sceneWidth * 0.26), 88, props.sceneWidth * 0.3);
+  const height = clamp(props.sceneHeight * 0.036, 16, 28);
+  const unclamped = props.x * props.sceneWidth - width / 2;
+  const left = clamp(unclamped, spanLeft, Math.max(spanLeft, spanLeft + spanWidth - width));
+  const top = props.cabinetTopY * props.sceneHeight - height;
+  const pulse = 0.7 + 0.3 * Math.sin((props.frame / Math.max(1, props.fps)) * Math.PI * 3.2);
+  const live = props.active ? 0.55 + pulse * 0.4 : 0.22;
+  const shift = Math.sin(props.frame / 6) * (props.active ? 10 : 2);
+  return (
+    <div style={{position: 'absolute', left, top, width, height, pointerEvents: 'none'}}>
+      <svg width="100%" height="100%" viewBox="0 0 320 36" preserveAspectRatio="none">
+        <path d="M6 27 H314" stroke={GREEN} strokeWidth="3" strokeLinecap="round" opacity={live} />
+        <path
+          d={`M18 ${22 + shift * 0.05} C48 ${14 - shift * 0.08} 78 26 112 16 S176 12 214 20 S268 24 304 15`}
+          fill="none"
+          stroke={AMBER}
+          strokeWidth="2.5"
+          strokeLinecap="round"
+          opacity={live}
+        />
+        <path d="M18 30 H304" stroke={tint(props.ambientTint, 0.45)} strokeWidth="4" opacity={props.active ? 0.55 : 0.2} />
       </svg>
     </div>
   );

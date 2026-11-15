@@ -9,14 +9,17 @@ import {
   type PuppetDepth,
   type PuppetFacing,
 } from './puppet';
-import {RobotPuppet, type RobotRig, type RoverAction} from './robot';
+import {RobotPuppet, roverDriveProgress, type RobotRig, type RoverAction} from './robot';
 import {compileShotChoreography, endMarks, type ShotChoreography} from './motion_director';
+import {insetScreenGlass, stageRectForPlate} from './puppet_motion';
 import {
+  CabinetHoloStrip,
   ConsoleDeskBody,
   ConsoleHoloOverlay,
   TelemetryScreenProp,
   WorkbenchProp,
   type StagePropKind,
+  type StageRect,
   type StageRgb,
 } from './stage_props';
 
@@ -75,6 +78,12 @@ export type PlateMetrics = {
   ref_mid_figure_height?: number;
   ambient_rgb?: number[];
   floor_rgb?: number[];
+  /** Dark monitors already painted on the back wall. Top-left, fractions of the frame. */
+  screens?: StageRect[];
+  /** Waist-high cabinet or ledge lip. Absent when the plate has no cabinet. */
+  cabinet_top_y?: number | null;
+  /** Cabinet runs hanging from cabinet_top_y. */
+  cabinets?: StageRect[];
 };
 
 type Cue = {from: number; to: number; value: string; speaker: string; scene_number: number};
@@ -154,6 +163,9 @@ type ResolvedMetrics = {
   refMidFigureHeight: number;
   ambientRgb: StageRgb;
   floorRgb: StageRgb;
+  screens: StageRect[];
+  cabinets: StageRect[];
+  cabinetTopY?: number;
 };
 
 type ResolvedSetProp = {
@@ -167,6 +179,11 @@ type ResolvedSetProp = {
   active: boolean;
   operatorIndex?: number;
   activation?: 'point' | 'busy' | 'always';
+  /** Painted monitor. When set, telemetry draws inside it and x is that rect's center. */
+  plateScreen?: StageRect;
+  /** Painted cabinet lip. When set, a console is a thin holo strip, not a freestanding desk. */
+  cabinetTopY?: number;
+  cabinetSpan?: StageRect;
 };
 
 const finiteOr = (value: number | undefined, fallback: number) =>
@@ -181,9 +198,30 @@ const metricRgb = (value: number[] | undefined, fallback: StageRgb): StageRgb =>
       ]
     : fallback;
 
+const parsePlateRects = (value: unknown): StageRect[] => {
+  if (!Array.isArray(value)) return [];
+  const rects: StageRect[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== 'object') continue;
+    const raw = item as Partial<StageRect>;
+    if (![raw.x, raw.y, raw.w, raw.h].every(n => typeof n === 'number' && Number.isFinite(n))) continue;
+    const w = raw.w as number;
+    const h = raw.h as number;
+    if (w < 0.02 || h < 0.02) continue;
+    rects.push({
+      x: clampNumber(raw.x as number, 0, 0.98),
+      y: clampNumber(raw.y as number, 0, 0.98),
+      w: clampNumber(w, 0.02, 1),
+      h: clampNumber(h, 0.02, 0.45),
+    });
+  }
+  return rects;
+};
+
 const resolvePlateMetrics = (raw?: PlateMetrics): ResolvedMetrics => {
   const horizonY = finiteOr(raw?.horizon_y, 0.46);
   const wallBaseY = finiteOr(raw?.wall_base_y, 0.75);
+  const cabinetTop = raw?.cabinet_top_y;
   return {
     horizonY,
     wallBaseY,
@@ -193,7 +231,92 @@ const resolvePlateMetrics = (raw?: PlateMetrics): ResolvedMetrics => {
     refMidFigureHeight: finiteOr(raw?.ref_mid_figure_height, 0.56),
     ambientRgb: metricRgb(raw?.ambient_rgb, [168, 188, 214]),
     floorRgb: metricRgb(raw?.floor_rgb, [196, 204, 210]),
+    screens: parsePlateRects(raw?.screens),
+    cabinets: parsePlateRects(raw?.cabinets),
+    cabinetTopY:
+      typeof cabinetTop === 'number' && Number.isFinite(cabinetTop)
+        ? clampNumber(cabinetTop, 0.5, 0.82)
+        : undefined,
   };
+};
+
+const rectCenterX = (rect: StageRect) => rect.x + rect.w / 2;
+
+const nearestRect = (rects: StageRect[], preferX: number): StageRect | undefined => {
+  if (!rects.length) return undefined;
+  return rects.reduce((best, rect) =>
+    Math.abs(rectCenterX(rect) - preferX) < Math.abs(rectCenterX(best) - preferX) ? rect : best,
+  );
+};
+
+const mergeSpans = (rects: StageRect[]): StageRect[] => {
+  const sorted = [...rects].sort((a, b) => a.x - b.x);
+  const merged: StageRect[] = [];
+  for (const rect of sorted) {
+    const last = merged[merged.length - 1];
+    if (last && rect.x <= last.x + last.w + 0.02) {
+      const end = Math.max(last.x + last.w, rect.x + rect.w);
+      last.w = end - last.x;
+      last.h = Math.max(last.h, rect.h);
+      last.y = Math.min(last.y, rect.y);
+    } else {
+      merged.push({...rect});
+    }
+  }
+  return merged;
+};
+
+/** Keep a console on a painted cabinet run. Returns nothing when the plate has no cabinet. */
+const snapOntoCabinet = (
+  cabinets: StageRect[],
+  x: number,
+): {x: number; span: StageRect} | undefined => {
+  const spans = mergeSpans(cabinets);
+  if (!spans.length) return undefined;
+  const hit = spans.find(span => x >= span.x - 0.03 && x <= span.x + span.w + 0.03);
+  const span = hit ?? nearestRect(spans, x);
+  if (!span) return undefined;
+  const margin = Math.min(0.04, span.w * 0.18);
+  const snapped = hit ? x : rectCenterX(span);
+  return {
+    x: clampNumber(snapped, span.x + margin, Math.max(span.x + margin, span.x + span.w - margin)),
+    span,
+  };
+};
+
+/**
+ * Where to park a rover on open floor beside waist-high cabinets.
+ * A full-width ledge (the lunar counter) has no beside-gap and returns nothing.
+ * The body is about 0.26 of the frame wide, so the center stays in the range that
+ * covers the gap and, when an actor is standing there, shifts to the end farther from them.
+ */
+const openFloorBesideCabinets = (cabinets: StageRect[], actorXs: number[] = []): number | undefined => {
+  const spans = mergeSpans(cabinets);
+  if (!spans.length) return undefined;
+  const cover = spans.reduce((sum, span) => sum + span.w, 0);
+  if (cover >= 0.93) return undefined;
+  const gaps: Array<{x: number; w: number}> = [];
+  let cursor = 0.03;
+  for (const span of spans) {
+    if (span.x - cursor >= 0.08) gaps.push({x: cursor, w: span.x - cursor});
+    cursor = Math.max(cursor, span.x + span.w);
+  }
+  if (0.97 - cursor >= 0.08) gaps.push({x: cursor, w: 0.97 - cursor});
+  if (!gaps.length) return undefined;
+  gaps.sort((a, b) => b.w - a.w);
+  const gap = gaps[0];
+  const half = 0.13;
+  const bodyFits = gap.w >= half * 2;
+  const low = bodyFits ? gap.x + half : gap.x + gap.w - half;
+  const high = bodyFits ? gap.x + gap.w - half : gap.x + half;
+  let center = (low + high) / 2;
+  if (actorXs.length) {
+    const actor = actorXs.reduce((sum, x) => sum + x, 0) / actorXs.length;
+    center = Math.abs(low - actor) >= Math.abs(high - actor) ? low : high;
+  }
+  const lo = Math.max(0.12, Math.min(low, high));
+  const hi = Math.min(0.88, Math.max(low, high));
+  return lo <= hi ? clampNumber(center, lo, hi) : clampNumber(center, 0.12, 0.88);
 };
 
 const perspectiveScale = (floorY: number, metrics: ResolvedMetrics) =>
@@ -295,10 +418,20 @@ const resolveFraming = (shot: Shot): StoryFraming => {
   return actors.length >= 2 || (actors.length >= 1 && (shot.rover || motion.robot_action)) ? 'wide' : 'medium';
 };
 
-const robotPlacement = (shot: Shot) => {
+const robotPlacement = (shot: Shot, metrics?: ResolvedMetrics) => {
   const actors = shot.story_motion.actors ?? [];
   const avgActorX = actors.length > 0 ? actors.reduce((sum, a) => sum + a.from_x, 0) / actors.length : 0.5;
-  const robotLeftPct = actors.length === 0 ? 28 : avgActorX <= 0.52 ? 48 : 8;
+  // Container is 46% of the frame, so the drawn center sits 23% to the right of `left`.
+  let robotCenterX = actors.length === 0 ? 0.51 : avgActorX <= 0.52 ? 0.71 : 0.31;
+  const robotAct = shot.rover?.action || shot.story_motion.robot_action;
+  const parked = robotAct === 'idle' || robotAct === 'stand' || robotAct === 'signal';
+  // Assembly-bay wide shots: park on the open floor beside the cabinets, not on the counter.
+  if (parked && resolveFraming(shot) === 'wide' && metrics) {
+    const standing = actors.map(actor => finiteOr(actor.to_x, actor.from_x));
+    const open = openFloorBesideCabinets(metrics.cabinets, standing);
+    if (open !== undefined) robotCenterX = open;
+  }
+  const robotLeftPct = clampNumber(robotCenterX * 100 - 23, 0, 54);
   return {avgActorX, robotLeftPct, robotCenterX: (robotLeftPct + 23) / 100};
 };
 
@@ -310,6 +443,30 @@ const propKind = (value: unknown): StagePropKind | undefined => {
 
 const stateIsActive = (value: StorySetProp['interactive_state']) =>
   value === true || (typeof value === 'string' && /active|live|on|lock|work/i.test(value));
+
+/** Story plates only. Science StageShot never calls this. */
+const seatOnPlate = (prop: ResolvedSetProp, metrics: ResolvedMetrics, preferX: number): ResolvedSetProp => {
+  if (prop.kind === 'telemetry_screen') {
+    const screen = nearestRect(metrics.screens, preferX);
+    if (!screen) return prop;
+    return {
+      ...prop,
+      x: rectCenterX(screen),
+      screenY: screen.y,
+      plateScreen: screen,
+      occludeWaist: false,
+    };
+  }
+  if (metrics.cabinetTopY === undefined) return prop;
+  const snapped = snapOntoCabinet(metrics.cabinets, preferX);
+  if (!snapped) return prop;
+  return {
+    ...prop,
+    x: snapped.x,
+    cabinetTopY: metrics.cabinetTopY,
+    cabinetSpan: snapped.span,
+  };
+};
 
 const resolveSetProp = ({
   shot,
@@ -332,11 +489,25 @@ const resolveSetProp = ({
   if (explicit) {
     const kind = propKind(explicit.kind);
     if (kind) {
-      const x = clampNumber(finiteOr(explicit.x, kind === 'telemetry_screen' ? 0.76 : 0.5), 0.08, 0.92);
+      const hinted = clampNumber(finiteOr(explicit.x, kind === 'telemetry_screen' ? 0.76 : 0.5), 0.08, 0.92);
+      const seated = seatOnPlate(
+        {
+          kind,
+          propSrc: explicit.prop_src,
+          x: hinted,
+          screenY: finiteOr(explicit.y, 0.34),
+          floorY: metrics.midY,
+          depth: 'mid',
+          occludeWaist: explicit.occlude_waist ?? kind !== 'telemetry_screen',
+          active: Boolean(explicit.active || stateIsActive(explicit.interactive_state)),
+        },
+        metrics,
+        hinted,
+      );
       let operatorIndex = -1;
       let nearest = Number.POSITIVE_INFINITY;
       plans.forEach((plan, index) => {
-        const distance = Math.abs(plan.toX - x);
+        const distance = Math.abs(plan.toX - seated.x);
         if (distance < nearest) {
           nearest = distance;
           operatorIndex = index;
@@ -357,14 +528,9 @@ const resolveSetProp = ({
           ? 'busy'
           : undefined;
       return {
-        kind,
-        propSrc: explicit.prop_src,
-        x,
-        screenY: finiteOr(explicit.y, 0.34),
+        ...seated,
         floorY: clampNumber(finiteOr(explicit.floor_y, floorForDepth(depth, metrics)), 0.62, 0.98),
         depth,
-        occludeWaist: explicit.occlude_waist ?? kind !== 'telemetry_screen',
-        active: Boolean(explicit.active || stateIsActive(explicit.interactive_state)),
         operatorIndex: operatorIndex >= 0 ? operatorIndex : undefined,
         activation,
       };
@@ -391,17 +557,22 @@ const resolveSetProp = ({
     const roverOnPointedSide = Boolean(robotAct && (robotCenterX - actorX) * side > 0.04);
     if (!roverOnPointedSide) {
       const depth = plan?.depth ?? 'mid';
-      return {
-        kind: 'telemetry_screen',
-        x: facing === 'right' ? 0.78 : 0.22,
-        screenY: 0.34,
-        floorY: floorForDepth(depth, metrics),
-        depth: 'far',
-        occludeWaist: false,
-        active: false,
-        operatorIndex: pointIndex,
-        activation: 'point',
-      };
+      const hinted = facing === 'right' ? 0.78 : 0.22;
+      return seatOnPlate(
+        {
+          kind: 'telemetry_screen',
+          x: hinted,
+          screenY: 0.34,
+          floorY: floorForDepth(depth, metrics),
+          depth: 'far',
+          occludeWaist: false,
+          active: false,
+          operatorIndex: pointIndex,
+          activation: 'point',
+        },
+        metrics,
+        hinted,
+      );
     }
   }
 
@@ -418,30 +589,44 @@ const resolveSetProp = ({
       const actor = actors[busyIndex];
       const plan = plans[busyIndex];
       const depth = plan?.depth ?? actor.depth ?? 'mid';
-      return {
-        kind: actor.action === 'work' ? 'workbench' : 'console_desk',
-        x: clampNumber(plan?.toX ?? actor.to_x ?? actor.from_x, 0.14, 0.86),
-        floorY: floorForDepth(depth, metrics),
-        depth,
-        occludeWaist: true,
-        active: false,
-        operatorIndex: busyIndex,
-        activation: 'busy',
-      };
+      const hinted = clampNumber(plan?.toX ?? actor.to_x ?? actor.from_x, 0.14, 0.86);
+      return seatOnPlate(
+        {
+          kind: actor.action === 'work' ? 'workbench' : 'console_desk',
+          x: hinted,
+          floorY: floorForDepth(depth, metrics),
+          depth,
+          occludeWaist: true,
+          active: false,
+          operatorIndex: busyIndex,
+          activation: 'busy',
+        },
+        metrics,
+        hinted,
+      );
     }
 
     if (actors.length === 2 && framing === 'wide') {
       const deskX = 0.47;
-      const occludeWaist = plans.some(plan => Math.abs(plan.toX - deskX) < 0.09);
-      return {
-        kind: 'console_desk',
-        x: deskX,
-        floorY: metrics.midY,
-        depth: 'mid',
-        occludeWaist,
-        active: true,
-        activation: 'always',
-      };
+      const seated = seatOnPlate(
+        {
+          kind: 'console_desk',
+          x: deskX,
+          floorY: metrics.midY,
+          depth: 'mid',
+          occludeWaist: false,
+          active: true,
+          activation: 'always',
+        },
+        metrics,
+        deskX,
+      );
+      // A painted cabinet is the back wall. It never cuts a waist. A freestanding
+      // desk sprite still can, when someone is actually standing at it.
+      const occludeWaist = seated.cabinetSpan
+        ? false
+        : plans.some(plan => Math.abs(plan.toX - deskX) < 0.09);
+      return {...seated, occludeWaist};
     }
   }
   return null;
@@ -484,8 +669,20 @@ const propTargetForShot = (
   robotAct: RoverAction | undefined,
   robotCenterX: number,
 ) => {
+  const metrics = resolvePlateMetrics(shot.plate_metrics);
   const actors = shot.story_motion.actors ?? [];
   const explicit = shot.story_motion.set_prop;
+  const explicitKind = explicit ? propKind(explicit.kind) : undefined;
+  if (explicitKind === 'telemetry_screen') {
+    const hinted = clampNumber(finiteOr(explicit?.x, 0.76), 0.08, 0.92);
+    const screen = nearestRect(metrics.screens, hinted);
+    return screen ? rectCenterX(screen) : hinted;
+  }
+  if (explicitKind === 'console_desk' || explicitKind === 'workbench') {
+    const hinted = clampNumber(finiteOr(explicit?.x, 0.5), 0.08, 0.92);
+    const snapped = metrics.cabinetTopY === undefined ? undefined : snapOntoCabinet(metrics.cabinets, hinted);
+    return snapped?.x ?? hinted;
+  }
   if (explicit && typeof explicit.x === 'number' && Number.isFinite(explicit.x)) {
     return clampNumber(explicit.x, 0.08, 0.92);
   }
@@ -495,14 +692,23 @@ const propTargetForShot = (
     const facing = pointActor.facing ?? (actorX <= 0.5 ? 'right' : 'left');
     const side = facing === 'right' ? 1 : -1;
     if (!(robotAct && (robotCenterX - actorX) * side > 0.04)) {
-      return facing === 'right' ? 0.78 : 0.22;
+      const hinted = facing === 'right' ? 0.78 : 0.22;
+      const screen = nearestRect(metrics.screens, hinted);
+      return screen ? rectCenterX(screen) : hinted;
     }
     return robotCenterX;
   }
   if (!robotAct) {
     const busyActor = actors.find(actor => actor.action === 'console' || actor.action === 'work');
-    if (busyActor) return clampNumber(finiteOr(busyActor.to_x, busyActor.from_x), 0.14, 0.86);
-    if (actors.length === 2 && framing === 'wide') return 0.47;
+    if (busyActor) {
+      const hinted = clampNumber(finiteOr(busyActor.to_x, busyActor.from_x), 0.14, 0.86);
+      const snapped = metrics.cabinetTopY === undefined ? undefined : snapOntoCabinet(metrics.cabinets, hinted);
+      return snapped?.x ?? hinted;
+    }
+    if (actors.length === 2 && framing === 'wide') {
+      const snapped = metrics.cabinetTopY === undefined ? undefined : snapOntoCabinet(metrics.cabinets, 0.47);
+      return snapped?.x ?? 0.47;
+    }
   }
   return robotAct ? robotCenterX : undefined;
 };
@@ -522,7 +728,7 @@ export const directStoryShot = (shot: Shot, speech: Cue[], fps: number, prevShot
   const startX = continuation && prevShot ? endMarks(directStoryShot(prevShot, speech, fps)) : undefined;
   const robotAct = shot.rover?.action || shot.story_motion.robot_action;
   const framing = resolveFraming(shot);
-  const placement = robotPlacement(shot);
+  const placement = robotPlacement(shot, resolvePlateMetrics(shot.plate_metrics));
   return compileShotChoreography({
     actors: shot.story_motion.actors ?? [],
     framing,
@@ -628,7 +834,7 @@ export const StoryShot = ({
     const framing = resolveFraming(shot);
     const robotAct = shot.rover?.action || shot.story_motion.robot_action;
     const robotSpeaker = shot.rover?.speaker || '阿拓 AT-1';
-    const {avgActorX, robotLeftPct, robotCenterX} = robotPlacement(shot);
+    const {avgActorX, robotLeftPct, robotCenterX} = robotPlacement(shot, plateMetrics);
 
     // Camera restraint: never move the camera while feet or wheels move on the floor.
     const siblingShot = phasePrev ?? phaseNext;
@@ -733,8 +939,36 @@ export const StoryShot = ({
         }
       : null;
 
+    const paintedCabinet = Boolean(setProp?.cabinetTopY !== undefined && setProp.cabinetSpan);
+    const aimGlass =
+      setProp?.kind === 'telemetry_screen' && setProp.plateScreen ? insetScreenGlass(setProp.plateScreen) : undefined;
+    // The plate and the puppet stage scale differently. Park the glass in stage space
+    // so the overlay and the pointing finger meet the painted monitor, not the pillar.
+    const stageGlass = aimGlass
+      ? stageRectForPlate(aimGlass, originX, originY, bgScale, stageScale, panX, panY, width, height)
+      : undefined;
+    const robotFacing: 'left' | 'right' =
+      robotAct === 'drive'
+        ? avgActorX > 0.65
+          ? 'left'
+          : 'right'
+        : actors.length > 0 && avgActorX < robotCenterX
+          ? 'left'
+          : 'right';
+    const driveRange: [number, number] | undefined =
+      robotAct === 'drive'
+        ? robotFacing === 'right'
+          ? [-0.15 * width, 0.15 * width]
+          : [0.15 * width, -0.15 * width]
+        : undefined;
+    const liveRoverX = driveRange
+      ? robotCenterX +
+        (driveRange[0] + (driveRange[1] - driveRange[0]) * roverDriveProgress(sceneElapsed, totalDuration)) / width
+      : robotCenterX;
+
     const occludedActors = new Set<number>();
-    if (setProp?.occludeWaist && setProp.kind !== 'telemetry_screen') {
+    // Back-wall cabinets do not cut bodies. Only a real foreground prop sprite may hide a waist.
+    if (setProp?.occludeWaist && setProp.kind !== 'telemetry_screen' && !paintedCabinet) {
       plans.forEach((plan, index) => {
         if (Math.abs(planXAt(plan, localFrame) - setProp.x) < 0.09) occludedActors.add(index);
       });
@@ -778,12 +1012,15 @@ export const StoryShot = ({
           clips={plan.clips}
           cameraMoving={isCameraMoving}
           partnerX={plan.partnerX}
+          gazeX={robotAct === 'drive' ? liveRoverX : undefined}
+          aimScreen={stageGlass}
           propTargetX={targetsProp ? setProp?.x : undefined}
           statureScale={actorStature(idx)}
           figureHeightRatioOverride={baseFigureRatio}
           floorYOverride={floorY}
           renderPass={renderPass}
           ambientTint={ambientTint}
+          floorRgb={floorTint}
         />
       );
     };
@@ -792,12 +1029,13 @@ export const StoryShot = ({
       const plan = plans[idx];
       if (!actor.rig || !plan) return;
       const splitByProp = occludedActors.has(idx);
+      const body = actorNode(actor, idx, splitByProp ? 'body_behind_desk' : 'full');
+      // Whole body in front of a rover. Never thighs behind the chassis and shoes in front.
+      const actorOrder = DEPTH_STAGE[plan.depth].order + (robotAct && !splitByProp ? 0.45 : 0);
       depthItems.push({
-        order: splitByProp
-          ? DEPTH_STAGE[setProp?.depth ?? plan.depth].order + 0.01
-          : DEPTH_STAGE[plan.depth].order,
+        order: splitByProp ? DEPTH_STAGE[setProp?.depth ?? plan.depth].order + 0.01 : actorOrder,
         key: `actor-${actor.name}-${idx}-${splitByProp ? 'body' : 'full'}`,
-        node: actorNode(actor, idx, splitByProp ? 'body_behind_desk' : 'full'),
+        node: body,
       });
     });
 
@@ -807,7 +1045,27 @@ export const StoryShot = ({
         depthItems.push({
           order: -0.25,
           key: 'set-prop-telemetry',
-          node: <TelemetryScreenProp {...propCommon} screenY={setProp.screenY} />,
+          node: (
+            <TelemetryScreenProp
+              {...propCommon}
+              screenY={setProp.screenY}
+              screenRect={stageGlass ?? setProp.plateScreen}
+              glassReady={Boolean(stageGlass)}
+            />
+          ),
+        });
+      } else if (setProp.cabinetTopY !== undefined && setProp.cabinetSpan) {
+        depthItems.push({
+          order: -0.2,
+          key: 'set-prop-cabinet-holo',
+          node: (
+            <CabinetHoloStrip
+              {...propCommon}
+              cabinetTopY={setProp.cabinetTopY}
+              spanX={setProp.cabinetSpan.x}
+              spanW={setProp.cabinetSpan.w}
+            />
+          ),
         });
       } else {
         depthItems.push({
@@ -852,14 +1110,6 @@ export const StoryShot = ({
         perspectiveScale(roverFloorY, plateMetrics) *
         0.53 *
         height;
-      const robotFacing: 'left' | 'right' =
-        robotAct === 'drive'
-          ? avgActorX > 0.65
-            ? 'left'
-            : 'right'
-          : actors.length > 0 && avgActorX < robotCenterX
-          ? 'left'
-          : 'right';
       depthItems.push({
         order: robotOrder,
         key: 'story-robot',

@@ -4,6 +4,17 @@ import {Rover, type RoverAction} from './rover';
 
 export type {RoverAction};
 
+/** Ease-in / cruise / ease-out progress used by drive travel. Shared so gaze can follow the same x. */
+export function roverDriveProgress(frame: number, duration: number) {
+  const maxF = Math.max(1, duration - 1);
+  const u = Math.max(0, Math.min(1, frame / maxF));
+  const easeRamp = 0.22;
+  const cruiseSpan = Math.max(0.05, 1 - easeRamp);
+  if (u < easeRamp) return (0.5 * u * u) / (easeRamp * cruiseSpan);
+  if (u <= 1 - easeRamp) return (u - 0.5 * easeRamp) / cruiseSpan;
+  return 1 - (0.5 * (1 - u) * (1 - u)) / (easeRamp * cruiseSpan);
+}
+
 export type RobotWheel = {
   src: string;
   cx: number;
@@ -49,9 +60,76 @@ const partStyle: React.CSSProperties = {
 };
 
 /**
+ * One sidewall valve in the wheel's own plane. Rest angle is not a multiple of 72°,
+ * so a 5-spoke hub can no longer masquerade as a still wheel.
+ * The parent transform supplies the shared roll (and the elliptical projection).
+ */
+const WheelValveMark = ({
+  boxW,
+  boxH,
+  cx,
+  cy,
+  radiusPx,
+  restDeg,
+}: {
+  boxW: number;
+  boxH: number;
+  cx: number;
+  cy: number;
+  radiusPx: number;
+  restDeg: number;
+}) => {
+  const ang = (restDeg * Math.PI) / 180;
+  const inner = radiusPx * 0.76;
+  const outer = radiusPx * 0.94;
+  const x1 = cx * boxW + Math.cos(ang) * inner;
+  const y1 = cy * boxH + Math.sin(ang) * inner;
+  const x2 = cx * boxW + Math.cos(ang) * outer;
+  const y2 = cy * boxH + Math.sin(ang) * outer;
+  const stroke = Math.max(3.4, radiusPx * 0.18);
+  const capR = Math.max(3.1, radiusPx * 0.13);
+  return (
+    <svg
+      width={boxW}
+      height={boxH}
+      viewBox={`0 0 ${boxW} ${boxH}`}
+      style={{position: 'absolute', inset: 0, overflow: 'visible', pointerEvents: 'none'}}
+    >
+      <line
+        x1={x1}
+        y1={y1}
+        x2={x2}
+        y2={y2}
+        stroke="#24180c"
+        strokeWidth={stroke + 2.2}
+        strokeLinecap="round"
+      />
+      <line
+        x1={x1}
+        y1={y1}
+        x2={x2}
+        y2={y2}
+        stroke="#fff6d0"
+        strokeWidth={stroke}
+        strokeLinecap="round"
+      />
+      <circle
+        cx={x2}
+        cy={y2}
+        r={capR}
+        fill="#ffc247"
+        stroke="#24180c"
+        strokeWidth={Math.max(1, radiusPx * 0.045)}
+      />
+    </svg>
+  );
+};
+
+/**
  * Cutout puppet for the AI-designed AT-1 robot master.
- * Spins wheels on `drive` using exact arc-length rolling (dTheta = dX / R),
- * aligns `foot_y` onto `floorY * sceneHeight` with optional metric rover height,
+ * Spins tire and hub on `drive` by the same arc-length roll (dTheta = dX / R, flipX sign kept).
+ * A single sidewall valve, not a 5-fold spoke, makes that roll readable between frames.
+ * Aligns `foot_y` onto `floorY * sceneHeight` with optional metric rover height,
  * projects elliptical hubs onto angled tires, and articulates mast/arm/signal.
  * Falls back to the legacy `<Rover>` SVG only when `rig` is absent.
  */
@@ -119,17 +197,7 @@ export const RobotPuppet = ({
   const moveSign = desiredFacing === 'right' ? 1 : -1;
 
   // Smooth ease-in / cruise / ease-out displacement travelPx(frame) on `drive`
-  const maxF = Math.max(1, duration - 1);
-  const u = Math.max(0, Math.min(1, frame / maxF));
-  const easeRamp = 0.22;
-  const cruiseSpan = Math.max(0.05, 1 - easeRamp);
-  // C1 continuous ease-in / linear cruise / ease-out integral profile normalized to [0, 1]
-  const driveProgress =
-    u < easeRamp
-      ? (0.5 * u * u) / (easeRamp * cruiseSpan)
-      : u <= 1 - easeRamp
-      ? (u - 0.5 * easeRamp) / cruiseSpan
-      : 1 - (0.5 * (1 - u) * (1 - u)) / (easeRamp * cruiseSpan);
+  const driveProgress = roverDriveProgress(frame, duration);
 
   const rangeStart = travelRangePx ? travelRangePx[0] : -88;
   const rangeEnd = travelRangePx ? travelRangePx[1] : 88;
@@ -348,7 +416,9 @@ export const RobotPuppet = ({
           )}
         </div>
 
-        {/* True no-slip rolling wheels grounded on the floor plane (jitterY <= +-0.35px) */}
+        {/* No-slip roll: tire bitmap and hub share localWheelDeg (dTheta = dX / R, flipX kept).
+            Elliptical tread spins inside a fixed oval so the contact patch stays planted.
+            One valve mark breaks the 5-spoke symmetry. Jitter stays within ±0.35px. */}
         {wheels.map((wheel, idx) => {
           const jitterY = drive ? Math.sin(t * 19 + idx * 1.7) * 0.35 : 0;
           const wheelRadiusPx = Math.max(8, wheel.r * boxH);
@@ -360,31 +430,86 @@ export const RobotPuppet = ({
           const projAspect = Math.max(0.45, Math.min(1, Math.min(rxPx, ryPx) / Math.max(1, Math.max(rxPx, ryPx))));
           const isElliptical = Boolean(wheel.tire_src) || projAspect < 0.88;
           const tiltDeg = wheel.tilt_deg ?? 0;
+          const axleOrigin = `${wheel.cx * 100}% ${wheel.cy * 100}%`;
+          const hubTransform = isElliptical
+            ? `translateY(${jitterY}px) rotate(${tiltDeg}deg) scaleX(${projAspect}) rotate(${localWheelDeg}deg)`
+            : `translateY(${jitterY}px) rotate(${localWheelDeg}deg)`;
+          const valve = (
+            <WheelValveMark
+              boxW={boxW}
+              boxH={boxH}
+              cx={wheel.cx}
+              cy={wheel.cy}
+              radiusPx={wheelRadiusPx}
+              restDeg={-36 + idx * 47}
+            />
+          );
 
           if (isElliptical) {
+            const axleX = wheel.cx * boxW;
+            const axleY = wheel.cy * boxH;
+            // tire_i.png keeps pixels out to ~1.06 of the fitted ellipse; clip to that so the contact patch is not shaved.
+            const clipRx = rxPx * 1.06;
+            const clipRy = ryPx * 1.06;
             return (
               <React.Fragment key={idx}>
                 {wheel.tire_src && (
-                  <div
-                    style={{
-                      position: 'absolute',
-                      inset: 0,
-                      transformOrigin: `${wheel.cx * 100}% ${wheel.cy * 100}%`,
-                      transform: `translateY(${jitterY}px)`,
-                    }}
-                  >
-                    <Img src={staticFile(wheel.tire_src)} style={partStyle} />
-                  </div>
+                  <>
+                    <div
+                      style={{
+                        position: 'absolute',
+                        left: axleX - clipRx,
+                        top: axleY - clipRy,
+                        width: clipRx * 2,
+                        height: clipRy * 2,
+                        borderRadius: '50%',
+                        background: '#1a222c',
+                        transformOrigin: 'center center',
+                        transform: `translateY(${jitterY}px) rotate(${tiltDeg}deg)`,
+                        pointerEvents: 'none',
+                      }}
+                    />
+                    <div
+                      style={{
+                        position: 'absolute',
+                        left: axleX - clipRx,
+                        top: axleY - clipRy,
+                        width: clipRx * 2,
+                        height: clipRy * 2,
+                        borderRadius: '50%',
+                        overflow: 'hidden',
+                        clipPath: 'ellipse(50% 50% at 50% 50%)',
+                        transformOrigin: 'center center',
+                        transform: `translateY(${jitterY}px) rotate(${tiltDeg}deg)`,
+                        pointerEvents: 'none',
+                      }}
+                    >
+                      <div
+                        style={{
+                          position: 'absolute',
+                          width: boxW,
+                          height: boxH,
+                          left: clipRx - axleX,
+                          top: clipRy - axleY,
+                          transformOrigin: `${axleX}px ${axleY}px`,
+                          transform: `rotate(${-tiltDeg}deg) rotate(${localWheelDeg}deg)`,
+                        }}
+                      >
+                        <Img src={staticFile(wheel.tire_src)} style={partStyle} />
+                      </div>
+                    </div>
+                  </>
                 )}
                 <div
                   style={{
                     position: 'absolute',
                     inset: 0,
-                    transformOrigin: `${wheel.cx * 100}% ${wheel.cy * 100}%`,
-                    transform: `translateY(${jitterY}px) rotate(${tiltDeg}deg) scaleX(${projAspect}) rotate(${localWheelDeg}deg)`,
+                    transformOrigin: axleOrigin,
+                    transform: hubTransform,
                   }}
                 >
                   <Img src={staticFile(wheel.src)} style={partStyle} />
+                  {valve}
                 </div>
               </React.Fragment>
             );
@@ -396,11 +521,12 @@ export const RobotPuppet = ({
               style={{
                 position: 'absolute',
                 inset: 0,
-                transformOrigin: `${wheel.cx * 100}% ${wheel.cy * 100}%`,
-                transform: `translateY(${jitterY}px) rotate(${localWheelDeg}deg)`,
+                transformOrigin: axleOrigin,
+                transform: hubTransform,
               }}
             >
               <Img src={staticFile(wheel.src)} style={partStyle} />
+              {valve}
             </div>
           );
         })}
