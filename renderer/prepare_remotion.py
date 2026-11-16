@@ -5,7 +5,7 @@ import json, math, os, re, shutil, subprocess, sys
 from pathlib import Path
 from calibrate_plate import calibrate_plate_file
 from render import media_duration, subtitle_chunks, write_intro_chime
-from rig_characters import rig_character_master
+from rig_characters import resolve_slot_view_angle, rig_character_master
 from voice_cues import speech_cues
 
 
@@ -40,11 +40,11 @@ def parse_srt(path: Path, offset: float, fps: int) -> list[dict]:
     return cues
 
 
-def _prepare_char_rig(rig_json_str: str, public: Path, cache: dict[str, dict]) -> dict | None:
+def _prepare_char_rig(rig_json_str: str, public: Path, cache: dict[str, dict], view_slot: str | None = None) -> dict | None:
     rig_path = Path(rig_json_str)
     if not rig_path.is_file():
         return None
-    cache_key = str(rig_path.resolve())
+    cache_key = f'{rig_path.resolve()}::{view_slot or ""}'
     if cache_key in cache:
         return cache[cache_key]
     raw = json.loads(rig_path.read_text(encoding='utf-8'))
@@ -73,7 +73,9 @@ def _prepare_char_rig(rig_json_str: str, public: Path, cache: dict[str, dict]) -
         **({'face': raw['face']} if isinstance(raw.get('face'), dict) else {}),
         **({'ankles': raw['ankles']} if isinstance(raw.get('ankles'), dict) else {}),
         **({'wrists': raw['wrists']} if isinstance(raw.get('wrists'), dict) else {}),
-        **({'view_angle': raw['view_angle']} if isinstance(raw.get('view_angle'), str) else {}),
+        'view_angle': resolve_slot_view_angle(
+            view_slot, raw['view_angle'] if isinstance(raw.get('view_angle'), str) else 'front',
+        ),
     }
     cache[cache_key] = prepared_rig
     return prepared_rig
@@ -93,7 +95,7 @@ def _ensure_side_rig_json(
         return None
     resolved = str(Path(str(side_file)).resolve())
     if resolved not in cache:
-        cache[resolved] = str(rig_character_master(Path(str(side_file)), cache_root=cache_root))
+        cache[resolved] = str(rig_character_master(Path(str(side_file)), cache_root=cache_root, slot='side'))
     return cache[resolved]
 
 
@@ -183,7 +185,7 @@ def prepare(manifest: Path, output: Path) -> None:
         if not isinstance(entry, dict):
             continue
         crig = (
-            _prepare_char_rig(str(entry['rig_json']), public, char_rig_cache)
+            _prepare_char_rig(str(entry['rig_json']), public, char_rig_cache, 'master')
             if entry.get('rig_json') else None
         )
         if crig:
@@ -195,7 +197,7 @@ def prepare(manifest: Path, output: Path) -> None:
             entry, 'side_master_file', rig_cache_root, side_rig_json_cache,
         )
         side_rig = (
-            _prepare_char_rig(side_json, public, char_rig_cache)
+            _prepare_char_rig(side_json, public, char_rig_cache, 'side')
             if side_json else None
         )
         if side_rig:
@@ -273,7 +275,16 @@ def prepare(manifest: Path, output: Path) -> None:
                 plate_key = str(Path(str(plate_file)).resolve())
                 if plate_key not in plate_metrics_cache:
                     plate_metrics_cache[plate_key] = calibrate_plate_file(Path(str(plate_file)))
-                prepared['plate_metrics'] = plate_metrics_cache[plate_key]
+                # Story shots read screens / cabinet_top_y / cabinets off this dict.
+                # Shots with no plate never get plate_metrics. Stage and explainer shots ignore it.
+                metrics = plate_metrics_cache[plate_key]
+                if not isinstance(metrics.get('screens'), list):
+                    metrics['screens'] = []
+                if not isinstance(metrics.get('cabinets'), list):
+                    metrics['cabinets'] = []
+                if 'cabinet_top_y' not in metrics:
+                    metrics['cabinet_top_y'] = None
+                prepared['plate_metrics'] = metrics
             if plate_file and Path(str(plate_file)).is_file():
                 prepared_plate: dict[str, str] = {'src': source({'file': str(plate_file)}, public)}
                 if raw_plate.get('far_file') and Path(str(raw_plate['far_file'])).is_file():
@@ -323,7 +334,7 @@ def prepare(manifest: Path, output: Path) -> None:
                       and k not in ('rig_json', 'side_rig_json')}
                 actor_rig = None
                 if actor.get('rig_json'):
-                    actor_rig = _prepare_char_rig(str(actor['rig_json']), public, char_rig_cache)
+                    actor_rig = _prepare_char_rig(str(actor['rig_json']), public, char_rig_cache, 'master')
                 if not actor_rig and actor.get('character_id'):
                     actor_rig = char_by_id.get(str(actor['character_id']))
                 if not actor_rig and actor.get('name'):
@@ -341,7 +352,7 @@ def prepare(manifest: Path, output: Path) -> None:
                     actor, 'side_rig_file', rig_cache_root, side_rig_json_cache,
                 )
                 if side_json:
-                    side_rig = _prepare_char_rig(side_json, public, char_rig_cache)
+                    side_rig = _prepare_char_rig(side_json, public, char_rig_cache, 'side')
                 if not side_rig and actor.get('side_rig_key'):
                     side_rig = side_by_key.get(str(actor['side_rig_key']))
                 if not side_rig and actor.get('character_id'):

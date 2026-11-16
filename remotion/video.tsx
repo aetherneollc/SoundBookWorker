@@ -362,15 +362,24 @@ const MotionShot = ({shot, width, height, speech, robotRig}: {shot: Shot; width:
   </AbsoluteFill>;
 };
 
-const CaptionLayer = ({captions, width, height}: {captions: Caption[]; width: number; height: number}) => {
+const CaptionLayer = ({captions, shots, width, height}: {captions: Caption[]; shots: Shot[]; width: number; height: number}) => {
   const frame = useCurrentFrame(), {fps} = useVideoConfig();
   const cue = captions.find(c => frame >= c.from && frame < c.to);
   if (!cue) return null;
   const reveal = spring({fps, frame: frame-cue.from, config: {damping: 20, stiffness: 200}});
-  return <div style={{position: 'absolute', left: width * .08, right: width * .08, bottom: height * .014,
-    minHeight: height * .074, padding: '6px 20px', borderRadius: 10, background: '#07111ec4',
-    color: '#fff', fontFamily: font, fontSize: Math.max(24, Math.round(height * .035)),
-    fontWeight: 850, textAlign: 'center', lineHeight: 1.4, textShadow: '0 2px 5px #000',
+  const storyPuppet = shots.some(shot => {
+    const motion = shot.story_motion;
+    if (!motion) return false;
+    const puppet = Boolean(shot.plate || motion.actors?.some(actor => Boolean(actor.rig)));
+    return puppet && frame >= shot.from && frame < shot.from + shot.duration;
+  });
+  const bar = storyPuppet
+    ? {bottom: height * 0.118, minHeight: height * 0.046, padding: '2px 14px', fontSize: Math.max(20, Math.round(height * 0.028)), lineHeight: 1.2}
+    : {bottom: height * 0.014, minHeight: height * 0.074, padding: '6px 20px', fontSize: Math.max(24, Math.round(height * 0.035)), lineHeight: 1.4};
+  return <div style={{position: 'absolute', left: width * .08, right: width * .08, bottom: bar.bottom,
+    minHeight: bar.minHeight, padding: bar.padding, borderRadius: 10, background: '#07111ec4',
+    color: '#fff', fontFamily: font, fontSize: bar.fontSize,
+    fontWeight: 850, textAlign: 'center', lineHeight: bar.lineHeight, textShadow: '0 2px 5px #000',
     transform: `translateY(${(1-reveal)*18}px)`, opacity: reveal,
     display: 'flex', justifyContent: 'center', alignItems: 'center'}}>{cue.text}</div>;
 };
@@ -419,7 +428,7 @@ export const SoundBook = (props: SoundBookProps) => {
     {props.cta && props.ctaFrames > 0 && <Sequence from={props.ctaFrom} durationInFrames={props.ctaFrames}>
       <EndCard card={props.cta} frames={props.ctaFrames} />
     </Sequence>}
-    <CaptionLayer captions={props.captions} width={props.width} height={props.height} />
+    <CaptionLayer captions={props.captions} shots={props.shots} width={props.width} height={props.height} />
     {props.audio.map((track, i) => <Audio key={i} src={staticFile(track.src)} from={track.from}
       volume={track.volume} loop={track.loop} />)}
   </AbsoluteFill>;

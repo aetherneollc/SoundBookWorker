@@ -301,6 +301,18 @@ def _classify_view_angle(bw: float, bh: float, nose_offset: float) -> str:
     return 'front'
 
 
+def resolve_slot_view_angle(slot: str | None, classified: str) -> str:
+    """Master is always three-quarter so a standing front rig does not use the side gait.
+
+    The side slot stays side. Any other caller keeps the silhouette heuristic.
+    """
+    if slot == 'master':
+        return 'three_quarter'
+    if slot == 'side':
+        return 'side'
+    return classified if classified in ('side', 'three_quarter', 'front') else 'front'
+
+
 def _analyze_from_rtmlib(
     rgba: np.ndarray,
     bbox: tuple[int, int, int, int],
@@ -1185,11 +1197,12 @@ def _cache_valid(rig_json_path: Path) -> bool:
         return False
 
 
-def rig_character_master(master_path: Path, cache_root: Path = Path('media/rigs')) -> Path:
+def rig_character_master(master_path: Path, cache_root: Path = Path('media/rigs'), slot: str | None = None) -> Path:
     """Rig a single character master image and return the path to cached `rig.json`."""
     cache_hash = hashlib.sha256()
     cache_hash.update(master_path.read_bytes())
-    cache_hash.update(b'\0rig-v3-turn-hand')
+    cache_hash.update(b'\0rig-v4-view-slot')
+    cache_hash.update((slot or '').encode('utf-8'))
     digest = cache_hash.hexdigest()[:16]
     out_dir = cache_root / f'char-{digest}'
     rig_json_path = out_dir / 'rig.json'
@@ -1220,6 +1233,7 @@ def rig_character_master(master_path: Path, cache_root: Path = Path('media/rigs'
                 'skin_rgb': [242, 212, 194],
                 'line_rgb': [36, 28, 34],
             },
+            'view_angle': resolve_slot_view_angle(slot, 'front'),
         }
         rig_json_path.write_text(json.dumps(fallback_rig, ensure_ascii=False, indent=2), encoding='utf-8')
         return rig_json_path
@@ -1251,7 +1265,7 @@ def rig_character_master(master_path: Path, cache_root: Path = Path('media/rigs'
         'native_facing': analysis['native_facing'],
         'parts': parts_meta,
         'face': analysis['face'],
-        'view_angle': analysis.get('view_angle', 'front'),
+        'view_angle': resolve_slot_view_angle(slot, str(analysis.get('view_angle') or 'front')),
     }
     if analysis['level'] != 'sprite':
         wj = analysis['joints']
@@ -1287,21 +1301,22 @@ def process_manifest(manifest_path: Path, cache_dir: str | None = None) -> None:
     doc = json.loads(manifest_path.read_text(encoding='utf-8'))
     cache_root = Path(cache_dir or os.environ.get('SOUNDBOOK_RIG_CACHE', 'media/rigs'))
 
-    master_to_rig: dict[Path, str] = {}
+    master_to_rig: dict[tuple[Path, str], str] = {}
     id_to_rig: dict[str, str] = {}
     name_to_rig: dict[str, str] = {}
     key_to_rig: dict[str, str] = {}
     id_to_side: dict[str, str] = {}
     name_to_side: dict[str, str] = {}
 
-    def _rig_file(file_str: str) -> str | None:
+    def _rig_file(file_str: str, slot: str | None = None) -> str | None:
         p = Path(file_str)
         if not p.is_file():
             return None
         resolved = p.resolve()
-        if resolved not in master_to_rig:
-            master_to_rig[resolved] = str(rig_character_master(p, cache_root))
-        return master_to_rig[resolved]
+        cache_id = (resolved, slot or '')
+        if cache_id not in master_to_rig:
+            master_to_rig[cache_id] = str(rig_character_master(p, cache_root, slot=slot))
+        return master_to_rig[cache_id]
 
     for entry in doc.get('character_rigs') or []:
         if not isinstance(entry, dict):
@@ -1309,13 +1324,13 @@ def process_manifest(manifest_path: Path, cache_dir: str | None = None) -> None:
         master = entry.get('master_file') or entry.get('file') or entry.get('rig_file')
         if not master:
             continue
-        rig_json = _rig_file(str(master))
+        rig_json = _rig_file(str(master), 'master')
         if not rig_json:
             continue
         entry['rig_json'] = rig_json
         side_master = entry.get('side_master_file') or entry.get('side_rig_file')
         if side_master:
-            side_json = _rig_file(str(side_master))
+            side_json = _rig_file(str(side_master), 'side')
             if side_json:
                 entry['side_rig_json'] = side_json
                 if entry.get('id'):
@@ -1341,7 +1356,7 @@ def process_manifest(manifest_path: Path, cache_dir: str | None = None) -> None:
                 continue
             rig_json = None
             if actor.get('rig_file'):
-                rig_json = _rig_file(str(actor['rig_file']))
+                rig_json = _rig_file(str(actor['rig_file']), 'master')
             if not rig_json and actor.get('rig_key') and str(actor['rig_key']) in key_to_rig:
                 rig_json = key_to_rig[str(actor['rig_key'])]
             if not rig_json and actor.get('character_id') and str(actor['character_id']) in id_to_rig:
@@ -1358,7 +1373,7 @@ def process_manifest(manifest_path: Path, cache_dir: str | None = None) -> None:
                 actor['rig_json'] = rig_json
             side_json = None
             if actor.get('side_rig_file'):
-                side_json = _rig_file(str(actor['side_rig_file']))
+                side_json = _rig_file(str(actor['side_rig_file']), 'side')
             if not side_json and actor.get('character_id'):
                 side_json = id_to_side.get(str(actor['character_id']))
             if not side_json and actor.get('name'):
