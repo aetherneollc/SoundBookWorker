@@ -177,6 +177,18 @@ jobs:
                               actor['cells'][slot]=local
           Path('manifest.json').write_text(json.dumps(doc))
           PY
+      - name: Select renderer
+        id: renderer
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          doc = json.loads(Path('manifest.json').read_text(encoding='utf-8'))
+          mode = 'godot2d' if str(doc.get('renderer') or '') == 'godot2d' else 'remotion'
+          Path('renderer-mode').write_text(mode + '\n', encoding='utf-8')
+          print('renderer=%s' % mode)
+          PY
+          echo "mode=$(tr -d '\r\n' < renderer-mode)" >> "$GITHUB_OUTPUT"
       - name: Cache MOSS models
         if: ${{ hashFiles('manifest.json') != '' }}
         uses: actions/cache@v4
@@ -211,6 +223,7 @@ jobs:
           path: ~/.cache/rtmlib
           key: rtmlib-wholebody-onnx-v1-${{ runner.os }}
       - name: Rig character and robot masters
+        if: ${{ steps.renderer.outputs.mode != 'godot2d' }}
         run: |
           if python - <<'PY'
           import json
@@ -236,11 +249,13 @@ jobs:
             python renderer/rig_robot.py manifest.json
           fi
       - name: Cache anime segmentation model
+        if: ${{ steps.renderer.outputs.mode != 'godot2d' }}
         uses: actions/cache@v4
         with:
           path: character-model
           key: isnet-anime-onnx-v1-${{ runner.os }}
       - name: Install character layer runtime
+        if: ${{ steps.renderer.outputs.mode != 'godot2d' }}
         continue-on-error: true
         run: |
           if python - <<'PY'
@@ -263,6 +278,7 @@ jobs:
             python -m pip install 'rembg[cpu]==2.0.67' 'opencv-python-headless==4.12.0.88'
           fi
       - name: Extract character layers
+        if: ${{ steps.renderer.outputs.mode != 'godot2d' }}
         env:
           U2NET_HOME: character-model
         run: python renderer/layer_shots.py manifest.json || echo 'Character masking unavailable; using original shots'
@@ -301,11 +317,37 @@ jobs:
           JOB_ID: ${{ inputs.job_id }}
         run: |
           curl --fail-with-body --retry 5 --retry-all-errors --retry-delay 3 -sS -X POST "$CALLBACK_URL" -H "Authorization: Bearer $CALLBACK_TOKEN" -H 'Content-Type: application/json' -d "{\"job_id\":\"$JOB_ID\",\"status\":\"running\"}" || echo 'Running status callback failed; continuing with render'
+      - name: Cache Godot 4.7.2
+        if: ${{ steps.renderer.outputs.mode == 'godot2d' }}
+        uses: actions/cache@v4
+        with:
+          path: .cache/godot-4.7.2
+          key: godot-4.7.2-stable-linux-x86_64-v1
+      - name: Install Godot software renderer
+        if: ${{ steps.renderer.outputs.mode == 'godot2d' }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            xvfb unzip ca-certificates mesa-utils \
+            libgl1 libglu1-mesa libx11-6 libxcursor1 libxinerama1 libxi6 libxrandr2 \
+            libxext6 libxrender1 libxkbcommon0 libfontconfig1 \
+            fonts-noto-cjk ffmpeg
+          sudo apt-get install -y libasound2t64 || sudo apt-get install -y libasound2 || true
+          python -m pip install scipy 'opencv-python-headless==4.12.0.88' onnxruntime rtmlib
+      - name: Prepare Godot stage
+        if: ${{ steps.renderer.outputs.mode == 'godot2d' }}
+        run: python renderer/prepare_stage.py manifest.json stage.json
+      - name: Render MP4 with Godot 2D
+        if: ${{ steps.renderer.outputs.mode == 'godot2d' }}
+        run: bash scripts/render_godot2d.sh stage.json output.mp4
       - name: Install Remotion
+        if: ${{ steps.renderer.outputs.mode != 'godot2d' }}
         run: npm ci
       - name: Prepare frame-accurate timeline
+        if: ${{ steps.renderer.outputs.mode != 'godot2d' }}
         run: python renderer/prepare_remotion.py manifest.json remotion-props.json
       - name: Render MP4 with Remotion
+        if: ${{ steps.renderer.outputs.mode != 'godot2d' }}
         run: npm run render
       - name: Upload result
         if: ${{ !inputs.qa_mode }}

@@ -243,7 +243,12 @@ class MeshRigTest(unittest.TestCase):
         foreground = (texture[:, :, 3] >= 32).astype(np.uint8)
         expanded = cv2.dilate(
             foreground,
-            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9)),
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (13, 13)),
+            iterations=1,
+        )
+        expanded = cv2.dilate(
+            expanded,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)),
             iterations=1,
         )
 
@@ -258,11 +263,30 @@ class MeshRigTest(unittest.TestCase):
                 triangle = vertices[np.asarray(triangle_indices)]
                 checks = [
                     triangle.mean(axis=0),
-                    0.5 * (triangle[0] + triangle[1]),
-                    0.5 * (triangle[1] + triangle[2]),
-                    0.5 * (triangle[2] + triangle[0]),
                 ]
+                for edge in range(3):
+                    start = triangle[edge]
+                    end = triangle[(edge + 1) % 3]
+                    checks.extend(
+                        (
+                            0.75 * start + 0.25 * end,
+                            0.5 * (start + end),
+                            0.25 * start + 0.75 * end,
+                        )
+                    )
                 self.assertTrue(all(inside(point) for point in checks))
+                edge_lengths = [
+                    float(
+                        np.linalg.norm(
+                            triangle[(edge + 1) % 3] - triangle[edge]
+                        )
+                    )
+                    for edge in range(3)
+                ]
+                spacing = max(
+                    9.0, round(float(self.rig["body_height"]) / 42.0)
+                )
+                self.assertLessEqual(max(edge_lengths), max(24.0, spacing * 2.2) + 0.1)
 
         bones = {bone["name"]: bone for bone in self.rig["bones"]}
         body_height = float(self.rig["body_height"])
@@ -333,6 +357,100 @@ class MeshRigTest(unittest.TestCase):
         for name, group in groups.items():
             self.assertGreater(len(group["vertices"]), 2, name)
             self.assertGreater(len(group["triangles"]), 0, name)
+
+    def test_shoulders_have_torso_overlap_backing(self) -> None:
+        bones = {bone["name"]: bone for bone in self.rig["bones"]}
+        groups = {group["name"]: group for group in self.rig["groups"]}
+
+        def triangle_map(group: dict) -> dict[tuple, list[int]]:
+            uvs = np.asarray(group["uvs"], dtype=np.float32)
+            result: dict[tuple, list[int]] = {}
+            for triangle_index, triangle in enumerate(group["triangles"]):
+                points = uvs[np.asarray(triangle)]
+                key = tuple(
+                    sorted(
+                        (round(float(x), 3), round(float(y), 3))
+                        for x, y in points
+                    )
+                )
+                result.setdefault(key, []).append(triangle_index)
+            return result
+
+        torso = groups["torso"]
+        torso_triangles = triangle_map(torso)
+        for side in ("l", "r"):
+            arm = groups[f"arm_{side}"]
+            arm_triangles = triangle_map(arm)
+            shoulder = np.asarray(
+                bones[f"upper_arm_{side}"]["head"], dtype=np.float32
+            )
+            radius = float(bones[f"upper_arm_{side}"]["length"]) * 0.28
+            overlap_keys = [
+                key
+                for key in set(torso_triangles) & set(arm_triangles)
+                if float(
+                    np.linalg.norm(
+                        np.asarray(key, dtype=np.float32).mean(axis=0)
+                        - shoulder
+                    )
+                )
+                <= radius + 0.5
+            ]
+            self.assertGreater(len(overlap_keys), 0, side)
+
+            pure_backing = False
+            smooth_arm_transition = False
+            for key in overlap_keys:
+                for triangle_index in torso_triangles[key]:
+                    indices = torso["triangles"][triangle_index]
+                    torso_values = torso["weights"].get(
+                        "torso", [0.0] * len(torso["vertices"])
+                    )
+                    if all(abs(float(torso_values[index]) - 1.0) < 1e-6 for index in indices):
+                        if all(
+                            all(abs(float(values[index])) < 1e-6 for index in indices)
+                            for bone, values in torso["weights"].items()
+                            if bone != "torso"
+                        ):
+                            pure_backing = True
+                for triangle_index in arm_triangles[key]:
+                    indices = arm["triangles"][triangle_index]
+                    torso_values = arm["weights"].get(
+                        "torso", [0.0] * len(arm["vertices"])
+                    )
+                    upper_values = arm["weights"].get(
+                        f"upper_arm_{side}", [0.0] * len(arm["vertices"])
+                    )
+                    if any(
+                        float(torso_values[index]) > 0.0
+                        and float(upper_values[index]) > 0.0
+                        for index in indices
+                    ):
+                        smooth_arm_transition = True
+            self.assertTrue(pure_backing, side)
+            self.assertTrue(smooth_arm_transition, side)
+
+    def test_opaque_pixels_have_mesh_coverage(self) -> None:
+        texture = np.asarray(
+            Image.open(self.rig_dir / self.rig["texture"]).convert("RGBA")
+        )
+        covered = np.zeros(texture.shape[:2], dtype=np.uint8)
+        for group in self.rig["groups"]:
+            vertices = np.asarray(group["vertices"], dtype=np.float32)
+            for triangle in group["triangles"]:
+                cv2.fillConvexPoly(
+                    covered,
+                    np.round(vertices[np.asarray(triangle)] * 16.0).astype(
+                        np.int32
+                    ),
+                    1,
+                    lineType=cv2.LINE_8,
+                    shift=4,
+                )
+        opaque = texture[:, :, 3] >= 128
+        self.assertTrue(bool(opaque.any()))
+        coverage = float((covered[opaque] > 0).mean())
+        self.assertGreaterEqual(coverage, 0.99)
 
     def test_boundary_flood_removes_floor_clouds_and_watermark(self) -> None:
         texture = np.asarray(

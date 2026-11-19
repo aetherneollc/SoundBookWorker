@@ -1,0 +1,85 @@
+{
+  "name": "wave",
+  "loop": true,
+  "duration": 1.6,
+  "fps": 24,
+  "foot_lock": true,
+  "tags": ["gesture", "greeting", "standing"],
+  "keyframes": [
+    {
+      "t": 0.0,
+      "root_offset": [0.0, -0.002],
+      "bones": {
+        "pelvis": 0.0,
+        "torso": 1.0,
+        "neck": -0.5,
+        "head": -2.0,
+        "upper_arm_l": -25.0,
+        "lower_arm_l": -10.0,
+        "upper_arm_r": -46.0,
+        "lower_arm_r": -72.0,
+        "hand_r": -20.0
+      }
+    },
+    {
+      "t": 0.4,
+      "root_offset": [0.002, -0.004],
+      "bones": {
+        "pelvis": 0.5,
+        "torso": 1.8,
+        "neck": -1.0,
+        "head": -3.0,
+        "upper_arm_l": -24.0,
+        "lower_arm_l": -11.0,
+        "upper_arm_r": -48.0,
+        "lower_arm_r": -62.0,
+        "hand_r": 24.0
+      }
+    },
+    {
+      "t": 0.8,
+      "root_offset": [0.0, -0.006],
+      "bones": {
+        "pelvis": 0.0,
+        "torso": 0.5,
+        "neck": 0.0,
+        "head": -1.0,
+        "upper_arm_l": -25.0,
+        "lower_arm_l": -10.0,
+        "upper_arm_r": -45.0,
+        "lower_arm_r": -78.0,
+        "hand_r": -24.0
+      }
+    },
+    {
+      "t": 1.2,
+      "root_offset": [-0.002, -0.004],
+      "bones": {
+        "pelvis": -0.5,
+        "torso": 1.5,
+        "neck": -0.5,
+        "head": -2.5,
+        "upper_arm_l": -26.0,
+        "lower_arm_l": -9.0,
+        "upper_arm_r": -48.0,
+        "lower_arm_r": -64.0,
+        "hand_r": 22.0
+      }
+    },
+    {
+      "t": 1.6,
+      "root_offset": [0.0, -0.002],
+      "bones": {
+        "pelvis": 0.0,
+        "torso": 1.0,
+        "neck": -0.5,
+        "head": -2.0,
+        "upper_arm_l": -25.0,
+        "lower_arm_l": -10.0,
+        "upper_arm_r": -46.0,
+        "lower_arm_r": -72.0,
+        "hand_r": -20.0
+      }
+    }
+  ]
+}

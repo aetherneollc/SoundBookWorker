@@ -3,14 +3,24 @@
 from __future__ import annotations
 import json, math, os, re, shutil, subprocess, sys
 from pathlib import Path
-from calibrate_plate import calibrate_plate_file
-from render import media_duration, subtitle_chunks, write_intro_chime
-from rig_characters import resolve_slot_view_angle, rig_character_master
-from voice_cues import speech_cues
-
-
-def frame(seconds: float, fps: int) -> int:
-    return max(0, round(seconds * fps))
+try:
+    from calibrate_plate import calibrate_plate_file
+    from render import media_duration, subtitle_chunks, write_intro_chime
+    from rig_characters import resolve_slot_view_angle, rig_character_master
+    from voice_cues import speech_cues
+    from timeline_common import (
+        build_voice_locked_timeline, frame, parse_srt, shot_duration_frames,
+        shot_is_animated, speech_items_for_track, track_start_seconds,
+    )
+except ImportError:  # ``python -m unittest`` imports this file as part of the package.
+    from renderer.calibrate_plate import calibrate_plate_file
+    from renderer.render import media_duration, subtitle_chunks, write_intro_chime
+    from renderer.rig_characters import resolve_slot_view_angle, rig_character_master
+    from renderer.voice_cues import speech_cues
+    from renderer.timeline_common import (
+        build_voice_locked_timeline, frame, parse_srt, shot_duration_frames,
+        shot_is_animated, speech_items_for_track, track_start_seconds,
+    )
 
 
 def source(item: dict, public: Path) -> str:
@@ -23,21 +33,6 @@ def source(item: dict, public: Path) -> str:
     if path != target.resolve():
         shutil.copy2(path, target)
     return f'media/{target.name}'
-
-
-def parse_srt(path: Path, offset: float, fps: int) -> list[dict]:
-    def secs(value: str) -> float:
-        h, m, s, ms = map(int, re.split('[:,]', value))
-        return 3600*h + 60*m + s + ms/1000
-    cues = []
-    for block in re.split(r'\n\s*\n', path.read_text(encoding='utf-8-sig')):
-        match = re.search(r'(\d\d:\d\d:\d\d,\d{3})\s*-->\s*(\d\d:\d\d:\d\d,\d{3})', block)
-        if match:
-            content = block[match.end():].strip()
-            if content:
-                cues.append({'from': frame(offset+secs(match[1]), fps),
-                             'to': frame(offset+secs(match[2]), fps), 'text': content})
-    return cues
 
 
 def _prepare_char_rig(rig_json_str: str, public: Path, cache: dict[str, dict], view_slot: str | None = None) -> dict | None:
@@ -215,51 +210,15 @@ def prepare(manifest: Path, output: Path) -> None:
     global_robot_rig = _prepare_robot_rig(str(global_robot_json), public, robot_rig_cache) if global_robot_json else None
 
     intro_voice = Path(doc['intro_voice_file']) if doc.get('intro_voice_file') else None
-    intro_seconds = max(2.8, media_duration(intro_voice)+.65) if intro_voice and doc.get('episode_title') else (2.8 if doc.get('episode_title') else 0)
-    intro_frames = frame(intro_seconds, fps)
     shots = [dict(shot) for shot in doc['shots']]
     tracks = [dict(track) for track in doc.get('audio_tracks', [])]
     if doc.get('audio'):
         tracks.append({**doc['audio'], 'start_ms': 0, 'volume': 1, '_full_length': True})
-    captions = []
-    if doc.get('timeline_mode') == 'voice_locked':
-        scene_order = list(dict.fromkeys(int(shot.get('scene_number', 0)) for shot in shots))
-        voices = sorted((track for track in tracks if track.get('scene_number') is not None and not track.get('loop')),
-                        key=lambda track: (int(track.get('scene_number', 0)), int(track.get('dialogue_number', 0))))
-        for track in voices:
-            track['_duration'] = media_duration(Path(track['file']))
-        cursor = intro_seconds
-        for scene in scene_order:
-            scene_voices = [t for t in voices if int(t['scene_number']) == scene]
-            scene_shots = [s for s in shots if int(s.get('scene_number', 0)) == scene]
-            if not scene_voices:
-                continue
-            local = 0.0
-            for track in scene_voices:
-                duration = track['_duration']
-                track['start_ms'] = round((cursor+local)*1000)
-                chunks = subtitle_chunks(str(track.get('caption_text', '')), str(track.get('speaker', '')))
-                total = sum(max(1, len(chunk.replace(' ', ''))) for chunk in chunks)
-                offset = 0.0
-                for chunk in chunks:
-                    length = duration * max(1, len(chunk.replace(' ', ''))) / total
-                    captions.append({'from': frame(cursor+local+offset, fps), 'to': frame(cursor+local+offset+length, fps), 'text': chunk})
-                    offset += length
-                local += duration + .28
-            scene_duration = max(.25, local-.28+.65)
-            if len(scene_voices) == len(scene_shots) and len(scene_shots) > 1:
-                for i, (shot, track) in enumerate(zip(scene_shots, scene_voices)):
-                    shot['duration'] = track['_duration'] + (.65 if i == len(scene_shots)-1 else .28)
-            else:
-                planned = sum(max(.25, float(s.get('duration', 4))) for s in scene_shots) or 1
-                for shot in scene_shots:
-                    shot['duration'] = max(.25, scene_duration * max(.25, float(shot.get('duration', 4))) / planned)
-            cursor += scene_duration
-    elif doc.get('subtitle'):
-        captions = parse_srt(Path(doc['subtitle']['file']), intro_seconds, fps)
+    intro_seconds, captions = build_voice_locked_timeline(doc, shots, tracks, fps)
+    intro_frames = frame(intro_seconds, fps)
     timeline = []; cursor_frame = intro_frames
     for i, shot in enumerate(shots):
-        duration_frames = max(1, frame(min(300, max(.25, float(shot.get('duration', 4)))), fps))
+        duration_frames = shot_duration_frames(shot.get('duration', 4), fps)
         src = source(shot, public) if shot.get('file') and Path(str(shot['file'])).is_file() else ''
         prepared = {**shot, 'src': src, 'from': cursor_frame,
                     'duration': duration_frames, 'index': i}
@@ -436,25 +395,19 @@ def prepare(manifest: Path, output: Path) -> None:
         audio.append({'src': source({'file': str(chime)}, public), 'from': 0, 'volume': .5, 'loop': False})
         if intro_voice:
             audio.append({'src': source({'file': str(intro_voice)}, public), 'from': frame(.22, fps), 'volume': 1, 'loop': False})
-    animated_scenes = {int(shot.get('scene_number', 0)) for shot in timeline
-                       if shot.get('cartoon') or shot.get('story_motion') or shot.get('rover') or shot.get('stage')
-                       or (isinstance(shot.get('layers'), dict) and
-                           (shot['layers'].get('mouth') or shot['layers'].get('mouth_mode') == 'led'))}
+    animated_scenes = {int(shot.get('scene_number', 0)) for shot in timeline if shot_is_animated(shot)}
     speech = []
+    voice_locked = doc.get('timeline_mode') == 'voice_locked'
     for track in tracks:
         if not track.get('file'):
             continue
-        start = (intro_seconds if track.get('loop') else 0) if doc.get('timeline_mode') == 'voice_locked' else (0 if track.get('_full_length') else intro_seconds)
-        if not track.get('loop') and track.get('start_ms') is not None:
-            start = float(track['start_ms']) / 1000 + (0 if doc.get('timeline_mode') == 'voice_locked' or track.get('_full_length') else intro_seconds)
+        start = track_start_seconds(track, voice_locked=voice_locked, intro_seconds=intro_seconds)
         audio.append({'src': source(track, public), 'from': frame(start, fps),
                       'volume': max(0, min(4, float(track.get('volume', 1)))), 'loop': bool(track.get('loop'))})
-        if not track.get('loop') and track.get('scene_number') is not None and track.get('speaker') and int(track['scene_number']) in animated_scenes:
-            for cue in speech_cues(Path(track['file']), str(track.get('caption_text', '')), str(doc.get('language') or 'zh')):
-                speech.append({'from': frame(start + cue['start'], fps),
-                               'to': frame(start + cue['end'], fps),
-                               'value': cue['value'], 'speaker': str(track['speaker']),
-                               'scene_number': int(track['scene_number'])})
+        speech.extend(speech_items_for_track(
+            track, start=start, fps=fps, language=str(doc.get('language') or 'zh'),
+            animated_scenes=animated_scenes,
+        ))
     cta = doc.get('cta_card') if isinstance(doc.get('cta_card'), dict) else None
     cta_frames = frame(3.8, fps) if cta and str(cta.get('name', '')).strip() else 0
     if cta_frames and str(cta.get('url', '')).startswith('https://'):

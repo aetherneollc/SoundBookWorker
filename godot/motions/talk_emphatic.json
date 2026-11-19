@@ -1,0 +1,122 @@
+{
+  "name": "talk_emphatic",
+  "loop": true,
+  "duration": 2.4,
+  "fps": 24,
+  "foot_lock": true,
+  "tags": ["talk", "emphatic", "standing"],
+  "keyframes": [
+    {
+      "t": 0.0,
+      "root_offset": [0.0, 0.003],
+      "bones": {
+        "pelvis": 0.0,
+        "torso": 0.0,
+        "neck": 0.0,
+        "head": 0.0,
+        "upper_arm_l": -23.0,
+        "lower_arm_l": -8.0,
+        "upper_arm_r": 23.0,
+        "lower_arm_r": 8.0,
+        "hand_l": 0.0,
+        "hand_r": 0.0
+      }
+    },
+    {
+      "t": 0.4,
+      "root_offset": [-0.004, -0.004],
+      "bones": {
+        "pelvis": -2.0,
+        "torso": -4.0,
+        "neck": 1.0,
+        "head": 2.5,
+        "upper_arm_l": 32.0,
+        "lower_arm_l": -24.0,
+        "upper_arm_r": 26.0,
+        "lower_arm_r": 12.0,
+        "hand_l": 8.0,
+        "hand_r": -2.0
+      }
+    },
+    {
+      "t": 0.8,
+      "root_offset": [-0.002, -0.007],
+      "bones": {
+        "pelvis": -1.0,
+        "torso": -2.5,
+        "neck": -1.0,
+        "head": -2.0,
+        "upper_arm_l": 44.0,
+        "lower_arm_l": -14.0,
+        "upper_arm_r": -12.0,
+        "lower_arm_r": 24.0,
+        "hand_l": -5.0,
+        "hand_r": 8.0
+      }
+    },
+    {
+      "t": 1.2,
+      "root_offset": [0.004, -0.003],
+      "bones": {
+        "pelvis": 2.0,
+        "torso": 4.0,
+        "neck": -1.0,
+        "head": -2.5,
+        "upper_arm_l": -26.0,
+        "lower_arm_l": -12.0,
+        "upper_arm_r": -34.0,
+        "lower_arm_r": 24.0,
+        "hand_l": 2.0,
+        "hand_r": -8.0
+      }
+    },
+    {
+      "t": 1.6,
+      "root_offset": [0.0, -0.008],
+      "bones": {
+        "pelvis": 0.0,
+        "torso": 0.0,
+        "neck": 0.0,
+        "head": 1.5,
+        "upper_arm_l": 40.0,
+        "lower_arm_l": -12.0,
+        "upper_arm_r": -40.0,
+        "lower_arm_r": 12.0,
+        "hand_l": 6.0,
+        "hand_r": -6.0
+      }
+    },
+    {
+      "t": 2.0,
+      "root_offset": [0.001, -0.001],
+      "bones": {
+        "pelvis": 0.5,
+        "torso": 1.5,
+        "neck": 0.5,
+        "head": 2.0,
+        "upper_arm_l": -10.0,
+        "lower_arm_l": -14.0,
+        "upper_arm_r": 8.0,
+        "lower_arm_r": 16.0,
+        "hand_l": 0.0,
+        "hand_r": 0.0
+      }
+    },
+    {
+      "t": 2.4,
+      "root_offset": [0.0, 0.003],
+      "bones": {
+        "pelvis": 0.0,
+        "torso": 0.0,
+        "neck": 0.0,
+        "head": 0.0,
+        "upper_arm_l": -23.0,
+        "lower_arm_l": -8.0,
+        "upper_arm_r": 23.0,
+        "lower_arm_r": 8.0,
+        "hand_l": 0.0,
+        "hand_r": 0.0
+      }
+    }
+  ]
+}

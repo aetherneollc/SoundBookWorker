@@ -569,7 +569,9 @@ def _mesh_points(
         mask.astype(np.uint8), cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE
     )
     points: list[tuple[float, float]] = []
-    boundary_stride = max(2, spacing // 2)
+    # Concave ink outlines need substantially denser samples than the interior
+    # grid; otherwise one rejected Delaunay chord leaves a visible sawtooth.
+    boundary_stride = max(2, spacing // 6)
     for contour in contours:
         flat = contour.reshape(-1, 2)
         if len(flat) < 3:
@@ -602,8 +604,14 @@ def _mesh_points(
     return sampled, spacing
 
 
-def _triangulate_inside(points: np.ndarray, mask: np.ndarray) -> np.ndarray:
+def _triangulate_inside(
+    points: np.ndarray,
+    mask: np.ndarray,
+    max_edge_length: float,
+    containment_mask: np.ndarray | None = None,
+) -> np.ndarray:
     delaunay = Delaunay(points, qhull_options="QJ")
+    guard = containment_mask if containment_mask is not None else mask
     accepted: list[np.ndarray] = []
     for simplex in delaunay.simplices:
         triangle = points[simplex]
@@ -612,15 +620,26 @@ def _triangulate_inside(points: np.ndarray, mask: np.ndarray) -> np.ndarray:
         cross = float(edge_a[0] * edge_b[1] - edge_a[1] * edge_b[0])
         if abs(cross) < 0.05:
             continue
-        checks = [
-            triangle.mean(axis=0),
-            0.5 * (triangle[0] + triangle[1]),
-            0.5 * (triangle[1] + triangle[2]),
-            0.5 * (triangle[2] + triangle[0]),
+        edge_lengths = [
+            float(np.linalg.norm(triangle[(index + 1) % 3] - triangle[index]))
+            for index in range(3)
         ]
-        # Midpoint checks are essential: they reject Delaunay bridges through
-        # armpit, crotch, and other transparent concavities.
-        if all(_sample_mask(mask, point) for point in checks):
+        if max(edge_lengths) > max_edge_length:
+            continue
+        checks = [triangle.mean(axis=0)]
+        for index in range(3):
+            start = triangle[index]
+            end = triangle[(index + 1) % 3]
+            checks.extend(
+                (
+                    0.75 * start + 0.25 * end,
+                    0.5 * (start + end),
+                    0.25 * start + 0.75 * end,
+                )
+            )
+        # Quarter- and midpoint checks keep armpit/crotch gaps hard, while the
+        # two-pixel guard admits only tiny boundary triangles near concave ink.
+        if all(_sample_mask(guard, point) for point in checks):
             accepted.append(simplex.astype(np.int32))
     if not accepted:
         raise ValueError("no triangles survived foreground-mask filtering")
@@ -874,7 +893,6 @@ def _vertex_weights(
     body_height: int,
 ) -> list[dict[str, float]]:
     bone_map = {bone["name"]: bone for bone in bones}
-    shoulder_radius = max(5.0, body_height * 0.018)
     hip_radius = max(8.0, body_height * 0.042)
     joint_radius = max(6.0, body_height * 0.032)
     output: list[dict[str, float]] = []
@@ -892,6 +910,7 @@ def _vertex_weights(
         weights = _chain_weights(point, chain, bone_map, joint_radius)
         if branch in ("arm_l", "arm_r"):
             upper = bone_map[f"upper_{branch}"]
+            shoulder_radius = max(6.0, float(upper["length"]) * 0.28)
             weights = _add_parent_transition(
                 weights,
                 point,
@@ -941,6 +960,65 @@ def _triangle_group(
         for bone, value in weights[int(vertex_index)].items():
             scores[_bone_group(bone)] += value
     return max(scores, key=lambda name: (scores[name], -GROUP_Z[name]))
+
+
+def _shoulder_overlap_triangles(
+    points: np.ndarray,
+    triangles: np.ndarray,
+    weights: list[dict[str, float]],
+    bones: list[dict[str, Any]],
+    body_backfills: list[np.ndarray] | None = None,
+) -> list[np.ndarray]:
+    """Find the first arm-owned triangle ring along each torso shoulder seam."""
+    bone_map = {bone["name"]: bone for bone in bones}
+    owners = [_triangle_group(triangle, weights) for triangle in triangles]
+    edge_adjacency: dict[tuple[int, int], list[int]] = {}
+    for triangle_index, triangle in enumerate(triangles):
+        for edge in range(3):
+            key = tuple(
+                sorted(
+                    (
+                        int(triangle[edge]),
+                        int(triangle[(edge + 1) % 3]),
+                    )
+                )
+            )
+            edge_adjacency.setdefault(key, []).append(triangle_index)
+
+    backfill_edges: set[tuple[int, int]] = set()
+    for triangle in body_backfills or []:
+        for edge in range(3):
+            backfill_edges.add(
+                tuple(
+                    sorted(
+                        (
+                            int(triangle[edge]),
+                            int(triangle[(edge + 1) % 3]),
+                        )
+                    )
+                )
+            )
+
+    selected: set[int] = set()
+    for side in ("l", "r"):
+        arm_group = f"arm_{side}"
+        upper = bone_map[f"upper_arm_{side}"]
+        shoulder = np.asarray(upper["head"], dtype=np.float32)
+        radius = max(6.0, float(upper["length"]) * 0.28)
+        for edge_key, adjacent in edge_adjacency.items():
+            adjacent_owners = {owners[index] for index in adjacent}
+            touches_torso = (
+                "torso" in adjacent_owners or edge_key in backfill_edges
+            )
+            if arm_group not in adjacent_owners or not touches_torso:
+                continue
+            for index in adjacent:
+                if owners[index] != arm_group:
+                    continue
+                centroid = points[triangles[index]].mean(axis=0)
+                if float(np.linalg.norm(centroid - shoulder)) <= radius:
+                    selected.add(index)
+    return [triangles[index] for index in sorted(selected)]
 
 
 def _filter_anatomical_triangles(
@@ -1028,6 +1106,7 @@ def _build_groups(
     triangles: np.ndarray,
     weights: list[dict[str, float]],
     body_backfills: list[np.ndarray] | None = None,
+    shoulder_backfills: list[np.ndarray] | None = None,
     bones: list[dict[str, Any]] | None = None,
     body_height: int = 1,
 ) -> list[dict[str, Any]]:
@@ -1070,9 +1149,9 @@ def _build_groups(
             }
         )
 
+    group_map = {group["name"]: group for group in groups}
     if body_backfills and bones:
         bone_map = {bone["name"]: bone for bone in bones}
-        group_map = {group["name"]: group for group in groups}
         joint_radius = max(6.0, body_height * 0.032)
         hip_radius = max(8.0, body_height * 0.042)
         for triangle in body_backfills:
@@ -1122,6 +1201,23 @@ def _build_groups(
                     round(vertex_weight.get(bone, 0.0), 6)
                     for vertex_weight in backfill_weights
                 )
+            target["triangles"].append([start, start + 1, start + 2])
+
+    if shoulder_backfills:
+        target = group_map["torso"]
+        for triangle in shoulder_backfills:
+            start = len(target["vertices"])
+            if "torso" not in target["weights"]:
+                target["weights"]["torso"] = [0.0] * start
+            triangle_points = [
+                points[int(index)].astype(np.float32) for index in triangle
+            ]
+            for point in triangle_points:
+                vertex = [round(float(point[0]), 4), round(float(point[1]), 4)]
+                target["vertices"].append(vertex)
+                target["uvs"].append(list(vertex))
+            for bone, values in target["weights"].items():
+                values.extend([1.0 if bone == "torso" else 0.0] * 3)
             target["triangles"].append([start, start + 1, start + 2])
     return groups
 
@@ -1237,8 +1333,8 @@ def build_mesh_rig(
     joints = _complete_joints(analysis, alpha_mask, bbox)
     bones = _build_bones(joints, alpha_mask, bbox)
     body_height = bbox[3]
-    # Three to four pixels after upscaling protects the outer ink contour.
-    dilation_radius = max(3, min(4, int(round(float(upscale) * 1.75))))
+    # Six pixels at the default 2x scale protects antialiased outer ink.
+    dilation_radius = max(4, min(6, int(round(float(upscale) * 3.0))))
     kernel_size = dilation_radius * 2 + 1
     expanded_mask = cv2.dilate(
         alpha_mask,
@@ -1248,7 +1344,17 @@ def build_mesh_rig(
         iterations=1,
     )
     points, spacing = _mesh_points(expanded_mask, bones, body_height)
-    triangles = _triangulate_inside(points, expanded_mask)
+    containment_mask = cv2.dilate(
+        expanded_mask,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)),
+        iterations=1,
+    )
+    triangles = _triangulate_inside(
+        points,
+        expanded_mask,
+        max_edge_length=max(24.0, spacing * 2.2),
+        containment_mask=containment_mask,
+    )
     labels, label_to_branch = _branch_labels(expanded_mask, bones, spacing)
     weights = _vertex_weights(
         points, labels, label_to_branch, bones, body_height
@@ -1256,11 +1362,15 @@ def build_mesh_rig(
     triangles, body_backfills = _filter_anatomical_triangles(
         points, triangles, weights, bones, body_height
     )
+    shoulder_backfills = _shoulder_overlap_triangles(
+        points, triangles, weights, bones, body_backfills
+    )
     groups = _build_groups(
         points,
         triangles,
         weights,
         body_backfills=body_backfills,
+        shoulder_backfills=shoulder_backfills,
         bones=bones,
         body_height=body_height,
     )

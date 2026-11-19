@@ -1,0 +1,85 @@
+{
+  "name": "talk_explain",
+  "loop": true,
+  "duration": 2.8,
+  "fps": 24,
+  "foot_lock": true,
+  "tags": ["talk", "explain", "standing"],
+  "keyframes": [
+    {
+      "t": 0.0,
+      "root_offset": [0.0, 0.001],
+      "bones": {
+        "pelvis": -1.0,
+        "torso": -2.0,
+        "neck": 1.0,
+        "head": -4.0,
+        "upper_arm_l": 18.0,
+        "lower_arm_l": 44.0,
+        "hand_l": 8.0,
+        "upper_arm_r": 25.0,
+        "lower_arm_r": 10.0
+      }
+    },
+    {
+      "t": 0.7,
+      "root_offset": [-0.003, -0.003],
+      "bones": {
+        "pelvis": -1.5,
+        "torso": -3.0,
+        "neck": 1.5,
+        "head": -6.0,
+        "upper_arm_l": 24.0,
+        "lower_arm_l": 36.0,
+        "hand_l": 14.0,
+        "upper_arm_r": 24.0,
+        "lower_arm_r": 11.0
+      }
+    },
+    {
+      "t": 1.4,
+      "root_offset": [0.0, -0.005],
+      "bones": {
+        "pelvis": 0.0,
+        "torso": -1.0,
+        "neck": 0.0,
+        "head": -2.0,
+        "upper_arm_l": 14.0,
+        "lower_arm_l": 52.0,
+        "hand_l": -6.0,
+        "upper_arm_r": 26.0,
+        "lower_arm_r": 9.0
+      }
+    },
+    {
+      "t": 2.1,
+      "root_offset": [0.003, -0.002],
+      "bones": {
+        "pelvis": 1.0,
+        "torso": 1.5,
+        "neck": -1.0,
+        "head": 1.0,
+        "upper_arm_l": 21.0,
+        "lower_arm_l": 40.0,
+        "hand_l": 4.0,
+        "upper_arm_r": 24.0,
+        "lower_arm_r": 12.0
+      }
+    },
+    {
+      "t": 2.8,
+      "root_offset": [0.0, 0.001],
+      "bones": {
+        "pelvis": -1.0,
+        "torso": -2.0,
+        "neck": 1.0,
+        "head": -4.0,
+        "upper_arm_l": 18.0,
+        "lower_arm_l": 44.0,
+        "hand_l": 8.0,
+        "upper_arm_r": 25.0,
+        "lower_arm_r": 10.0
+      }
+    }
+  ]
+}

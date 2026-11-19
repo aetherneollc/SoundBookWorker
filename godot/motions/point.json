@@ -1,0 +1,100 @@
+{
+  "name": "point",
+  "loop": true,
+  "duration": 2.4,
+  "fps": 24,
+  "foot_lock": true,
+  "tags": ["gesture", "point", "standing"],
+  "keyframes": [
+    {
+      "t": 0.0,
+      "root_offset": [0.0, 0.002],
+      "bones": {
+        "pelvis": 0.0,
+        "torso": 0.0,
+        "neck": 0.0,
+        "head": 0.0,
+        "upper_arm_l": -25.0,
+        "lower_arm_l": -10.0,
+        "hand_l": 0.0,
+        "upper_arm_r": 25.0,
+        "lower_arm_r": 10.0
+      }
+    },
+    {
+      "t": 0.35,
+      "root_offset": [-0.003, -0.002],
+      "bones": {
+        "pelvis": 1.0,
+        "torso": -2.0,
+        "neck": 0.5,
+        "head": 1.5,
+        "upper_arm_l": 20.0,
+        "lower_arm_l": -10.0,
+        "hand_l": 2.0,
+        "upper_arm_r": 26.0,
+        "lower_arm_r": 9.0
+      }
+    },
+    {
+      "t": 0.7,
+      "root_offset": [-0.006, -0.004],
+      "bones": {
+        "pelvis": 2.0,
+        "torso": -3.5,
+        "neck": 1.0,
+        "head": 3.0,
+        "upper_arm_l": 43.0,
+        "lower_arm_l": -4.0,
+        "hand_l": 0.0,
+        "upper_arm_r": 27.0,
+        "lower_arm_r": 8.0
+      }
+    },
+    {
+      "t": 1.3,
+      "root_offset": [-0.007, -0.005],
+      "bones": {
+        "pelvis": 2.5,
+        "torso": -4.0,
+        "neck": 1.0,
+        "head": 2.0,
+        "upper_arm_l": 46.0,
+        "lower_arm_l": -3.0,
+        "hand_l": -3.0,
+        "upper_arm_r": 27.0,
+        "lower_arm_r": 8.0
+      }
+    },
+    {
+      "t": 1.8,
+      "root_offset": [-0.004, -0.001],
+      "bones": {
+        "pelvis": 1.0,
+        "torso": -2.0,
+        "neck": 0.5,
+        "head": 1.0,
+        "upper_arm_l": 18.0,
+        "lower_arm_l": -9.0,
+        "hand_l": 2.0,
+        "upper_arm_r": 26.0,
+        "lower_arm_r": 9.0
+      }
+    },
+    {
+      "t": 2.4,
+      "root_offset": [0.0, 0.002],
+      "bones": {
+        "pelvis": 0.0,
+        "torso": 0.0,
+        "neck": 0.0,
+        "head": 0.0,
+        "upper_arm_l": -25.0,
+        "lower_arm_l": -10.0,
+        "hand_l": 0.0,
+        "upper_arm_r": 25.0,
+        "lower_arm_r": 10.0
+      }
+    }
+  ]
+}

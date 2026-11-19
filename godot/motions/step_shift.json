@@ -1,0 +1,181 @@
+{
+  "name": "step_shift",
+  "loop": true,
+  "duration": 2.0,
+  "fps": 24,
+  "foot_lock": false,
+  "tags": ["step", "full-shot", "locomotion"],
+  "keyframes": [
+    {
+      "t": 0.0,
+      "root_offset": [0.0, 0.003],
+      "bones": {
+        "pelvis": 0.0,
+        "torso": 0.0,
+        "head": 0.0,
+        "upper_arm_l": -25.0,
+        "lower_arm_l": -10.0,
+        "upper_arm_r": 25.0,
+        "lower_arm_r": 10.0,
+        "upper_leg_l": 0.0,
+        "lower_leg_l": 0.0,
+        "foot_l": 0.0,
+        "upper_leg_r": 0.0,
+        "lower_leg_r": 0.0,
+        "foot_r": 0.0
+      }
+    },
+    {
+      "t": 0.25,
+      "root_offset": [0.006, -0.008],
+      "bones": {
+        "pelvis": 2.0,
+        "torso": -2.0,
+        "head": 1.0,
+        "upper_arm_l": -28.0,
+        "lower_arm_l": -9.0,
+        "upper_arm_r": 18.0,
+        "lower_arm_r": 11.0,
+        "upper_leg_l": -12.0,
+        "lower_leg_l": 32.0,
+        "foot_l": -10.0,
+        "upper_leg_r": 3.0,
+        "lower_leg_r": -3.0,
+        "foot_r": 0.0
+      }
+    },
+    {
+      "t": 0.5,
+      "root_offset": [0.016, 0.008],
+      "bones": {
+        "pelvis": 3.0,
+        "torso": -3.0,
+        "head": 1.5,
+        "upper_arm_l": -30.0,
+        "lower_arm_l": -8.0,
+        "upper_arm_r": 16.0,
+        "lower_arm_r": 12.0,
+        "upper_leg_l": 8.0,
+        "lower_leg_l": -6.0,
+        "foot_l": 5.0,
+        "upper_leg_r": -3.0,
+        "lower_leg_r": 4.0,
+        "foot_r": 0.0
+      }
+    },
+    {
+      "t": 0.75,
+      "root_offset": [0.018, 0.002],
+      "bones": {
+        "pelvis": 1.0,
+        "torso": -1.0,
+        "head": 0.5,
+        "upper_arm_l": -27.0,
+        "lower_arm_l": -9.0,
+        "upper_arm_r": 22.0,
+        "lower_arm_r": 10.0,
+        "upper_leg_l": 2.0,
+        "lower_leg_l": -2.0,
+        "foot_l": 2.0,
+        "upper_leg_r": -1.0,
+        "lower_leg_r": 1.0,
+        "foot_r": 0.0
+      }
+    },
+    {
+      "t": 1.0,
+      "root_offset": [0.0, 0.003],
+      "bones": {
+        "pelvis": 0.0,
+        "torso": 0.0,
+        "head": 0.0,
+        "upper_arm_l": -25.0,
+        "lower_arm_l": -10.0,
+        "upper_arm_r": 25.0,
+        "lower_arm_r": 10.0,
+        "upper_leg_l": 0.0,
+        "lower_leg_l": 0.0,
+        "foot_l": 0.0,
+        "upper_leg_r": 0.0,
+        "lower_leg_r": 0.0,
+        "foot_r": 0.0
+      }
+    },
+    {
+      "t": 1.25,
+      "root_offset": [-0.006, -0.008],
+      "bones": {
+        "pelvis": -2.0,
+        "torso": 2.0,
+        "head": -1.0,
+        "upper_arm_l": -18.0,
+        "lower_arm_l": -11.0,
+        "upper_arm_r": 28.0,
+        "lower_arm_r": 9.0,
+        "upper_leg_l": -3.0,
+        "lower_leg_l": 3.0,
+        "foot_l": 0.0,
+        "upper_leg_r": 12.0,
+        "lower_leg_r": -32.0,
+        "foot_r": 10.0
+      }
+    },
+    {
+      "t": 1.5,
+      "root_offset": [-0.016, 0.008],
+      "bones": {
+        "pelvis": -3.0,
+        "torso": 3.0,
+        "head": -1.5,
+        "upper_arm_l": -16.0,
+        "lower_arm_l": -12.0,
+        "upper_arm_r": 30.0,
+        "lower_arm_r": 8.0,
+        "upper_leg_l": 3.0,
+        "lower_leg_l": -4.0,
+        "foot_l": 0.0,
+        "upper_leg_r": -8.0,
+        "lower_leg_r": 6.0,
+        "foot_r": -5.0
+      }
+    },
+    {
+      "t": 1.75,
+      "root_offset": [-0.018, 0.002],
+      "bones": {
+        "pelvis": -1.0,
+        "torso": 1.0,
+        "head": -0.5,
+        "upper_arm_l": -22.0,
+        "lower_arm_l": -10.0,
+        "upper_arm_r": 27.0,
+        "lower_arm_r": 9.0,
+        "upper_leg_l": 1.0,
+        "lower_leg_l": -1.0,
+        "foot_l": 0.0,
+        "upper_leg_r": -2.0,
+        "lower_leg_r": 2.0,
+        "foot_r": -2.0
+      }
+    },
+    {
+      "t": 2.0,
+      "root_offset": [0.0, 0.003],
+      "bones": {
+        "pelvis": 0.0,
+        "torso": 0.0,
+        "head": 0.0,
+        "upper_arm_l": -25.0,
+        "lower_arm_l": -10.0,
+        "upper_arm_r": 25.0,
+        "lower_arm_r": 10.0,
+        "upper_leg_l": 0.0,
+        "lower_leg_l": 0.0,
+        "foot_l": 0.0,
+        "upper_leg_r": 0.0,
+        "lower_leg_r": 0.0,
+        "foot_r": 0.0
+      }
+    }
+  ]
+}
