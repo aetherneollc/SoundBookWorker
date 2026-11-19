@@ -1,0 +1,44 @@
+name: Bench engine speed
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - bench/engine-speed
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bench-engine-speed
+  cancel-in-progress: true
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install software rendering libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            xvfb unzip ca-certificates mesa-utils mesa-vulkan-drivers vulkan-tools \
+            libgl1 libglu1-mesa libx11-6 libxcursor1 libxinerama1 libxi6 libxrandr2 \
+            libxext6 libxrender1 libxkbcommon0 libfontconfig1
+          sudo apt-get install -y libasound2t64 || sudo apt-get install -y libasound2 || true
+      - name: Render the same scene with Godot and Three.js
+        env:
+          BENCH_FRAMES: '72'
+          BENCH_FPS: '24'
+        run: bash bench/engine-speed/run.sh
+      - name: Upload timings
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: engine-speed-results
+          path: bench/engine-speed/results
+          retention-days: 14

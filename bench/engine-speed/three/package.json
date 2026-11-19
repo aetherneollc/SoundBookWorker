@@ -1,0 +1,9 @@
+{
+  "name": "engine-speed-bench",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "puppeteer": "25.18.1",
+    "three": "0.187.0"
+  }
+}
