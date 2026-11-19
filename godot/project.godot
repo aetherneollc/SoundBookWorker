@@ -1,0 +1,34 @@
+; Engine configuration file.
+; 2D mesh-skin probe. Not used by the production renderer.
+
+config_version=5
+
+[application]
+
+config/name="Godot2DProbe"
+config/features=PackedStringArray("4.7", "GL Compatibility")
+run/main_scene="res://probe/probe_2d.tscn"
+
+[audio]
+
+driver/driver="Dummy"
+
+[display]
+
+window/size/viewport_width=1280
+window/size/viewport_height=720
+window/size/window_width_override=1280
+window/size/window_height_override=720
+window/vsync/vsync_mode=0
+window/stretch/mode="canvas_items"
+window/stretch/aspect="keep"
+
+[physics]
+
+common/physics_interpolation=false
+
+[rendering]
+
+renderer/rendering_method="gl_compatibility"
+environment/defaults/default_clear_color=Color(0.05, 0.08, 0.16, 1)
+textures/vram_compression/import_etc2_astc=true

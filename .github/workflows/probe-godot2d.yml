@@ -1,0 +1,56 @@
+name: Probe Godot 2D
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feat/godot2d
+    paths:
+      - "godot/**"
+      - "scripts/run_godot2d_probe.sh"
+      - ".github/workflows/probe-godot2d.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: probe-godot2d
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install software rendering libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            xvfb unzip ca-certificates mesa-utils \
+            libgl1 libglu1-mesa libx11-6 libxcursor1 libxinerama1 libxi6 libxrandr2 \
+            libxext6 libxrender1 libxkbcommon0 libfontconfig1 \
+            fonts-noto-cjk python3-pil ffmpeg
+          sudo apt-get install -y libasound2t64 || sudo apt-get install -y libasound2 || true
+
+      - name: Record the 2D skinned probe
+        env:
+          PROBE_FRAMES: "240"
+          PROBE_FPS: "24"
+        run: bash scripts/run_godot2d_probe.sh
+
+      - name: Upload probe results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: probe-godot2d-results
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            probe-godot2d-out/result.json
+            probe-godot2d-out/frame_012.png
+            probe-godot2d-out/frame_120.png
+            probe-godot2d-out/frame_220.png
+            probe-godot2d-out/probe.mp4
+            probe-godot2d-out/godot.log
