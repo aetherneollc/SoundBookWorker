@@ -32,6 +32,7 @@ python3 -c "import PIL" || {
 }
 
 ASSETS="$(mktemp -d)"
+export PROBE_ASSETS_DIR="$ASSETS"
 trap 'rm -rf "$ASSETS"' EXIT
 
 python3 - "$ASSETS" <<'PY'
