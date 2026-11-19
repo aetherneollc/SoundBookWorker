@@ -103,10 +103,9 @@ func _load_tex(dir_path: String, file_name: String) -> ImageTexture:
 		push_error("PROBE_ASSETS_DIR is empty")
 		return null
 	var path := dir_path.path_join(file_name)
-	var img := Image.new()
-	var err := img.load_from_file(path)
-	if err != OK:
-		push_error("PNG load failed %s (%s)" % [path, error_string(err)])
+	var img := Image.load_from_file(path)
+	if img == null or img.is_empty():
+		push_error("PNG load failed %s" % path)
 		return null
 	if img.get_width() <= 0 or img.get_height() <= 0:
 		push_error("PNG has zero size: %s" % path)
