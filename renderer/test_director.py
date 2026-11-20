@@ -72,8 +72,9 @@ class StageAssertions(unittest.TestCase):
 
 class ActionMappingTests(unittest.TestCase):
     def test_every_legacy_action_maps_to_a_motion_clip(self):
-        expected = {'idle': 'idle', 'listen': 'listen', 'talk': 'talk_calm', 'work': 'talk_explain',
-                    'point': 'point', 'wave': 'wave', 'react': 'react', 'console': 'point'}
+        expected = {'idle': 'idle', 'listen': 'listen', 'talk': 'talk_calm', 'work': 'operate',
+                    'point': 'point', 'wave': 'wave', 'react': 'react', 'console': 'operate',
+                    'carry': 'carry'}
         for action, clip in expected.items():
             self.assertEqual(director.map_action(action), clip, action)
         for action in ('idle', 'listen', 'walk', 'work', 'point', 'wave', 'talk', 'react', 'carry', 'console'):
@@ -81,18 +82,21 @@ class ActionMappingTests(unittest.TestCase):
             for displacement in (0.0, 0.08, 0.2):
                 self.assertIn(director.map_action(action, displacement), director.CLIPS)
 
-    def test_walk_and_carry_are_staged_by_displacement(self):
-        for action in ('walk', 'carry'):
-            self.assertEqual(director.map_action(action, 0.2), 'walk_medium')
-            self.assertEqual(director.map_action(action, -0.15), 'walk_medium')
-            self.assertEqual(director.map_action(action, 0.14), 'step_shift')
-            self.assertEqual(director.map_action(action, -0.05), 'step_shift')
-            self.assertEqual(director.map_action(action, 0.03), 'idle')
-            self.assertEqual(director.map_action(action), 'idle')
+    def test_walk_is_staged_by_displacement_and_carry_is_its_own_clip(self):
+        self.assertEqual(director.map_action('walk', 0.2), 'walk_medium')
+        self.assertEqual(director.map_action('walk', -0.15), 'walk_medium')
+        self.assertEqual(director.map_action('walk', 0.14), 'step_shift')
+        self.assertEqual(director.map_action('walk', -0.05), 'step_shift')
+        self.assertEqual(director.map_action('walk', 0.03), 'idle')
+        self.assertEqual(director.map_action('walk'), 'idle')
+        for displacement in (0.0, 0.08, -0.2):
+            self.assertEqual(director.map_action('carry', displacement), 'carry')
 
     def test_clip_names_pass_through_and_unknown_actions_idle(self):
         self.assertEqual(director.map_action('talk_emphatic'), 'talk_emphatic')
         self.assertEqual(director.map_action(' NOD '), 'nod')
+        for clip in ('sit', 'stand', 'operate', 'carry', 'cross_arms', 'angry', 'sad', 'surprised'):
+            self.assertEqual(director.map_action(clip), clip)
         self.assertEqual(director.map_action('moonwalk'), 'idle')
         self.assertEqual(director.map_action(None), 'idle')
 
@@ -102,7 +106,9 @@ class ActionMappingTests(unittest.TestCase):
         if not files:
             self.skipTest('godot/motions is not present')
         durations = {path.stem: float(json.loads(path.read_text(encoding='utf-8'))['duration']) for path in files}
-        self.assertEqual(durations, director.CLIP_SECONDS)
+        self.assertTrue(set(director.CLIP_SECONDS) <= set(durations))
+        self.assertTrue(set(durations) <= set(director.CLIPS))
+        self.assertEqual({name: durations[name] for name in director.CLIP_SECONDS}, director.CLIP_SECONDS)
 
 
 class DialogueCutTests(StageAssertions):
@@ -433,7 +439,7 @@ class GestureTests(StageAssertions):
 
     def test_shot_action_shapes_the_first_line_only(self):
         self.assertEqual(self.spoken_clips(['好的。', '没问题。'], action='point'), ['point', 'talk_calm'])
-        self.assertEqual(self.spoken_clips(['好的。'], action='work'), ['talk_explain'])
+        self.assertEqual(self.spoken_clips(['好的。'], action='work'), ['operate'])
 
     def test_long_line_opens_with_the_gesture_then_settles(self):
         stage_shot = build([shot(0, 200, [linlan(), chen()])], [line('林岚', 10, 180, '你看这里，曲线已经回到正常范围了。')])['shots'][0]
@@ -453,7 +459,7 @@ class GestureTests(StageAssertions):
         stage_shot = build([shot(0, 200, [linlan(action='wave'), chen(action='work')])])['shots'][0]
         self.assertEqual([beat['clip'] for beat in beats_of(stage_shot, 'linlan')], ['wave'])
         self.assertEqual([(beat['clip'], beat['from'], beat['to']) for beat in beats_of(stage_shot, 'chen')],
-                         [('talk_explain', 0, 200)])
+                         [('operate', 0, 200)])
 
 
 class SpeechTests(StageAssertions):

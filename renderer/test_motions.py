@@ -21,6 +21,14 @@ EXPECTED_NAMES = (
     "react",
     "walk_medium",
     "step_shift",
+    "sit",
+    "stand",
+    "operate",
+    "carry",
+    "cross_arms",
+    "angry",
+    "sad",
+    "surprised",
 )
 REQUIRED_FIELDS = {
     "name",
@@ -83,7 +91,7 @@ class MotionClipTest(unittest.TestCase):
         for name, path in cls.paths.items():
             cls.motions[name] = json.loads(path.read_text(encoding="utf-8"))
 
-    def test_all_eleven_motion_files_exist(self) -> None:
+    def test_all_nineteen_motion_files_exist(self) -> None:
         self.assertEqual(set(self.paths), set(EXPECTED_NAMES))
 
     def test_required_document_and_keyframe_fields(self) -> None:
@@ -113,7 +121,7 @@ class MotionClipTest(unittest.TestCase):
                     self.assertTrue(
                         all(
                             math.isfinite(float(value))
-                            and abs(float(value)) <= 0.05
+                            and abs(float(value)) <= 0.12
                             for value in frame["root_offset"]
                         )
                     )
@@ -168,10 +176,54 @@ class MotionClipTest(unittest.TestCase):
             for name, motion in self.motions.items()
             if not motion["foot_lock"]
         }
-        self.assertEqual(non_looping, {"nod", "react"})
-        self.assertEqual(unlocked, {"walk_medium", "step_shift"})
+        self.assertEqual(non_looping, {"nod", "react", "stand", "surprised"})
+        self.assertEqual(
+            unlocked, {"walk_medium", "step_shift", "sit", "stand"}
+        )
         self.assertEqual(float(self.motions["nod"]["duration"]), 1.0)
         self.assertEqual(float(self.motions["react"]["duration"]), 1.2)
+        self.assertEqual(float(self.motions["stand"]["duration"]), 1.0)
+        self.assertEqual(float(self.motions["surprised"]["duration"]), 1.1)
+
+    def test_second_batch_pose_contracts(self) -> None:
+        sitting = self.motions["sit"]
+        self.assertTrue(sitting["loop"])
+        self.assertFalse(sitting["foot_lock"])
+        self.assertTrue(
+            all(
+                0.09 <= float(frame["root_offset"][1]) <= 0.11
+                for frame in sitting["keyframes"]
+            )
+        )
+
+        stand = self.motions["stand"]
+        self.assertFalse(stand["loop"])
+        self.assertFalse(stand["foot_lock"])
+        self.assertGreaterEqual(float(stand["keyframes"][0]["root_offset"][1]), 0.09)
+        self.assertEqual(float(stand["keyframes"][-1]["root_offset"][1]), 0.0)
+        self.assertEqual(stand["keyframes"][-1]["bones"]["upper_arm_l"], -25.0)
+        self.assertEqual(stand["keyframes"][-1]["bones"]["upper_arm_r"], 25.0)
+
+        surprised = self.motions["surprised"]
+        self.assertFalse(surprised["loop"])
+        self.assertTrue(surprised["foot_lock"])
+        self.assertLess(
+            min(frame["bones"]["torso"] for frame in surprised["keyframes"]),
+            0.0,
+        )
+        self.assertGreater(
+            max(frame["bones"]["upper_arm_l"] for frame in surprised["keyframes"]),
+            0.0,
+        )
+        self.assertLess(
+            min(frame["bones"]["upper_arm_r"] for frame in surprised["keyframes"]),
+            0.0,
+        )
+
+        for name in ("operate", "carry", "cross_arms", "angry", "sad"):
+            motion = self.motions[name]
+            self.assertTrue(motion["loop"], name)
+            self.assertTrue(motion["foot_lock"], name)
 
     def test_screen_space_direction_conventions(self) -> None:
         idle = self.motions["idle"]["keyframes"][0]["bones"]

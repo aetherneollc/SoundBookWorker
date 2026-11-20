@@ -5,6 +5,7 @@ extends Node2D
 
 const VIEW_SIZE := Vector2(1280.0, 720.0)
 const BASE_ACTOR_HEIGHT := 500.0
+const BASE_ROVER_WIDTH := 340.0
 const DEFAULT_VISEME := "X"
 const VALID_VISEMES := ["X", "A", "B", "C", "D", "E", "F"]
 
@@ -28,6 +29,9 @@ var _face_script: Script
 var _motion_library: Variant
 var _puppets: Dictionary = {}
 var _loaded_actor_count := 0
+var _robot_rig: Dictionary = {}
+var _rover_script: Script
+var _rover: Node2D
 
 var _captions_node: Node
 var _custom_captions_active := false
@@ -169,6 +173,9 @@ func _read_configuration() -> bool:
 	var cta_value: Variant = _stage_data.get("cta", {})
 	if cta_value is Dictionary:
 		_cta = cta_value as Dictionary
+	var robot_rig_value: Variant = _stage_data.get("robot_rig", {})
+	if robot_rig_value is Dictionary:
+		_robot_rig = robot_rig_value as Dictionary
 	_base_dir = _stage_json_path.get_base_dir()
 	return true
 
@@ -219,10 +226,13 @@ func _build_runtime() -> bool:
 
 	if not _build_puppets():
 		return false
+	if not _build_rover():
+		return false
 	_load_fallback_font()
 	_build_caption_layers()
 	_build_title_layers()
 	_hide_all_actors()
+	_hide_rover()
 	return true
 
 
@@ -279,6 +289,43 @@ func _build_puppets() -> bool:
 		}
 		_loaded_actor_count += 1
 	return _loaded_actor_count > 0 or first_configs.is_empty()
+
+
+func _build_rover() -> bool:
+	if _robot_rig.is_empty():
+		return true
+	var has_rover := false
+	for shot: Dictionary in _shots:
+		if shot.get("rover") is Dictionary:
+			has_rover = true
+			break
+	if not has_rover:
+		return true
+	var rig_json: String = str(_robot_rig.get("rig_json", "")).strip_edges()
+	if rig_json == "":
+		push_error("StagePlayer: robot_rig.rig_json is required by rover shots")
+		return false
+	_rover_script = load("res://player/rover.gd") as Script
+	if _rover_script == null:
+		push_error("StagePlayer: rover.gd could not be loaded")
+		return false
+	var rover_value: Variant = _rover_script.new()
+	if not rover_value is Node2D:
+		push_error("StagePlayer: rover.gd must instantiate a Node2D")
+		return false
+	_rover = rover_value as Node2D
+	_rover.name = "Rover_AT1"
+	_rover.visible = false
+	add_child(_rover)
+	if not _rover.has_method("setup") or not _rover.has_method("apply_state"):
+		push_error("StagePlayer: Rover2D contract is incomplete")
+		return false
+	var rig_loaded: bool = bool(
+		_rover.call("setup", _resolve_asset_path(rig_json), BASE_ROVER_WIDTH)
+	)
+	if not rig_loaded:
+		push_warning("StagePlayer: Rover2D is using procedural fallback parts")
+	return true
 
 
 func _build_caption_layers() -> void:
@@ -440,6 +487,7 @@ func _apply_title_frame(mode: String, config: Dictionary, local_frame: int) -> v
 	_active_shot_key = ""
 	_stage.visible = false
 	_hide_all_actors()
+	_hide_rover()
 	_clear_actor_shadows()
 	if _camera_director.has_method("reset_wide"):
 		_camera_director.call("reset_wide")
@@ -465,6 +513,7 @@ func _apply_shot_frame(frame_index: int) -> void:
 
 	var actor_records: Array[Dictionary] = _position_active_actors(shot, shot_frame)
 	_apply_actor_states(actor_records, frame_index, shot_frame)
+	_apply_rover_state(shot, shot_frame, frame_index)
 	var cut: Dictionary = _find_cut(shot, shot_frame)
 	_camera_director.call("update_camera", cut, actor_records, shot_frame)
 	var set_value: Variant = shot.get("set", {})
@@ -479,6 +528,7 @@ func _apply_gap_frame() -> void:
 	_active_shot_key = ""
 	_stage.visible = false
 	_hide_all_actors()
+	_hide_rover()
 	_clear_actor_shadows()
 	_hide_title()
 	_hide_captions()
@@ -534,6 +584,41 @@ func _position_active_actors(shot: Dictionary, shot_frame: int) -> Array[Diction
 		})
 	_stage.call("set_actor_shadows", shadows)
 	return records
+
+
+func _apply_rover_state(shot: Dictionary, shot_frame: int, frame_index: int) -> void:
+	if _rover == null:
+		return
+	var rover_value: Variant = shot.get("rover")
+	if not rover_value is Dictionary:
+		_hide_rover()
+		return
+	var rover_cfg: Dictionary = rover_value as Dictionary
+	var active: bool = bool(rover_cfg.get("active", true))
+	var shot_frames: int = maxi(int(shot.get("frames", 1)), 1)
+	var progress: float = clampf(
+		float(shot_frame) / float(maxi(shot_frames - 1, 1)),
+		0.0,
+		1.0
+	)
+	var eased: float = progress * progress * (3.0 - 2.0 * progress)
+	var from_x: float = float(rover_cfg.get("from_x", 0.65))
+	var to_x: float = float(rover_cfg.get("to_x", from_x))
+	var depth: String = str(rover_cfg.get("depth", "mid")).to_lower()
+	var depth_scale: float = _stage_depth_scale(depth)
+	_rover.position.y = float(_stage.call("get_ground_y"))
+	_rover.z_index = _depth_z_index(depth)
+	_rover.call("apply_state", {
+		"active": active,
+		"action": str(rover_cfg.get("action", "idle")),
+		"x": lerpf(from_x, to_x, eased),
+		"facing": str(rover_cfg.get("facing", "right")),
+		"target_pos": Vector2(
+			float(rover_cfg.get("target_x", to_x)),
+			float(rover_cfg.get("target_y", 0.55))
+		),
+		"scale_mult": depth_scale,
+	}, float(frame_index) / float(_fps))
 
 
 func _apply_actor_states(
@@ -831,6 +916,12 @@ func _hide_all_actors() -> void:
 		var puppet := runtime.get("puppet") as Node2D
 		if puppet != null:
 			puppet.visible = false
+
+
+func _hide_rover() -> void:
+	if _rover == null:
+		return
+	_rover.call("apply_state", {"active": false}, float(_frame) / float(maxi(_fps, 1)))
 
 
 func _clear_actor_shadows() -> void:

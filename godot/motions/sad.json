@@ -1,0 +1,109 @@
+{
+  "name": "sad",
+  "loop": true,
+  "duration": 4.0,
+  "fps": 24,
+  "foot_lock": true,
+  "tags": [
+    "sad",
+    "emotion",
+    "standing"
+  ],
+  "keyframes": [
+    {
+      "t": 0.0,
+      "root_offset": [
+        0.0,
+        0.01
+      ],
+      "bones": {
+        "pelvis": 1.4,
+        "torso": 4.0,
+        "neck": 4.0,
+        "head": 6.5,
+        "upper_arm_l": -30.0,
+        "lower_arm_l": -6.0,
+        "hand_l": 2.0,
+        "upper_arm_r": 30.0,
+        "lower_arm_r": 6.0,
+        "hand_r": -2.0
+      }
+    },
+    {
+      "t": 1.0,
+      "root_offset": [
+        0.001,
+        0.006
+      ],
+      "bones": {
+        "pelvis": 1.0,
+        "torso": 3.0,
+        "neck": 3.2,
+        "head": 5.5,
+        "upper_arm_l": -29.0,
+        "lower_arm_l": -7.0,
+        "hand_l": 1.0,
+        "upper_arm_r": 29.0,
+        "lower_arm_r": 7.0,
+        "hand_r": -1.0
+      }
+    },
+    {
+      "t": 2.2,
+      "root_offset": [
+        0.0,
+        0.016
+      ],
+      "bones": {
+        "pelvis": 2.0,
+        "torso": 5.5,
+        "neck": 5.0,
+        "head": 8.0,
+        "upper_arm_l": -32.0,
+        "lower_arm_l": -4.0,
+        "hand_l": 3.0,
+        "upper_arm_r": 32.0,
+        "lower_arm_r": 4.0,
+        "hand_r": -3.0
+      }
+    },
+    {
+      "t": 3.1,
+      "root_offset": [
+        -0.001,
+        0.012
+      ],
+      "bones": {
+        "pelvis": 1.6,
+        "torso": 4.5,
+        "neck": 4.4,
+        "head": 7.0,
+        "upper_arm_l": -31.0,
+        "lower_arm_l": -5.0,
+        "hand_l": 2.0,
+        "upper_arm_r": 31.0,
+        "lower_arm_r": 5.0,
+        "hand_r": -2.0
+      }
+    },
+    {
+      "t": 4.0,
+      "root_offset": [
+        0.0,
+        0.01
+      ],
+      "bones": {
+        "pelvis": 1.4,
+        "torso": 4.0,
+        "neck": 4.0,
+        "head": 6.5,
+        "upper_arm_l": -30.0,
+        "lower_arm_l": -6.0,
+        "hand_l": 2.0,
+        "upper_arm_r": 30.0,
+        "lower_arm_r": 6.0,
+        "hand_r": -2.0
+      }
+    }
+  ]
+}

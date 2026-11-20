@@ -21,6 +21,7 @@ try:
     from director import build_stage, validate_stage
     from render import write_intro_chime
     from rig_mesh import build_mesh_rig
+    from rig_robot import rig_robot_master
     from timeline_common import (
         build_voice_locked_timeline, frame, shot_duration_frames, shot_is_animated,
         speech_items_for_track, track_start_seconds,
@@ -30,6 +31,7 @@ except ImportError:  # ``python -m unittest`` imports this file as part of the p
     from renderer.director import build_stage, validate_stage
     from renderer.render import write_intro_chime
     from renderer.rig_mesh import build_mesh_rig
+    from renderer.rig_robot import rig_robot_master
     from renderer.timeline_common import (
         build_voice_locked_timeline, frame, shot_duration_frames, shot_is_animated,
         speech_items_for_track, track_start_seconds,
@@ -161,6 +163,66 @@ def ensure_mesh_rigs(doc: dict, cache_root: Path) -> dict[str, dict]:
     return rigs
 
 
+def _manifest_file(value: object, manifest_dir: Path) -> Path | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    path = Path(value)
+    candidates = [path] if path.is_absolute() else [manifest_dir / path, path]
+    return next((candidate for candidate in candidates if candidate.is_file()), None)
+
+
+def ensure_robot_rig(doc: dict, cache_root: Path, manifest_dir: Path) -> Path | None:
+    """Build or reuse the manifest's AT-1 rig and publish its absolute rig path."""
+    raw_cfg = doc.get('robot_rig')
+    cfg = dict(raw_cfg) if isinstance(raw_cfg, dict) else {}
+    existing_values = [
+        cfg.get('rig_json'),
+        doc.get('robot_rig_json'),
+        cfg.get('rig_file') if str(cfg.get('rig_file') or '').lower().endswith('.json') else None,
+        cfg.get('file') if str(cfg.get('file') or '').lower().endswith('.json') else None,
+        raw_cfg if isinstance(raw_cfg, str) and raw_cfg.lower().endswith('.json') else None,
+        doc.get('robot_rig_file') if str(doc.get('robot_rig_file') or '').lower().endswith('.json') else None,
+    ]
+    rig_json = next(
+        (path for value in existing_values if (path := _manifest_file(value, manifest_dir)) is not None),
+        None,
+    )
+
+    requested = bool(raw_cfg or doc.get('robot_rig_file') or doc.get('robot_rig_json'))
+    if rig_json is None:
+        source_value = (
+            cfg.get('master_file')
+            or cfg.get('file')
+            or cfg.get('rig_file')
+            or (raw_cfg if isinstance(raw_cfg, str) else None)
+            or doc.get('robot_rig_file')
+        )
+        source = _manifest_file(source_value, manifest_dir)
+        if source is not None and source.suffix.lower() != '.json':
+            arm = _manifest_file(cfg.get('arm_file') or doc.get('robot_arm_file'), manifest_dir)
+            hints = cfg.get('wheel_hints')
+            wheel_hints = hints if isinstance(hints, list) else None
+            facing = str(cfg.get('native_facing') or '').lower()
+            rig_json = rig_robot_master(
+                source,
+                arm,
+                cache_root,
+                wheel_hints,
+                facing if facing in ('left', 'right') else None,
+            )
+        elif requested:
+            label = source_value or cfg.get('rig_json') or doc.get('robot_rig_json') or 'robot_rig'
+            print(f'prepare_stage: no readable robot master or rig for {label}', flush=True)
+
+    if rig_json is None:
+        return None
+    resolved = rig_json.resolve()
+    cfg['rig_json'] = resolved.as_posix()
+    doc['robot_rig'] = cfg
+    doc['robot_rig_json'] = resolved.as_posix()
+    return resolved
+
+
 def _absolutize(value: object) -> object:
     if not isinstance(value, str) or not value or value.startswith('res://'):
         return value
@@ -252,6 +314,7 @@ def prepare(manifest_path: Path, output_path: Path, rig_cache: Path | None = Non
         os.environ.get('SOUNDBOOK_RIG_CACHE', 'media/rigs')
     )
     rigs_map = ensure_mesh_rigs(doc, cache_root)
+    robot_rig = ensure_robot_rig(doc, cache_root, Path(manifest_path).resolve().parent)
 
     shots = [dict(shot) for shot in doc['shots'] if isinstance(shot, dict)]
     raw_tracks = doc.get('audio_tracks') if isinstance(doc.get('audio_tracks'), list) else []
@@ -325,7 +388,8 @@ def prepare(manifest_path: Path, output_path: Path, rig_cache: Path | None = Non
     output_path.write_text(json.dumps(stage, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
     print(
         f"Prepared stage: {len(stage['shots'])} shots, {len(stage['audio'])} audio tracks, "
-        f"{len(stage['captions'])} captions, {len(stage['rigs'])} rigs, {stage['total_frames']} frames",
+        f"{len(stage['captions'])} captions, {len(stage['rigs'])} rigs, "
+        f"rover={'yes' if robot_rig else 'no'}, {stage['total_frames']} frames",
         flush=True,
     )
     return stage

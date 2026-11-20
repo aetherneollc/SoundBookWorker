@@ -25,7 +25,10 @@ CLIP_SECONDS: dict[str, float] = {
     'idle': 3.2, 'talk_calm': 2.4, 'talk_emphatic': 2.4, 'talk_explain': 2.8, 'listen': 3.0,
     'nod': 1.0, 'point': 2.4, 'wave': 1.6, 'react': 1.2, 'walk_medium': 1.2, 'step_shift': 2.0,
 }
-CLIPS = tuple(CLIP_SECONDS)
+# M2 clips are validated by renderer/test_motions.py.  The director only needs
+# durations for clips it schedules for a fixed number of cycles.
+M2_CLIPS = ('sit', 'stand', 'operate', 'carry', 'cross_arms', 'angry', 'sad', 'surprised')
+CLIPS = (*CLIP_SECONDS, *M2_CLIPS)
 FRAMINGS = ('wide', 'two_shot', 'medium', 'close')
 CAMERA_MOVES = ('push_in', 'slow_pan_left', 'slow_pan_right', 'static')
 VISEMES = ('X', 'A', 'B', 'C', 'D', 'E', 'F')
@@ -33,15 +36,22 @@ EMOTIONS = ('neutral', 'happy', 'serious', 'angry', 'sad', 'surprised')
 DEPTHS = ('near', 'mid', 'far')
 FACINGS = ('left', 'right')
 PROP_KINDS = ('console_desk', 'telemetry_screen', 'workbench')
+ROVER_ACTIONS = (
+    'idle', 'drive', 'patrol', 'scan', 'inspect', 'work', 'assemble',
+    'pick', 'carry', 'wave', 'alert', 'tilt', 'recover',
+)
+ROVER_ACTION_ALIASES = {
+    'sample': 'inspect', 'reach': 'inspect', 'signal': 'scan',
+    'fall': 'tilt', 'stand': 'recover',
+}
 
 # CARTOON_ACTIONS (SoundBookCF/src/cartoon_stage.ts) -> clip. ``walk`` and ``carry`` are
 # resolved by displacement in map_action(); the values here apply to the largest moves.
 LEGACY_ACTION_CLIPS: dict[str, str] = {
     'idle': 'idle', 'listen': 'listen', 'talk': 'talk_calm', 'react': 'react',
     'point': 'point', 'wave': 'wave',
-    'work': 'talk_explain',  # Busy hands. The M2 `operate` clip replaces this.
-    'console': 'point',      # Reaching for the desk or screen.
-    'walk': 'walk_medium', 'carry': 'walk_medium',
+    'work': 'operate', 'console': 'operate', 'carry': 'carry',
+    'walk': 'walk_medium',
 }
 
 # The rig is front-facing only, so a long walk is shot waist-up with a scrolling background.
@@ -131,12 +141,12 @@ def map_action(action: Any, displacement: float = 0.0) -> str:
     a waist-up ``walk_medium``, an in-place ``step_shift``, or no movement at all.
     """
     name = str(action or '').strip().lower()
-    if name in ('walk', 'carry', 'walk_medium', 'step_shift'):
+    if name in ('walk', 'walk_medium', 'step_shift'):
         span = abs(round(_float(displacement), 4))
         if span > WALK_MEDIUM_MIN_SPAN:
             return 'walk_medium'
         return 'step_shift' if span > STEP_SHIFT_MIN_SPAN else 'idle'
-    if name in CLIP_SECONDS:
+    if name in CLIPS:
         return name
     return LEGACY_ACTION_CLIPS.get(name, 'idle')
 
@@ -424,6 +434,42 @@ def _stage_set(shot: dict, motion: dict) -> dict:
     }
 
 
+def _normalize_rover(shot: dict, motion: dict) -> dict:
+    """Normalize the manifest's rover shorthand into the stage v1 record."""
+    motion_rover = motion.get('rover') if isinstance(motion.get('rover'), dict) else {}
+    shot_rover = shot.get('rover') if isinstance(shot.get('rover'), dict) else {}
+    if not shot_rover and not motion_rover and not _text(shot.get('rover_action')) and not _text(motion.get('rover_action')):
+        return {}
+    raw = {**motion_rover, **shot_rover}
+    action = (
+        _text(shot_rover.get('action'))
+        or _text(shot.get('rover_action'))
+        or _text(motion_rover.get('action'))
+        or _text(motion.get('rover_action'))
+        or 'idle'
+    ).lower()
+    action = ROVER_ACTION_ALIASES.get(action, action)
+    if action not in ROVER_ACTIONS:
+        action = 'idle'
+    from_x = round(_clamp(_float(raw.get('from_x'), _float(raw.get('x'), 0.65)), 0.0, 1.0), 4)
+    to_x = round(_clamp(_float(raw.get('to_x'), from_x), 0.0, 1.0), 4)
+    facing = _text(raw.get('facing')).lower()
+    if facing not in FACINGS:
+        facing = 'left' if to_x < from_x else 'right'
+    depth = _text(raw.get('depth')).lower()
+    target_x_default = to_x + (0.14 if facing == 'right' else -0.14)
+    return {
+        'action': action,
+        'from_x': from_x,
+        'to_x': to_x,
+        'facing': facing,
+        'depth': depth if depth in DEPTHS else 'mid',
+        'target_x': round(_clamp(_float(raw.get('target_x'), target_x_default), 0.0, 1.0), 4),
+        'target_y': round(_clamp(_float(raw.get('target_y'), 0.55), 0.0, 1.0), 4),
+        'active': bool(raw.get('active', True)),
+    }
+
+
 def _shot_cast(motion: dict, cast: _Cast) -> list[dict]:
     """Read ``story_motion.actors`` into blocking records, dropping characters without a rig."""
     actors: list[dict] = []
@@ -439,7 +485,7 @@ def _shot_cast(motion: dict, cast: _Cast) -> list[dict]:
         from_x = round(_clamp(_float(raw.get('from_x'), _float(raw.get('x'), 0.5)), 0.0, 1.0), 4)
         to_x = round(_clamp(_float(raw.get('to_x'), from_x), 0.0, 1.0), 4)
         action = _text(raw.get('action')).lower() or 'idle'
-        move_clip = map_action(action, to_x - from_x) if action in ('walk', 'carry', 'walk_medium', 'step_shift') else ''
+        move_clip = map_action(action, to_x - from_x) if action in ('walk', 'walk_medium', 'step_shift') else ''
         if move_clip not in ('walk_medium', 'step_shift'):
             move_clip, to_x = '', from_x
         depth, facing = _text(raw.get('depth')).lower(), _text(raw.get('facing')).lower()
@@ -521,6 +567,7 @@ def _build_segments(timeline_shots: Any, first_frame: int, cast: _Cast, director
             'scene_number': scene,
             'framing': framing if framing in ('wide', 'medium', 'close') else ('wide' if len(actors) >= 2 else 'medium'),
             'camera_hint': _camera_hint(motion.get('camera') or shot.get('camera')),
+            'rover': _normalize_rover(shot, motion),
         }
         scene_first, previous_scene = scene != previous_scene, scene
         walker = max((actor for actor in actors if actor['move_clip'] == 'walk_medium'),
@@ -725,11 +772,13 @@ def _pick_gesture(line: dict, action: str, director: _Director) -> str:
         clip = 'wave'
     elif action == 'react' or (emotion == 'surprised' and frames <= director.frames(2.0)):
         clip = 'react'
+    elif action in ('work', 'console', 'operate'):
+        clip = 'operate'
     elif action in ('point', 'console') or _POINT_RE.search(text):
         clip = 'point'
     elif strong or line['exclaim']:
         clip = 'talk_emphatic'
-    elif action == 'work' or line['question'] or frames >= director.frames(3.5) or _EXPLAIN_RE.search(text):
+    elif line['question'] or frames >= director.frames(3.5) or _EXPLAIN_RE.search(text):
         clip = 'talk_explain'
     else:
         clip = 'talk_calm'
@@ -874,7 +923,7 @@ def _plan_beats(segment: dict, lines: list[dict], reactions: list[tuple], direct
                 continue
             if clip in _GESTURE_FOLLOW:
                 layers[actor['id']]['action'].append((lead, min(frames, lead + director.clip_frames(clip)), {'clip': clip}))
-            elif actor['action'] == 'work':
+            elif clip in M2_CLIPS:
                 layers[actor['id']]['action'].append((0, frames, {'clip': clip}))
 
     beats = [beat for actor in actors for beat in _actor_beats(actor, layers[actor['id']], frames)]
@@ -965,7 +1014,7 @@ def build_stage(
     for segment in segments:
         stage_lines = _stage_lines(segment, lines)
         cuts, reactions = _plan_cuts(segment, stage_lines, director)
-        shots.append({
+        stage_shot = {
             'id': segment['id'],
             'scene_number': segment['scene_number'],
             'from': segment['from'],
@@ -976,7 +1025,10 @@ def build_stage(
                         'emotion': actor['emotion']} for actor in segment['actors']],
             'beats': _plan_beats(segment, stage_lines, reactions, director),
             'cuts': cuts,
-        })
+        }
+        if segment['rover']:
+            stage_shot['rover'] = segment['rover']
+        shots.append(stage_shot)
 
     content_end = max([intro['frames']] + [shot['from'] + shot['frames'] for shot in shots])
     cta_info = cta_info if isinstance(cta_info, dict) else {}
@@ -987,7 +1039,25 @@ def build_stage(
         'title': str(cta_info.get('title') or cta_info.get('name') or ''),
         'subtitle': str(cta_info.get('subtitle') or ''),
     }
-    return {
+    robot_rig_path = ''
+    robot_rig_value = manifest.get('robot_rig')
+    if isinstance(robot_rig_value, dict):
+        robot_rig_path = _text(robot_rig_value.get('rig_json'))
+    robot_rig_path = robot_rig_path or _text(manifest.get('robot_rig_json'))
+    if not robot_rig_path:
+        for timeline_shot in timeline_shots:
+            if not isinstance(timeline_shot, dict):
+                continue
+            motion = timeline_shot.get('story_motion') if isinstance(timeline_shot.get('story_motion'), dict) else {}
+            rover = timeline_shot.get('rover') if isinstance(timeline_shot.get('rover'), dict) else {}
+            robot_rig_path = (
+                _text(timeline_shot.get('robot_rig_json'))
+                or _text(rover.get('rig_json'))
+                or _text(motion.get('robot_rig_json'))
+            )
+            if robot_rig_path:
+                break
+    stage = {
         'version': STAGE_VERSION,
         'width': _int(manifest.get('width'), STAGE_SIZE[0]),
         'height': _int(manifest.get('height'), STAGE_SIZE[1]),
@@ -1003,6 +1073,9 @@ def build_stage(
         'captions': clean_captions,
         'audio': _clean_audio(audio_tracks, fps),
     }
+    if robot_rig_path:
+        stage['robot_rig'] = {'rig_json': robot_rig_path.replace('\\', '/')}
+    return stage
 
 
 def validate_stage(stage: dict) -> list[str]:
@@ -1018,6 +1091,13 @@ def validate_stage(stage: dict) -> list[str]:
         return problems
     min_cut = max(1, round(MIN_CUT_FRAMES_AT_24 * fps / 24))
     rigs = stage.get('rigs') or {}
+    robot_rig = stage.get('robot_rig')
+    robot_rig_valid = (
+        isinstance(robot_rig, dict)
+        and bool(_text(robot_rig.get('rig_json')))
+    )
+    if robot_rig is not None and not robot_rig_valid:
+        problems.append('robot_rig must contain a non-empty rig_json')
     cursor = 0
     for shot in stage.get('shots') or []:
         label = f"shot {shot.get('id')}"
@@ -1026,6 +1106,22 @@ def validate_stage(stage: dict) -> list[str]:
             problems.append(f'{label}: overlaps the previous shot or leaves the timeline')
         cursor = start + frames
         actor_ids = [actor.get('id') for actor in shot.get('actors') or []]
+        rover = shot.get('rover')
+        if rover is not None:
+            if not isinstance(rover, dict):
+                problems.append(f'{label}: rover must be an object')
+            else:
+                if not robot_rig_valid:
+                    problems.append(f'{label}: rover requires top-level robot_rig')
+                if rover.get('action') not in ROVER_ACTIONS:
+                    problems.append(f"{label}: unknown rover action {rover.get('action')}")
+                if rover.get('facing') not in FACINGS or rover.get('depth') not in DEPTHS:
+                    problems.append(f'{label}: rover has a bad facing or depth')
+                for key in ('from_x', 'to_x', 'target_x', 'target_y'):
+                    if not 0.0 <= _float(rover.get(key), -1.0) <= 1.0:
+                        problems.append(f'{label}: rover {key} must be between 0 and 1')
+                if not isinstance(rover.get('active'), bool):
+                    problems.append(f'{label}: rover active must be boolean')
         for actor in shot.get('actors') or []:
             if actor.get('id') not in rigs:
                 problems.append(f"{label}: actor {actor.get('id')} has no rig")

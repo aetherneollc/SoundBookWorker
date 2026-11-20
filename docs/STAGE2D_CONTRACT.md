@@ -6,6 +6,7 @@
 | --- | --- | --- | --- |
 | `stage.json` | `renderer/director.py` 的 `build_stage()` | `godot/player/main.gd` | 一集的逐帧舞台调度 |
 | `rig.json` | `renderer/rig_mesh.py` | `godot/player/puppet.gd`、`face.gd` | 一个角色的蒙皮网格和脸部锚点 |
+| `robot_rig.json` | `renderer/rig_robot.py` | `godot/player/rover.gd` | 阿拓的车身、车轮、传感器桅杆和机械臂部件 |
 | `godot/motions/*.json` | 手写，`renderer/test_motions.py` 校验 | `godot/player/motion.gd` | 所有角色共用的动作片段 |
 
 通用约定：
@@ -24,6 +25,7 @@
   "intro": { "frames": 68, "episode_number": 1, "title": "...", "subtitle": "..." },
   "cta": { "from": 660, "frames": 60, "title": "...", "subtitle": "..." },
   "rigs": { "linlan": { "rig_json": "media/rigs/linlan/rig.json", "stature_scale": 0.93 } },
+  "robot_rig": { "rig_json": "media/rigs/robot-abcd/rig.json" },
   "shots": [{
     "id": "s1_sh1", "scene_number": 1, "from": 68, "frames": 180,
     "set": {
@@ -41,7 +43,9 @@
     ],
     "cuts": [
       { "from": 0, "to": 48, "framing": "wide", "focus_actor": "", "camera_move": "push_in" }
-    ]
+    ],
+    "rover": { "action": "inspect", "from_x": 0.65, "to_x": 0.55, "facing": "left",
+      "depth": "mid", "target_x": 0.45, "target_y": 0.55, "active": true }
   }],
   "speech": [{ "actor": "linlan", "from": 74, "to": 146, "cues": [[0, "X"], [3, "D"], [7, "B"]] }],
   "captions": [{ "from": 74, "to": 146, "text": "林岚：先看月面传回的数据。" }],
@@ -60,6 +64,7 @@
 | `intro` | 片头卡，占用 `[0, frames)`。`frames` 为 0 表示没有片头；这个对象始终存在。 |
 | `cta` | 片尾卡，占用 `[from, from + frames)`。`frames` 为 0 表示没有片尾；这个对象始终存在。 |
 | `rigs` | 角色 id → `{rig_json, stature_scale}`。`stature_scale` 是身高倍数（1.0 为标准）。 |
+| `robot_rig` | 可选 `{rig_json}`。有阿拓镜头时必须存在；路径指向 `rig_robot.py` 生成的 JSON。 |
 | `shots` | 舞台镜头，按时间排列，互不重叠。没有镜头覆盖的帧，播放器出空画面。 |
 | `speech` | 口型轨，每句台词一条。 |
 | `captions` | 字幕，原样来自上游。 |
@@ -76,6 +81,7 @@
 | `actors` | 本镜在场的角色和初始状态。每个 `id` 都在 `rigs` 里。 |
 | `beats` | 表演段。 |
 | `cuts` | 镜内切镜。 |
+| `rover` | 可选阿拓状态。没有此字段时播放器隐藏阿拓，不影响纯人物镜头。 |
 
 **`set`**
 
@@ -122,9 +128,13 @@
 
 **`speech[]`**：`actor` 是角色 id，`from`/`to` 是绝对帧。`cues` 是 `[相对帧, 口型]`，相对帧从 0 起严格递增且小于 `to - from`，一个口型保持到下一条为止。口型取 `X`（闭嘴）和 `A`–`F`。
 
+**`rover`**：`action` 取 `idle`、`drive`、`patrol`、`scan`、`inspect`、`work`、`assemble`、`pick`、`carry`、`wave`、`alert`、`tilt`、`recover`。`from_x`、`to_x`、`target_x`、`target_y` 都是 0–1 的画面比例；播放器用 smoothstep 在整镜内从 `from_x` 行驶到 `to_x`。`facing` 取 `left`/`right`，`depth` 取 `near`/`mid`/`far`，`active=false` 时隐藏并重置滚轮位移基准。`sample`/`reach`、`signal`、`fall`、`stand` 输入分别规范化为 `inspect`、`scan`、`tilt`、`recover`。
+
+`Rover2D` 的本地原点是轮胎接地线的中心。它按每帧实际舞台水平位移逐轮累计 `dTheta = dX / R`，不是按动作时间假转；镜头隐藏后的重新出现不会把跳位误算成滚动。作业动作使用两段解析 IK 指向 `target_x,target_y`，扫描和告警动作点亮顶部传感器，倾覆与恢复动作驱动车身弹性倾转。
+
 ### 1.1 动作词表
 
-`idle`、`talk_calm`、`talk_emphatic`、`talk_explain`、`listen`、`nod`、`point`、`wave`、`react`、`walk_medium`、`step_shift`，与 `godot/motions/` 下的 11 个文件一一对应。
+首批片段为 `idle`、`talk_calm`、`talk_emphatic`、`talk_explain`、`listen`、`nod`、`point`、`wave`、`react`、`walk_medium`、`step_shift`。M2 第二批加入 `sit`、`stand`、`operate`、`carry`、`cross_arms`、`angry`、`sad`、`surprised`。
 
 manifest 里旧的 `CARTOON_ACTIONS` 按下表映射（`director.map_action`）：
 
@@ -134,9 +144,9 @@ manifest 里旧的 `CARTOON_ACTIONS` 按下表映射（`director.map_action`）�
 | `listen` | `listen`（同时作为 `base_clip`） |
 | `talk` | `talk_calm`（实际手势按台词再选） |
 | `point`、`wave`、`react` | 同名片段 |
-| `work` | `talk_explain`，表示手上在忙。M2 的 `operate` 片段做好后替换。 |
-| `console` | `point`，表示伸手去够控制台或屏幕。 |
-| `walk`、`carry` | 按位移：超过 0.14 用 `walk_medium`，0.03 到 0.14 用 `step_shift`，不超过 0.03 不动。 |
+| `work`、`console` | `operate`。 |
+| `carry` | `carry`。 |
+| `walk` | 按位移：超过 0.14 用 `walk_medium`，0.03 到 0.14 用 `step_shift`，不超过 0.03 不动。 |
 | 其他 | 已经是片段名就原样使用，否则 `idle`。 |
 
 ### 1.2 build_stage 的输入
@@ -150,7 +160,7 @@ build_stage(manifest, timeline_shots, speech_tracks, captions, rigs_map, audio_t
 
 | 参数 | 形状 |
 | --- | --- |
-| `manifest` | Worker 的 v1 manifest，读 `width`、`height`、`fps`、`episode_number`、`episode_title`。 |
+| `manifest` | Worker 的 v1 manifest，读 `width`、`height`、`fps`、`episode_number`、`episode_title`，以及可选 `robot_rig.rig_json`/`robot_rig_json`。 |
 | `timeline_shots` | 按播放顺序的 manifest 镜头。每个带绝对起始帧 `from`（缺省时从片头之后顺排）、帧数 `frames`（或 `duration`，单位也是帧）、`scene_number`、`story_motion`，可选 `plate` 和 `plate_metrics`。`plate` 可以是拷贝后的 `{src, far, near}`，也可以是 manifest 原始的 `{plate_file, far_file, near_file}`，放在镜头上或 `story_motion` 里都行。 |
 | `speech_tracks` | 每句台词一项：`{speaker, from, to, cues}`，可带 `text`、`emotion`。`cues` 可以是 `voice_cues.speech_cues` 的原始输出（`{start, end, value}`，秒，相对台词开头）、绝对帧的 `{from, value}`，或已经规范好的 `[相对帧, 口型]`。也接受 `prepare_remotion` 那种每个口型一项的平铺列表（`{speaker, from, to, value}`），同一说话人相邻的口型会并成一句。 |
 | `captions` | `{from, to, text}`，绝对帧。 |
@@ -158,7 +168,7 @@ build_stage(manifest, timeline_shots, speech_tracks, captions, rigs_map, audio_t
 | `audio_tracks` | `{file, start_ms, volume, loop}`；也接受 `src` 和以帧计的 `from`。 |
 | `intro_info`、`cta_info` | `{frames, title, subtitle}`；片头可带 `episode_number`，片尾可带 `from`（缺省接在最后一个镜头后面）。 |
 
-`story_motion` 里读这些字段：`actors[]` 的 `name`、`character_id`、`action`、`from_x`、`to_x`、`facing`、`depth`、`stature_scale`，以及 `framing`、`camera`、`set_prop`、`plate`。
+`story_motion` 里读这些字段：`actors[]` 的 `name`、`character_id`、`action`、`from_x`、`to_x`、`facing`、`depth`、`stature_scale`，以及 `framing`、`camera`、`set_prop`、`plate`、`rover_action`、`rover`。镜头顶层的 `rover_action`、`rover` 优先。
 
 角色 id 的取法：`rigs_map` 条目的 `id`，其次 `rigs_map` 的键，其次 `character_id`，其次角色名；都不是 ASCII 时用 `actor_N`。同一个角色全片 id 不变。
 
@@ -169,6 +179,7 @@ build_stage(manifest, timeline_shots, speech_tracks, captions, rigs_map, audio_t
 - `rigs_map` 里找不到的角色不上台，并打一条警告。这样 `actors[]` 里的每个 id 都有 rig。
 - 旁白、阿拓，或者不在这个镜头里的角色说话时：字幕和音轨照常保留，在场角色保持 `base_clip`，不产生说话表演段。说话人全片都没上过台时，也不产生 `speech` 条目。
 - 镜头没有 `story_motion` 或没有角色时：`actors`、`beats` 为空，只有一刀 `wide`。
+- 镜头有 `rover` 但没有顶层 `robot_rig` 时契约校验失败；顶层有 rig 但镜头没有 `rover` 时不会实例化或显示阿拓。
 
 ### 1.4 导演规则
 
@@ -208,6 +219,18 @@ build_stage(manifest, timeline_shots, speech_tracks, captions, rigs_map, audio_t
 不说话的角色如果镜头动作是 `point`、`wave`、`react`、`console`，开场播一次对应片段；`work` 则整个镜头播 `talk_explain`。有人说话时，这些动作让位给 `listen`。
 
 `director.validate_stage(stage)` 按本节检查一份 `stage.json`，返回问题列表，空列表表示可以播放。
+
+### 1.5 robot_rig.json
+
+`prepare_stage.py` 接受 manifest 顶层的 `robot_rig`（`master_file`/`file`/`rig_file`，可带 `arm_file`、`wheel_hints`、`native_facing`）或 `robot_rig_file`。已有可读的 `rig_json` 时直接复用；否则调用 `rig_robot.rig_robot_master()`，在与人物 rig 相同的缓存根目录下按内容哈希生成一次并把绝对 `rig_json` 交给导演。
+
+播放器读取 `width`、`height`、`anchor_x`、`foot_y`、`native_facing`、`body_file`（也兼容 `body`），以及：
+
+- `wheels[]`：每项 `{file,cx,cy,r}`，可带 `tire_file`、`rx`、`ry`、`tilt_deg`。坐标和半径是源画布比例。缺图或不足四轮时使用扁平赛璐璐程序轮和轮腿补足。
+- `body_pivot`、`signal_point`：源画布比例坐标。
+- `mast`、`arm`：可选 `{file,pivot}`。机械臂图缺失时仍使用两段程序骨架和夹爪。
+
+所有 PNG 都由运行时 `Image.load_from_file` 读取，不依赖 Godot 导入缓存；部件路径既可绝对、相对 `robot_rig.json`，也可相对仓库根目录。
 
 ## 2. rig.json
 
