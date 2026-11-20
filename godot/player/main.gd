@@ -5,7 +5,11 @@ extends Node2D
 
 const VIEW_SIZE := Vector2(1280.0, 720.0)
 const BASE_ACTOR_HEIGHT := 500.0
-const BASE_ROVER_WIDTH := 340.0
+# AT-1 stands a little over half as tall as a person (about 0.95 m), wheels to sensor head.
+const BASE_ROVER_HEIGHT := BASE_ACTOR_HEIGHT * 0.53
+# Clips drawn aiming at one side of the screen (-1 = left). They are posed
+# mirrored when the actor addresses the other side.
+const AIMED_CLIPS := {"point": -1.0, "talk_explain": -1.0}
 const DEFAULT_VISEME := "X"
 const VALID_VISEMES := ["X", "A", "B", "C", "D", "E", "F"]
 
@@ -321,7 +325,7 @@ func _build_rover() -> bool:
 		push_error("StagePlayer: Rover2D contract is incomplete")
 		return false
 	var rig_loaded: bool = bool(
-		_rover.call("setup", _resolve_asset_path(rig_json), BASE_ROVER_WIDTH)
+		_rover.call("setup", _resolve_asset_path(rig_json), BASE_ROVER_HEIGHT)
 	)
 	if not rig_loaded:
 		push_warning("StagePlayer: Rover2D is using procedural fallback parts")
@@ -512,7 +516,7 @@ func _apply_shot_frame(frame_index: int) -> void:
 		_active_shot_key = shot_key
 
 	var actor_records: Array[Dictionary] = _position_active_actors(shot, shot_frame)
-	_apply_actor_states(actor_records, frame_index, shot_frame)
+	_apply_actor_states(actor_records, frame_index, shot_frame, shot)
 	_apply_rover_state(shot, shot_frame, frame_index)
 	var cut: Dictionary = _find_cut(shot, shot_frame)
 	_camera_director.call("update_camera", cut, actor_records, shot_frame)
@@ -607,7 +611,8 @@ func _apply_rover_state(shot: Dictionary, shot_frame: int, frame_index: int) -> 
 	var depth: String = str(rover_cfg.get("depth", "mid")).to_lower()
 	var depth_scale: float = _stage_depth_scale(depth)
 	_rover.position.y = float(_stage.call("get_ground_y"))
-	_rover.z_index = _depth_z_index(depth)
+	# One step behind an actor at the same depth: a hand on the hull stays visible.
+	_rover.z_index = _depth_z_index(depth) - 1
 	_rover.call("apply_state", {
 		"active": active,
 		"action": str(rover_cfg.get("action", "idle")),
@@ -624,7 +629,8 @@ func _apply_rover_state(shot: Dictionary, shot_frame: int, frame_index: int) -> 
 func _apply_actor_states(
 	actor_records: Array[Dictionary],
 	frame_index: int,
-	shot_frame: int
+	shot_frame: int,
+	shot: Dictionary
 ) -> void:
 	for record: Dictionary in actor_records:
 		var actor_id: String = str(record.get("id", ""))
@@ -650,8 +656,11 @@ func _apply_actor_states(
 		var setup_scale: float = maxf(float(runtime.get("setup_scale", 1.0)), 0.001)
 		var current_scale: float = float(record.get("depth_scale", 1.0)) * stature
 		var clip_origin: int = int(beat.get("from", 0)) if not beat.is_empty() else 0
+		var aim: float = float(AIMED_CLIPS.get(desired_clip, 0.0))
+		var aim_dir: float = _aim_direction(puppet, look_dir, shot) if aim != 0.0 else 0.0
 		var state := {
 			"clip": desired_clip,
+			"mirror_pose": aim_dir != 0.0 and signf(aim_dir) != signf(aim),
 			"prev_clip": str(transition.get("prev_clip", desired_clip)),
 			"blend": float(transition.get("blend", 1.0)),
 			"clip_time": float(maxi(shot_frame - clip_origin, 0)) / float(_fps),
@@ -683,6 +692,20 @@ func _clip_transition(runtime: Dictionary, desired_clip: String, frame_index: in
 		"prev_clip": str(runtime.get("previous_clip", desired_clip)),
 		"blend": clampf(float(frame_index - changed_at) / float(blend_frames), 0.0, 1.0),
 	}
+
+
+## Screen side an aimed gesture should address: the rover when it is on stage,
+## otherwise whoever the actor is looking at.
+func _aim_direction(puppet: Node2D, look_dir: float, shot: Dictionary) -> float:
+	var rover_value: Variant = shot.get("rover")
+	if _rover != null and puppet != null and rover_value is Dictionary:
+		var rover_cfg: Dictionary = rover_value as Dictionary
+		if bool(rover_cfg.get("active", true)):
+			var mark: float = float(rover_cfg.get("to_x", rover_cfg.get("from_x", 0.65)))
+			var offset: float = _horizontal_to_pixels(mark) - puppet.position.x
+			if absf(offset) > 1.0:
+				return signf(offset)
+	return look_dir
 
 
 func _look_direction(record: Dictionary, actor_records: Array[Dictionary]) -> float:

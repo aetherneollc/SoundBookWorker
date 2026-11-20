@@ -144,6 +144,7 @@ var _has_last := false
 var _last_time := 0.0
 var _cur_clip := ""
 var _cur_clip_time := 0.0
+var _cur_mirrored := false
 var _last_base_pose: Dictionary = {}
 var _from_pose: Dictionary = {}
 var _xfade_active := false
@@ -225,7 +226,8 @@ func get_texture() -> ImageTexture:
 
 ## Poses the puppet for one frame. Recognised keys: clip, prev_clip, blend,
 ## clip_time, prev_clip_time, speaking, viseme, emotion, look_dir, lean,
-## facing, mirror, scale_mult, actor_seed.
+## facing, mirror, mirror_pose, scale_mult, actor_seed. mirror_pose reflects
+## the clip's pose (left and right limbs trade roles) without flipping the art.
 func apply_state(state: Dictionary, time_sec: float) -> void:
 	if not _ready_ok:
 		return
@@ -328,7 +330,10 @@ func _resolve_base_pose(
 	step: float,
 	continuous: bool
 ) -> Dictionary:
+	var mirrored: bool = _num(state.get("mirror_pose", false), 0.0) > 0.5
 	var current: Dictionary = _motion.sample(clip_name, clip_time)
+	if mirrored:
+		current = _motion.mirror_pose(current)
 	if not continuous:
 		# No pose history after a gap: the caller's prev_clip/blend is all
 		# there is to blend from.
@@ -339,13 +344,14 @@ func _resolve_base_pose(
 		# Cross-fade from the pose actually shown last frame, which stays
 		# continuous even when a change lands in the middle of another blend.
 		var restarted: bool = absf(clip_time - (_cur_clip_time + step)) > CLIP_JUMP_SEC
-		if clip_name != _cur_clip or restarted:
+		if clip_name != _cur_clip or restarted or mirrored != _cur_mirrored:
 			_from_pose = _last_base_pose
 			_xfade_active = true
 			_xfade_start = time_sec - step
 			_caller_blend = false
 	_cur_clip = clip_name
 	_cur_clip_time = clip_time
+	_cur_mirrored = mirrored
 
 	var base_pose: Dictionary = current
 	if _xfade_active:

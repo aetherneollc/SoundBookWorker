@@ -4,6 +4,7 @@
   "duration": 3.2,
   "fps": 24,
   "foot_lock": false,
+  "arm_guard": false,
   "tags": [
     "sit",
     "seated",

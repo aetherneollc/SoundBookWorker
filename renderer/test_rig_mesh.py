@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -574,6 +576,33 @@ class MeshRigTest(unittest.TestCase):
         self.assertGreater(float(self.rig["body_height"]), 0)
         self.assertGreater(float(self.rig["center_x"]), 0)
         self.assertIn("face_anchors", self.rig)
+
+    def test_face_detector_resolves_when_the_renderer_runs_as_a_script(self) -> None:
+        # The workflow runs ``python renderer/prepare_stage.py``: renderer/ is
+        # sys.path[0] and the ``renderer`` package name does not exist. The rig
+        # builder must still find the face detector, or no puppet can lip-sync.
+        renderer_dir = Path(__file__).resolve().parent
+        probe = (
+            "import importlib.util, rig_mesh\n"
+            "assert importlib.util.find_spec('renderer') is None\n"
+            "module = rig_mesh._face_anchor_module()\n"
+            "print('DETECTOR', module.__name__ if module else 'MISSING')\n"
+        )
+        environment = {
+            key: value for key, value in os.environ.items() if key != "PYTHONPATH"
+        }
+        result = subprocess.run(
+            [sys.executable, "-c", probe],
+            cwd=renderer_dir,
+            env=environment,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr[-2000:])
+        self.assertIn("DETECTOR face_anchors", result.stdout)
 
 
 if __name__ == "__main__":

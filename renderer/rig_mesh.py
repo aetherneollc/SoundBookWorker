@@ -1236,6 +1236,21 @@ def _jsonable(value: Any) -> Any:
     return value
 
 
+def _face_anchor_module() -> Any | None:
+    """Import the face detector under whichever name this process can see.
+
+    ``python renderer/prepare_stage.py`` puts renderer/ itself on sys.path, so
+    the package name only resolves under ``python -m unittest``. Trying only
+    that name left every CLI-built rig without a mouth, eyes or brows.
+    """
+    for module_name in ("renderer.face_anchors", "face_anchors"):
+        try:
+            return importlib.import_module(module_name)
+        except ImportError:
+            continue
+    return None
+
+
 def _try_face_anchors(
     rgba: np.ndarray,
     texture_path: Path,
@@ -1243,9 +1258,9 @@ def _try_face_anchors(
     bones: list[dict[str, Any]],
 ) -> Any | None:
     """Use a face-anchor module when another pipeline component provides one."""
-    try:
-        module = importlib.import_module("renderer.face_anchors")
-    except Exception:
+    module = _face_anchor_module()
+    if module is None:
+        print("rig_mesh: face_anchors module not importable; leaving face_anchors null", flush=True)
         return None
     for function_name in (
         "extract_face_anchors",

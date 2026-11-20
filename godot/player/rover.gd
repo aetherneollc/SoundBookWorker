@@ -5,8 +5,14 @@ extends Node2D
 ## _facing_root; this node's origin is always the wheel contact centre.
 
 const VIEW_SIZE := Vector2(1280.0, 720.0)
-const MIN_TARGET_WIDTH := 48.0
+const MIN_TARGET_HEIGHT := 48.0
 const DEFAULT_SOURCE_SIZE := Vector2(1024.0, 1024.0)
+# Draw order inside the rig canvas. Wheels sit in front of the hull: the body
+# cut-out keeps a dark wheel-well backing that must stay hidden behind them.
+const Z_SHADOW := -2
+const Z_SUSPENSION := 0
+const Z_CHASSIS := 4
+const Z_WHEEL := 5
 const ROVER_ACTIONS := [
 	"idle", "drive", "patrol", "scan", "inspect", "work", "assemble",
 	"pick", "carry", "wave", "alert", "tilt", "recover",
@@ -188,6 +194,29 @@ class ArmLinkArt:
 			draw_line(tip, tip + Vector2(length * 0.16, length * 0.12), Color(0.70, 0.84, 0.84), maxf(4.0, width * 0.34), true)
 
 
+class ShadowArt:
+	extends Node2D
+
+	var half_size := Vector2(120.0, 12.0)
+
+	func configure(value: Vector2) -> void:
+		half_size = Vector2(maxf(value.x, 8.0), maxf(value.y, 2.0))
+		queue_redraw()
+
+	func _draw() -> void:
+		# Same layered flat ellipses as the actors' contact shadows in stage.gd.
+		_ellipse(half_size * 1.12, Color(0.015, 0.025, 0.055, 0.08))
+		_ellipse(half_size, Color(0.015, 0.025, 0.055, 0.12))
+		_ellipse(half_size * 0.8, Color(0.015, 0.025, 0.055, 0.18))
+
+	func _ellipse(radius: Vector2, color: Color) -> void:
+		var points := PackedVector2Array()
+		for index: int in range(40):
+			var angle: float = TAU * float(index) / 40.0
+			points.append(Vector2(cos(angle) * radius.x, sin(angle) * radius.y))
+		draw_colored_polygon(points, color)
+
+
 class SignalArt:
 	extends Node2D
 
@@ -218,6 +247,10 @@ var wheel_angle := 0.0
 
 var _rig_base_dir := ""
 var _source_size := DEFAULT_SOURCE_SIZE
+# Painted extent of the rover inside the source canvas. Masters keep a wide
+# transparent margin, so size and arm placement follow this, not the canvas.
+var _content_rect := Rect2(Vector2.ZERO, DEFAULT_SOURCE_SIZE)
+var _body_image: Image
 var _render_scale := 1.0
 var _anchor_x := 0.5
 var _foot_y := 0.92
@@ -248,9 +281,12 @@ var _signal: SignalArt
 var _wheel_runtimes: Array[Dictionary] = []
 
 
-func setup(robot_rig_path: String, target_width: float = 340.0) -> bool:
+## Builds the rover from robot_rig.json. target_height is the on-screen height
+## of the painted rover (wheels to sensor head) at scale 1, in pixels.
+func setup(robot_rig_path: String, target_height: float = 265.0) -> bool:
 	_clear_parts()
 	_rig_base_dir = ""
+	_body_image = null
 	wheel_angle = 0.0
 	_has_last_world_x = false
 	_current_action = "idle"
@@ -275,7 +311,9 @@ func setup(robot_rig_path: String, target_width: float = 340.0) -> bool:
 	if _native_facing not in ["left", "right"]:
 		_native_facing = "right"
 	_facing = _native_facing
-	_render_scale = maxf(target_width, MIN_TARGET_WIDTH) / _source_size.x
+	_body_image = _load_image(_part_path(_body_value(rig)))
+	_content_rect = _measure_content(rig)
+	_render_scale = maxf(target_height, MIN_TARGET_HEIGHT) / _content_rect.size.y
 
 	_facing_root = Node2D.new()
 	_facing_root.name = "Facing"
@@ -290,10 +328,16 @@ func setup(robot_rig_path: String, target_width: float = 340.0) -> bool:
 	_signal_point = _rig_point(rig.get("signal_point"), Vector2(_anchor_x, maxf(0.08, _foot_y - 0.70)))
 
 	var wheels: Array[Dictionary] = _normalise_wheels(rig)
-	_ensure_four_wheels(wheels)
-	_build_suspension(wheels)
+	# A painted rover keeps the wheels it was drawn with (AT-1 shows three in
+	# side view). Only a rig without a usable wheel pair gets the procedural set.
+	if wheels.size() < 2:
+		_ensure_four_wheels(wheels)
+	_build_shadow()
+	if _body_image == null:
+		# The painted hull already carries its own undercarriage.
+		_build_suspension(wheels)
 	_build_wheels(wheels)
-	_build_chassis(rig)
+	_build_chassis()
 	_build_mast(rig)
 	_build_arm(rig)
 	_build_signal()
@@ -479,7 +523,7 @@ func _build_suspension(wheels: Array[Dictionary]) -> void:
 		radii.append(float(wheel.get("radius", 40.0)))
 	_suspension = SuspensionArt.new()
 	_suspension.name = "WheelLegs"
-	_suspension.z_index = 0
+	_suspension.z_index = Z_SUSPENSION
 	_suspension.configure(
 		centers,
 		radii,
@@ -502,13 +546,13 @@ func _build_wheels(wheels: Array[Dictionary]) -> void:
 			tire_sprite.name = "Tire_%d" % index
 			tire_sprite.texture = tire_texture
 			tire_sprite.centered = false
-			tire_sprite.z_index = 1
+			tire_sprite.z_index = Z_WHEEL
 			_visual_root.add_child(tire_sprite)
 
 		var wheel := WheelArt.new()
 		wheel.name = "Wheel_%d" % index
 		wheel.position = center
-		wheel.z_index = 2
+		wheel.z_index = Z_WHEEL
 		var wheel_path: String = _part_path(entry.get("file", entry.get("src", "")))
 		var wheel_texture: Texture2D = _load_png(wheel_path)
 		if wheel_texture != null:
@@ -532,21 +576,75 @@ func _build_wheels(wheels: Array[Dictionary]) -> void:
 	_wheel_radius_world = total_radius_world / float(maxi(_wheel_runtimes.size(), 1))
 
 
-func _build_chassis(rig: Dictionary) -> void:
-	_chassis = Node2D.new()
-	_chassis.name = "Chassis"
-	_chassis.position = _body_pivot
-	_chassis.z_index = 4
-	_visual_root.add_child(_chassis)
+func _body_value(rig: Dictionary) -> Variant:
 	var body_value: Variant = rig.get("body_file", "")
 	if str(body_value).strip_edges() == "":
 		body_value = rig.get("body", rig.get("body_src", ""))
-	var body_path: String = _part_path(body_value)
-	var body_texture: Texture2D = _load_png(body_path)
-	if body_texture != null:
+	return body_value
+
+
+## Painted extent in source pixels: the hull's opaque bounds joined with the
+## wheels, or the rig's content_top / foot_y band when there is no hull image.
+func _measure_content(rig: Dictionary) -> Rect2:
+	var foot: float = _foot_y * _source_size.y
+	var top_ratio: float = _number(rig.get("content_top"), NAN)
+	if is_nan(top_ratio) or top_ratio < 0.0 or top_ratio > _foot_y - 0.08:
+		top_ratio = maxf(0.0, _foot_y - 0.58)
+	var top: float = top_ratio * _source_size.y
+	var left: float = _source_size.x * 0.13
+	var right: float = _source_size.x * 0.87
+	if _body_image != null:
+		var used: Rect2i = _body_image.get_used_rect()
+		if used.size.x > 0 and used.size.y > 0:
+			# Scale the hull image's own pixels into the declared source canvas.
+			var ratio := Vector2(
+				_source_size.x / float(_body_image.get_width()),
+				_source_size.y / float(_body_image.get_height())
+			)
+			left = float(used.position.x) * ratio.x
+			right = float(used.end.x) * ratio.x
+			top = minf(top, float(used.position.y) * ratio.y)
+	var wheels_value: Variant = rig.get("wheels", [])
+	if wheels_value is Array:
+		for wheel_value: Variant in wheels_value as Array:
+			if not wheel_value is Dictionary:
+				continue
+			var wheel: Dictionary = wheel_value as Dictionary
+			var cx: float = _number(wheel.get("cx"), NAN)
+			var radius: float = _number(wheel.get("r"), NAN)
+			if is_nan(cx) or is_nan(radius):
+				continue
+			if absf(cx) <= 1.5:
+				cx *= _source_size.x
+			if absf(radius) <= 1.0:
+				radius *= _source_size.y
+			left = minf(left, cx - radius)
+			right = maxf(right, cx + radius)
+	return Rect2(
+		Vector2(left, top),
+		Vector2(maxf(right - left, 16.0), maxf(foot - top, 16.0))
+	)
+
+
+func _build_shadow() -> void:
+	var shadow := ShadowArt.new()
+	shadow.name = "ContactShadow"
+	shadow.z_index = Z_SHADOW
+	shadow.position = Vector2(_content_rect.get_center().x, _foot_y * _source_size.y)
+	shadow.configure(Vector2(_content_rect.size.x * 0.52, _content_rect.size.y * 0.055))
+	_visual_root.add_child(shadow)
+
+
+func _build_chassis() -> void:
+	_chassis = Node2D.new()
+	_chassis.name = "Chassis"
+	_chassis.position = _body_pivot
+	_chassis.z_index = Z_CHASSIS
+	_visual_root.add_child(_chassis)
+	if _body_image != null:
 		var sprite := Sprite2D.new()
 		sprite.name = "Body"
-		sprite.texture = body_texture
+		sprite.texture = ImageTexture.create_from_image(_body_image)
 		sprite.centered = false
 		sprite.position = -_body_pivot
 		_chassis.add_child(sprite)
@@ -577,7 +675,8 @@ func _build_mast(rig: Dictionary) -> void:
 		sprite.centered = false
 		sprite.position = -mast_pivot_source
 		_mast_pivot.add_child(sprite)
-	else:
+	elif _body_image == null:
+		# A painted hull keeps its own mast; only the procedural hull needs a stem.
 		var stem := Line2D.new()
 		stem.width = maxf(8.0, _source_size.x * 0.012)
 		stem.default_color = Color(0.72, 0.84, 0.85)
@@ -589,10 +688,14 @@ func _build_arm(rig: Dictionary) -> void:
 	var arm_value: Variant = rig.get("arm", {})
 	var arm: Dictionary = arm_value as Dictionary if arm_value is Dictionary else {}
 	var mount_value: Variant = arm.get("pivot", rig.get("arm_mount", null))
-	var mount_default := Vector2(0.82 if _native_facing == "right" else 0.18, _foot_y - 0.34)
-	_arm_mount = _rig_point(mount_value, mount_default)
-	_arm_upper_length = maxf(_source_size.x * 0.17, 28.0)
-	_arm_lower_length = maxf(_source_size.x * 0.14, 24.0)
+	# Without a rigged pivot the shoulder sits on the hull's front deck, found
+	# on the painted body itself so it never floats beside a small rover.
+	var forward: float = 1.0 if _native_facing == "right" else -1.0
+	var mount_x: float = _content_rect.get_center().x + forward * _content_rect.size.x * 0.27
+	var mount_px := Vector2(mount_x, _hull_top_at(mount_x) + _content_rect.size.y * 0.05)
+	_arm_mount = _rig_point(mount_value, mount_px / _source_size)
+	_arm_upper_length = maxf(_content_rect.size.x * 0.30, 28.0)
+	_arm_lower_length = maxf(_content_rect.size.x * 0.25, 24.0)
 
 	_arm_upper = Node2D.new()
 	_arm_upper.name = "ArmUpper"
@@ -684,14 +787,20 @@ func _apply_arm(action: String, target_value: Variant, time_sec: float) -> void:
 	if _arm_upper == null or _arm_elbow == null or _chassis == null:
 		return
 	var target_rel: Vector2
-	var explicit_world: Variant = _target_world(target_value)
+	var reach: float = _arm_upper_length + _arm_lower_length
+	var working: bool = action in IK_ACTIONS
+	# Only a working action reaches for the stage target; driving and idling
+	# keep the arm in its carry pose instead of trailing a fixed world point.
+	var explicit_world: Variant = _target_world(target_value) if working else null
 	if explicit_world is Vector2:
 		var target_chassis: Vector2 = _chassis.to_local(explicit_world as Vector2)
 		target_rel = target_chassis - _arm_upper.position
+		# A small tool-tip orbit keeps the arm visibly busy on a fixed target.
+		var orbit: float = reach * (0.07 if action in ["scan", "wave"] else 0.035)
+		target_rel += Vector2(sin(time_sec * 2.3), cos(time_sec * 1.7)) * orbit
 	else:
 		var direction: float = 1.0 if _native_facing == "right" else -1.0
-		var reach: float = _arm_upper_length + _arm_lower_length
-		if action in IK_ACTIONS:
+		if working:
 			var sweep: float = sin(time_sec * (1.25 if action in ["scan", "inspect"] else 1.8))
 			var lift: float = -0.30 - 0.16 * sin(time_sec * 1.35)
 			if action == "wave":
@@ -704,22 +813,29 @@ func _apply_arm(action: String, target_value: Variant, time_sec: float) -> void:
 			)
 		else:
 			target_rel = Vector2(direction * reach * 0.58, reach * 0.18)
-	var solution: Vector2 = _solve_two_bone(target_rel, _arm_upper_length, _arm_lower_length)
-	var blend: float = 0.22 if action in IK_ACTIONS else 0.12
+	var solution: Vector2 = _solve_two_bone(
+		target_rel,
+		_arm_upper_length,
+		_arm_lower_length,
+		1.0 if _native_facing == "right" else -1.0
+	)
+	var blend: float = 0.22 if working else 0.12
 	_arm_shoulder_angle = lerp_angle(_arm_shoulder_angle, solution.x, blend)
 	_arm_elbow_angle = lerp_angle(_arm_elbow_angle, solution.y, blend)
 	_arm_upper.rotation = _arm_shoulder_angle
 	_arm_elbow.rotation = _arm_elbow_angle
 
 
-func _solve_two_bone(target: Vector2, upper: float, lower: float) -> Vector2:
+## Returns (shoulder, elbow) rotations. bend is +1 for a rig drawn facing right
+## and -1 for one drawn facing left, so the elbow rises above the hull either way.
+func _solve_two_bone(target: Vector2, upper: float, lower: float, bend: float = 1.0) -> Vector2:
 	var distance: float = clampf(target.length(), absf(upper - lower) + 0.001, upper + lower - 0.001)
 	var cosine_elbow: float = clampf(
 		(distance * distance - upper * upper - lower * lower) / (2.0 * upper * lower),
 		-1.0,
 		1.0
 	)
-	var elbow: float = acos(cosine_elbow)
+	var elbow: float = acos(cosine_elbow) * (1.0 if bend >= 0.0 else -1.0)
 	var shoulder: float = atan2(target.y, target.x) - atan2(
 		lower * sin(elbow),
 		upper + lower * cos(elbow)
@@ -790,11 +906,33 @@ func _part_path(value: Variant) -> String:
 	return candidates[0]
 
 
-func _load_png(path: String) -> Texture2D:
+## First opaque row of the hull in the source column x, or a deck estimate when
+## there is no hull image to read.
+func _hull_top_at(x_source: float) -> float:
+	var estimate: float = _content_rect.position.y + _content_rect.size.y * 0.30
+	if _body_image == null:
+		return estimate
+	var width: int = _body_image.get_width()
+	var height: int = _body_image.get_height()
+	var column: int = clampi(int(round(x_source * float(width) / _source_size.x)), 0, width - 1)
+	for row: int in range(height):
+		if _body_image.get_pixel(column, row).a > 0.5:
+			return float(row) * _source_size.y / float(height)
+	return estimate
+
+
+func _load_image(path: String) -> Image:
 	if path == "" or not FileAccess.file_exists(path):
 		return null
 	var image: Image = Image.load_from_file(path)
 	if image == null or image.is_empty() or image.get_width() <= 0 or image.get_height() <= 0:
+		return null
+	return image
+
+
+func _load_png(path: String) -> Texture2D:
+	var image: Image = _load_image(path)
+	if image == null:
 		return null
 	return ImageTexture.create_from_image(image)
 

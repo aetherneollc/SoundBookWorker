@@ -217,6 +217,26 @@ func sample(clip_name: String, time_sec: float) -> Dictionary:
 	}
 
 
+## Left-right reflection of a sampled pose: `_l` and `_r` bones trade places,
+## every angle and the horizontal root offset change sign. The art itself is
+## not flipped, so a one-sided gesture can be played toward either side.
+func mirror_pose(pose: Dictionary) -> Dictionary:
+	var bones: Dictionary = {}
+	var source: Dictionary = _dictionary(pose.get("bones", null))
+	for bone_key: Variant in source.keys():
+		var bone_name: String = str(bone_key)
+		if bone_name.ends_with("_l"):
+			bone_name = bone_name.trim_suffix("_l") + "_r"
+		elif bone_name.ends_with("_r"):
+			bone_name = bone_name.trim_suffix("_r") + "_l"
+		bones[bone_name] = -_number(source[bone_key], 0.0)
+	var mirrored: Dictionary = pose.duplicate()
+	var root_offset: Vector2 = _vector(pose.get("root_offset", null))
+	mirrored["root_offset"] = Vector2(-root_offset.x, root_offset.y)
+	mirrored["bones"] = bones
+	return mirrored
+
+
 ## Linear blend of two sampled poses; weight 0 returns a, 1 returns b.
 ## A bone missing from one side counts as 0 degrees there.
 func blend_poses(a: Dictionary, b: Dictionary, weight: float) -> Dictionary:

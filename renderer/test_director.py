@@ -462,6 +462,153 @@ class GestureTests(StageAssertions):
                          [('operate', 0, 200)])
 
 
+class StanceTests(StageAssertions):
+    """A looping stance from the shot action survives the dialogue around it."""
+
+    def test_listener_keeps_the_stance_instead_of_the_listen_pose(self):
+        stage = build([shot(0, 200, [linlan(), chen(action='cross_arms')])],
+                      [line('林岚', 10, 150, '我把遥测日志调出来，逐帧比对电流和转速。')])
+        self.assertPlayable(stage)
+        beats = beats_of(stage['shots'][0], 'chen')
+        self.assertEqual({beat['clip'] for beat in beats}, {'cross_arms'})
+        self.assertEqual((beats[0]['from'], beats[-1]['to']), (0, 200))
+        # He still looks at whoever is talking, and never nods the arms back to rest.
+        self.assertTrue(any(beat['look_at'] == 'linlan' for beat in beats))
+        self.assertFalse(beats_of(stage['shots'][0], 'chen', 'nod'))
+
+    def test_operator_stays_at_the_console_while_the_partner_talks(self):
+        stage_shot = build([shot(0, 200, [linlan(action='console'), chen(action='talk')])],
+                           [line('陈工', 10, 150, '先别急着下结论。')])['shots'][0]
+        self.assertEqual({beat['clip'] for beat in beats_of(stage_shot, 'linlan')}, {'operate'})
+
+    def test_speaker_holds_the_stance_through_the_first_line(self):
+        stage_shot = build([shot(0, 260, [linlan(action='listen'), chen(action='angry')])],
+                           [line('陈工', 10, 110, '是谁签的验收单。'), line('陈工', 140, 240, '把记录调出来。')])['shots'][0]
+        spoken = [beat for beat in beats_of(stage_shot, 'chen') if beat['speaking']]
+        self.assertEqual(spoken[0]['clip'], 'angry')
+        self.assertEqual(spoken[0]['emotion'], 'angry')  # The face follows the stance.
+        self.assertNotEqual(spoken[-1]['clip'], 'angry')  # The shot action shapes the first line only.
+        self.assertTrue(all(beat['clip'] == 'angry' for beat in beats_of(stage_shot, 'chen') if not beat['speaking']))
+
+    def test_startled_action_opens_the_line_then_settles(self):
+        stage_shot = build([shot(0, 200, [linlan(action='listen'), chen(action='surprised')])],
+                           [line('陈工', 10, 150, '出厂前明明校准过三遍。')])['shots'][0]
+        spoken = [beat for beat in beats_of(stage_shot, 'chen') if beat['speaking']]
+        self.assertEqual([beat['clip'] for beat in spoken], ['surprised', 'talk_emphatic'])
+        self.assertEqual(spoken[0]['to'] - spoken[0]['from'], round(director.CLIP_SECONDS['surprised'] * FPS))
+        self.assertEqual({beat['emotion'] for beat in spoken}, {'surprised'})
+
+    def test_carrier_keeps_holding_while_listening(self):
+        carrier = actor('林岚', 'linlan', 0.2, 'carry', facing='right')
+        stage_shot = build([shot(0, 200, [carrier, chen()])], [line('陈工', 10, 150, '放在这里。')])['shots'][0]
+        self.assertEqual({beat['clip'] for beat in beats_of(stage_shot, 'linlan')}, {'carry'})
+
+    def test_walking_actor_has_no_stance(self):
+        # A step-shift needs the legs free; the stance layer must not fight the move.
+        mover = actor('林岚', 'linlan', 0.30, 'walk', to_x=0.38, facing='right')
+        stage = build([shot(0, 200, [mover, chen()])], [line('陈工', 120, 190, '好。')])
+        self.assertPlayable(stage)
+        clips = {beat['clip'] for beat in beats_of(stage['shots'][0], 'linlan')}
+        self.assertIn('step_shift', clips)
+        self.assertFalse(clips & set(director._POSTURE_CLIPS))
+
+
+class RoverStagingTests(StageAssertions):
+    """The Worker exports ``rover: {action, speaker}`` only; the director places AT-1."""
+
+    MANIFEST = {'version': 1, 'fps': FPS, 'robot_rig': {'rig_json': 'media/rigs/robot/rig.json'}}
+
+    def rover_shot(self, start, action, actors, frames=120, **extra):
+        return shot(start, frames, actors, rover={'action': action, 'speaker': '阿拓 AT-1'}, **extra)
+
+    def crew(self):
+        return [linlan(0.16, action='listen'), actor('陈工', 'chen', 0.36, 'listen', facing='right', depth='mid')]
+
+    def test_first_drive_rolls_in_from_the_edge_away_from_the_cast(self):
+        stage = build([self.rover_shot(0, 'drive', self.crew())], manifest=self.MANIFEST)
+        self.assertPlayable(stage)
+        rover = stage['shots'][0]['rover']
+        self.assertEqual(rover['action'], 'drive')
+        self.assertGreater(rover['from_x'], rover['to_x'])
+        self.assertAlmostEqual(rover['from_x'] - rover['to_x'], director.ROVER_ENTRY_SPAN, places=3)
+        self.assertEqual(rover['facing'], 'left')
+        # Parked clear of the nearest actor, with the whole hull still in frame.
+        self.assertGreaterEqual(rover['to_x'] - 0.36, director.ROVER_CLEARANCE - 1e-6)
+        self.assertLessEqual(rover['to_x'], director.ROVER_MARK_LIMIT)
+
+    def test_rover_stays_where_the_previous_shot_left_it(self):
+        stage = build([self.rover_shot(0, 'drive', self.crew()), self.rover_shot(120, 'reach', self.crew()),
+                       self.rover_shot(240, 'signal', self.crew())], manifest=self.MANIFEST)
+        self.assertPlayable(stage)
+        drive, inspect, scan = (stage_shot['rover'] for stage_shot in stage['shots'])
+        self.assertEqual((inspect['action'], scan['action']), ('inspect', 'scan'))
+        for parked in (inspect, scan):
+            self.assertEqual((parked['from_x'], parked['to_x']), (drive['to_x'], drive['to_x']))
+            self.assertEqual(parked['facing'], drive['facing'])  # No flip on the cut.
+        # The arm works on the floor ahead of the nose, toward the side it faces.
+        self.assertAlmostEqual(inspect['target_x'], inspect['to_x'] - director.ROVER_REACH_X, places=3)
+        self.assertAlmostEqual(inspect['target_y'], 0.86 - director.ROVER_REACH_ABOVE_GROUND, places=3)
+
+    def test_a_new_scene_parks_the_rover_afresh(self):
+        stage = build([self.rover_shot(0, 'drive', self.crew()),
+                       self.rover_shot(120, 'idle', [linlan(0.7, action='listen')], scene=2)], manifest=self.MANIFEST)
+        self.assertPlayable(stage)
+        parked = stage['shots'][1]['rover']
+        self.assertLess(parked['to_x'], 0.5)  # The cast stands on the right, so AT-1 parks on the left.
+        self.assertEqual(parked['facing'], 'right')
+
+    def test_a_second_drive_shuttles_out_and_the_next_comes_back(self):
+        stage = build([self.rover_shot(0, 'drive', self.crew()), self.rover_shot(120, 'drive', self.crew()),
+                       self.rover_shot(240, 'drive', self.crew())], manifest=self.MANIFEST)
+        self.assertPlayable(stage)
+        first, second, third = (stage_shot['rover'] for stage_shot in stage['shots'])
+        self.assertEqual(second['from_x'], first['to_x'])
+        self.assertAlmostEqual(second['to_x'] - second['from_x'], director.ROVER_SHUTTLE_SPAN, places=3)
+        self.assertEqual((third['from_x'], third['to_x']), (second['to_x'], first['to_x']))
+
+    def test_authored_path_is_kept(self):
+        authored = shot(0, 120, self.crew(), rover={'action': 'drive', 'from_x': 0.9, 'to_x': 0.5,
+                                                    'target_x': 0.3, 'target_y': 0.6})
+        rover = build([authored], manifest=self.MANIFEST)['shots'][0]['rover']
+        self.assertEqual((rover['from_x'], rover['to_x'], rover['facing']), (0.9, 0.5, 'left'))
+        self.assertEqual((rover['target_x'], rover['target_y']), (0.3, 0.6))
+
+    def test_camera_holds_the_wide_while_the_rover_is_the_subject(self):
+        # AT-1 speaks: nobody on stage has a line, so the cut must not drift to an idle face.
+        stage = build([self.rover_shot(0, 'reach', self.crew(), frames=160, scene=1),
+                       self.rover_shot(160, 'reach', self.crew(), frames=160, scene=1)],
+                      [line('阿拓 AT-1', 170, 300, '机械臂巡检开始。')], manifest=self.MANIFEST)
+        self.assertPlayable(stage)
+        for stage_shot in stage['shots']:
+            self.assertEqual(cut_plan(stage_shot), [('wide', '')])
+
+    def test_robot_focus_keeps_the_wide_even_when_an_actor_speaks(self):
+        focused = self.rover_shot(0, 'drive', self.crew(), frames=200)
+        focused['story_motion']['focus'] = 'robot'
+        stage_shot = build([focused], [line('林岚', 10, 150, '阿拓开进装配区了。')], manifest=self.MANIFEST)['shots'][0]
+        self.assertEqual(cut_plan(stage_shot), [('wide', '')])
+
+    def test_dialogue_beside_the_rover_never_uses_the_cropping_two_shot(self):
+        stage = build([self.rover_shot(0, 'idle', self.crew(), frames=100),
+                       self.rover_shot(100, 'signal', self.crew(), frames=200)],
+                      [line('陈工', 110, 250, '干得漂亮，下次验收我亲自盯着。')], manifest=self.MANIFEST)
+        self.assertPlayable(stage)
+        plan = cut_plan(stage['shots'][1])
+        self.assertEqual(plan[0], ('wide', ''))
+        self.assertIn(('medium', 'chen'), plan)
+        self.assertNotIn('two_shot', [framing for stage_shot in stage['shots'] for framing, _ in cut_plan(stage_shot)])
+
+    def test_rover_does_not_repeat_its_drive_after_a_walk_split(self):
+        walker = actor('林岚', 'linlan', 0.1, 'walk', to_x=0.3, facing='right')
+        partner = actor('陈工', 'chen', 0.4, 'listen', facing='right', depth='mid')
+        stage = build([self.rover_shot(0, 'drive', [walker, partner], frames=240)], manifest=self.MANIFEST)
+        self.assertPlayable(stage)
+        walk, rest = stage['shots']
+        self.assertGreater(walk['rover']['from_x'], walk['rover']['to_x'])
+        self.assertEqual((rest['rover']['from_x'], rest['rover']['to_x']),
+                         (walk['rover']['to_x'], walk['rover']['to_x']))
+
+
 class SpeechTests(StageAssertions):
     def test_rhubarb_cues_become_relative_frames(self):
         cues = [{'start': 0.0, 'end': 0.125, 'value': 'X'}, {'start': 0.125, 'end': 0.29, 'value': 'D'},

@@ -225,6 +225,26 @@ class MotionClipTest(unittest.TestCase):
             self.assertTrue(motion["loop"], name)
             self.assertTrue(motion["foot_lock"], name)
 
+    def test_folded_arm_clips_release_the_arm_guard(self) -> None:
+        # The player's arm guard stops a forearm from swinging in past vertical.
+        # A clip that folds the forearms across the body must switch it off, or
+        # the pose flattens into idle (the Python preview has no such guard).
+        released = {
+            name
+            for name, motion in self.motions.items()
+            if motion.get("arm_guard", True) is False
+        }
+        self.assertEqual(
+            released, {"operate", "carry", "cross_arms", "angry", "sit"}
+        )
+        for name in released:
+            for frame in self.motions[name]["keyframes"]:
+                bones = frame["bones"]
+                self.assertLessEqual(bones["lower_arm_l"], -35.0, name)
+                self.assertGreaterEqual(bones["lower_arm_r"], 35.0, name)
+        for name, motion in self.motions.items():
+            self.assertIsInstance(motion.get("arm_guard", True), bool, name)
+
     def test_screen_space_direction_conventions(self) -> None:
         idle = self.motions["idle"]["keyframes"][0]["bones"]
         self.assertLess(idle["upper_arm_l"], 0.0)

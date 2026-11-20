@@ -130,11 +130,24 @@
 
 **`rover`**：`action` 取 `idle`、`drive`、`patrol`、`scan`、`inspect`、`work`、`assemble`、`pick`、`carry`、`wave`、`alert`、`tilt`、`recover`。`from_x`、`to_x`、`target_x`、`target_y` 都是 0–1 的画面比例；播放器用 smoothstep 在整镜内从 `from_x` 行驶到 `to_x`。`facing` 取 `left`/`right`，`depth` 取 `near`/`mid`/`far`，`active=false` 时隐藏并重置滚轮位移基准。`sample`/`reach`、`signal`、`fall`、`stand` 输入分别规范化为 `inspect`、`scan`、`tilt`、`recover`。
 
-`Rover2D` 的本地原点是轮胎接地线的中心。它按每帧实际舞台水平位移逐轮累计 `dTheta = dX / R`，不是按动作时间假转；镜头隐藏后的重新出现不会把跳位误算成滚动。作业动作使用两段解析 IK 指向 `target_x,target_y`，扫描和告警动作点亮顶部传感器，倾覆与恢复动作驱动车身弹性倾转。
+控制端只导出 `rover: {action, speaker}`，不带站位。镜头没写 `from_x`/`x` 时由导演补位（`director._normalize_rover`）：
+
+- 停车位在远离人物的一侧，默认 0.68（人物在右半场时为 0.32），并与最近的人物保持至少 0.33 的间距，最远不超过 0.80。
+- 一场里第一个 `drive`/`patrol`/`carry` 从同侧画面边缘驶入（起点比停车位再向外 0.30）。之后的行驶镜头在停车位和向外 0.14 的位置之间往返。
+- 其他动作停在上一个阿拓镜头结束的位置，朝向也沿用，切镜时不会瞬移或掉头。场号变了就重新补位。
+- `facing` 缺省：行驶时朝行驶方向；静止且本场没有上一镜时朝向人物。
+- `target_x` 缺省在车头前方 0.22，`target_y` 缺省在地面线上方 0.07，也就是机械臂在车头前的地面作业。
+- 长距离走路把镜头拆成两段时，阿拓只在前一段行驶，后一段停在终点。
+
+`Rover2D` 的本地原点是轮胎接地线的中心。它按每帧实际舞台水平位移逐轮累计 `dTheta = dX / R`，不是按动作时间假转；镜头隐藏后的重新出现不会把跳位误算成滚动。只有作业动作（`scan`、`inspect`、`work`、`assemble`、`pick`、`carry`、`wave`）用两段解析 IK 伸向 `target_x,target_y`，并在目标附近小幅画圈；行驶和待机时机械臂收在车头上方的携行姿态。扫描和告警动作点亮顶部传感器，倾覆与恢复动作驱动车身弹性倾转。
+
+阿拓的大小按立绘里实际画出的部分算，不按画布：轮底到传感器顶的高度是标准人物身高的 0.53 倍（`main.gd` 的 `BASE_ROVER_HEIGHT`，约 0.95 米），再乘景深缩放。它的绘制层级比同景深的人物低一级，人物站在车旁时手不会被车身盖住。
 
 ### 1.1 动作词表
 
-首批片段为 `idle`、`talk_calm`、`talk_emphatic`、`talk_explain`、`listen`、`nod`、`point`、`wave`、`react`、`walk_medium`、`step_shift`。M2 第二批加入 `sit`、`stand`、`operate`、`carry`、`cross_arms`、`angry`、`sad`、`surprised`。
+动作库共 19 个片段。首批为 `idle`、`talk_calm`、`talk_emphatic`、`talk_explain`、`listen`、`nod`、`point`、`wave`、`react`、`walk_medium`、`step_shift`。M2 第二批加入 `sit`、`stand`、`operate`、`carry`、`cross_arms`、`angry`、`sad`、`surprised`。
+
+其中 `operate`、`cross_arms`、`angry`、`sad`、`sit`、`carry` 是循环的**站姿**：镜头动作给了站姿的角色，听别人说话时保持这个姿势（不换成 `listen`，也不点头），自己说第一句时也保持，见 1.4。`surprised`、`stand` 只播一次，用法和 `react` 相同。镜头动作是 `angry`、`sad`、`surprised` 而剧本没写表情时，表情跟着动作走。
 
 manifest 里旧的 `CARTOON_ACTIONS` 按下表映射（`director.map_action`）：
 
@@ -198,6 +211,7 @@ build_stage(manifest, timeline_shots, speech_tracks, captions, rigs_map, audio_t
 5. 长镜头：对准一个人的 `medium` 或 `close` 超过 4.5 秒时打断一次。场上有听者时，插 1.5 秒听者的反应镜头（听者同时点头）再切回；否则在 `medium` 和 `close` 之间换景别。两种办法全片交替使用，一刀仍然过长就继续打断。
 6. 一句台词之后场上三秒以上没人说话（比如接旁白）时，多人镜头在这句结束 0.5 秒后退回全景或双人景。
 7. `camera_move` 按 `push_in`、`slow_pan_right`、`static`、`slow_pan_left` 轮换，相邻两刀不重复。`close` 只用 `push_in` 和 `static`。`story_motion.camera` 里写了推、摇、固定时，用来定这个镜头第一刀的运动。
+8. 阿拓在场的镜头不用 `two_shot`（它只框两个人，会把停在旁边的阿拓裁出画面），建立镜头和退回镜头一律 `wide`。在场角色整镜都不说话（阿拓自己说话或作业），或者 `story_motion.focus` 是 `robot` 时，整个镜头只有一刀 `wide`。
 
 **说话人。** 手势按顺序匹配第一条：
 
@@ -205,18 +219,22 @@ build_stage(manifest, timeline_shots, speech_tracks, captions, rigs_map, audio_t
 | --- | --- |
 | 镜头动作是 `wave`，或台词是问候、告别 | `wave` |
 | 镜头动作是 `react`，或 2 秒以内的惊讶句 | `react` |
-| 镜头动作是 `point`、`console`，或台词有“你看”“这里”等指示词 | `point` |
+| 镜头动作是站姿：`work`、`console`、`operate`、`carry`、`cross_arms`、`angry`、`sad`、`sit` | 对应的站姿片段（`work`、`console` 是 `operate`） |
+| 镜头动作是 `surprised`、`stand` | 同名片段 |
+| 镜头动作是 `point`，或台词有“你看”“这里”等指示词 | `point` |
 | 情绪是 `angry`、`surprised`，或感叹句 | `talk_emphatic` |
-| 镜头动作是 `work`，或问句、3.5 秒以上的长句、带“因为”“所以”等解释词 | `talk_explain` |
+| 问句、3.5 秒以上的长句、带“因为”“所以”等解释词 | `talk_explain` |
 | 其他 | `talk_calm` |
 
-镜头动作只影响这个角色在本镜头的第一句。同一个角色相邻两句选到同一个片段时换一个：`talk_calm` 和 `talk_explain` 互换，`point`、`wave`、`react` 改用说话片段；只有情绪是 `angry`、`surprised` 时才允许连续两句 `talk_emphatic`。`point`、`wave`、`react` 只播一个循环，台词还没完就分别接 `talk_explain`、`talk_calm`、`talk_emphatic`。说话人看向上一个说话的人，没有就看向下一个说话的人或最近的人。
+镜头动作只影响这个角色在本镜头的第一句。同一个角色相邻两句选到同一个片段时换一个：`talk_calm` 和 `talk_explain` 互换，`point`、`wave`、`react`、`surprised`、`stand` 改用说话片段；只有情绪是 `angry`、`surprised` 时才允许连续两句 `talk_emphatic`；站姿片段可以连续。`point`、`wave`、`react`、`surprised`、`stand` 只播一个循环，台词还没完就分别接 `talk_explain`、`talk_calm`、`talk_emphatic`、`talk_emphatic`、`talk_calm`。说话人看向上一个说话的人，没有就看向下一个说话的人或最近的人。
 
-台词没有 `emotion` 或者写的是自由文本（如“质疑”）时，按关键词归到六种表情之一，归不了就是 `neutral`。
+台词没有 `emotion` 或者写的是自由文本（如“质疑”）时，按关键词归到六种表情之一，归不了就用这个角色在本镜头的表情（镜头动作是 `angry`、`sad`、`surprised` 时就是它），再没有才是 `neutral`。控制端导出的音轨不带 `emotion`，所以线上的表情都来自台词文本和镜头动作。
 
-**听者。** 别人说话时，在场的其他角色播 `listen` 并 `look_at` 说话人，两句之间一秒以内的停顿里保持不变。被说话人看着的那个听者会点一次头（`nod`，1 秒）：台词不短于 2.5 秒时点在句尾，否则点在句后不短于 0.6 秒的停顿里。问句不点头，同一个人两次点头至少隔 2 秒。
+**听者。** 别人说话时，在场的其他角色播 `listen` 并 `look_at` 说话人，两句之间一秒以内的停顿里保持不变。镜头动作是站姿的角色改播自己的站姿，同样看向说话人。被说话人看着的那个听者会点一次头（`nod`，1 秒）：台词不短于 2.5 秒时点在句尾，否则点在句后不短于 0.6 秒的停顿里。问句不点头，同一个人两次点头至少隔 2 秒，保持站姿的角色不点头（`nod` 会把手臂放回原位）。
 
-不说话的角色如果镜头动作是 `point`、`wave`、`react`、`console`，开场播一次对应片段；`work` 则整个镜头播 `talk_explain`。有人说话时，这些动作让位给 `listen`。
+站姿在整个镜头里垫底：没有台词的间隙也保持，不退回 `idle`。不说话的角色如果镜头动作是 `point`、`wave`、`react`、`surprised`、`stand`，开场播一次对应片段；有人说话时，这些一次性动作让位给 `listen`。
+
+**指向。** `point` 和 `talk_explain` 画的是朝画面左侧伸手。播放器按角色要对着的一侧决定是否镜像这个姿势（左右肢互换、角度取反，立绘本身不翻转）：阿拓在场时对着阿拓的停车位，否则对着 `look_at` 的角色，再否则按 `facing`。这是 `main.gd` 的 `AIMED_CLIPS`，不占用 `stage.json` 字段。
 
 `director.validate_stage(stage)` 按本节检查一份 `stage.json`，返回问题列表，空列表表示可以播放。
 
@@ -226,9 +244,10 @@ build_stage(manifest, timeline_shots, speech_tracks, captions, rigs_map, audio_t
 
 播放器读取 `width`、`height`、`anchor_x`、`foot_y`、`native_facing`、`body_file`（也兼容 `body`），以及：
 
-- `wheels[]`：每项 `{file,cx,cy,r}`，可带 `tire_file`、`rx`、`ry`、`tilt_deg`。坐标和半径是源画布比例。缺图或不足四轮时使用扁平赛璐璐程序轮和轮腿补足。
+- `content_top`：立绘最上一行的 y（源画布比例），和 `foot_y` 一起定出阿拓的实际高度。缺省时取 `foot_y - 0.58`。
+- `wheels[]`：每项 `{file,cx,cy,r}`，可带 `tire_file`、`rx`、`ry`、`tilt_deg`。坐标和半径是源画布比例。有两个以上车轮的 rig 保持原样（阿拓侧视是三轮）；不足两个时用扁平赛璐璐程序轮补到四个。车轮画在车身前面，车身图上的轮拱底色只在车身起伏时露出。
 - `body_pivot`、`signal_point`：源画布比例坐标。
-- `mast`、`arm`：可选 `{file,pivot}`。机械臂图缺失时仍使用两段程序骨架和夹爪。
+- `mast`、`arm`：可选 `{file,pivot}`。机械臂图缺失时仍使用两段程序骨架和夹爪；没有 `arm.pivot`/`arm_mount` 时，肩部落在车头一侧的车顶上（按车身图的不透明边界找），臂长按车身宽度的 0.30 和 0.25 取。车身图自带桅杆和底盘，所以有车身图时不再画程序桅杆和轮腿。
 
 所有 PNG 都由运行时 `Image.load_from_file` 读取，不依赖 Godot 导入缓存；部件路径既可绝对、相对 `robot_rig.json`，也可相对仓库根目录。
 
@@ -276,7 +295,7 @@ build_stage(manifest, timeline_shots, speech_tracks, captions, rigs_map, audio_t
 | `center_x` | 两髋中点的 x。 |
 | `bones` | 17 根骨骼，父骨在前：`root`、`pelvis`、`torso`、`neck`、`head`，左右各 `upper_arm`、`lower_arm`、`hand`、`upper_leg`、`lower_leg`、`foot`。后缀 `_l`、`_r` 指画面的左、右。`head`、`tail` 是骨骼两端，`rest_angle` 是从 `head` 指向 `tail` 的弧度。`root` 不参与变形。 |
 | `groups` | 绘制组 `legs`、`torso`、`head`、`arm_l`、`arm_r`，`z_index` 依次为 0 到 4，所以手臂抬起时画在躯干上面。每组各自一套顶点：`uvs` 与 `vertices` 相同（像素 UV），`triangles` 是组内顶点下标，`weights` 是骨骼名 → 每个顶点的权重，只列用到的骨骼，每个顶点的权重和为 1。 |
-| `face_anchors` | 找不到脸时为 `null`，人偶照常动作但没有口型和眨眼。`*_left` 指画面左侧。框是 `{x, y, w, h}`，`head_box`、`face_box` 是 `[x, y, w, h]`。`skin_rgb` 用来盖住原嘴，`ink_rgb` 用来画线。`method` 取 `rtmlib_refined` 或 `skin_blob`。 |
+| `face_anchors` | 找不到脸时为 `null`，人偶照常动作但没有口型、眨眼和眉毛表情。`prepare_stage.py` 打印 `face_anchors module not importable` 或 `optional face anchors failed` 时也是 `null`，这种情况要先修环境再出片。`*_left` 指画面左侧。框是 `{x, y, w, h}`，`head_box`、`face_box` 是 `[x, y, w, h]`。`skin_rgb` 用来盖住原嘴，`ink_rgb` 用来画线。`method` 取 `rtmlib_refined` 或 `skin_blob`。 |
 
 ## 3. motions/*.json
 
@@ -301,10 +320,11 @@ build_stage(manifest, timeline_shots, speech_tracks, captions, rigs_map, audio_t
 | `duration` | 秒，等于最后一个关键帧的 `t`。 |
 | `fps` | 制作时参考的帧率，采样与它无关。 |
 | `foot_lock` | `true` 时双脚钉在地上，腿由播放器重新解算；`false` 用于走路和挪步。 |
+| `arm_guard` | 可选，默认 `true`：播放器不让前臂向内摆过竖直线，免得“手臂放下”的转角在手臂本来就下垂的立绘上把手甩到身体另一侧。要把前臂折到身前的片段必须写 `false`，否则姿势会被压回 `idle` 的样子。现在写 `false` 的是 `operate`、`carry`、`cross_arms`、`angry`、`sit`。`tools/preview_motions.py` 的 Python 预览没有这道限位，片段要以播放器里的样子为准。 |
 | `tags` | 说明用的标签，至少一个。 |
 | `ease` | 可选，`smooth`（默认）、`cosine`、`linear`，关键帧之间的插值方式。 |
 | `keyframes[].t` | 秒，从 0 开始严格递增。 |
-| `keyframes[].root_offset` | `[dx, dy]`，身高的比例，x 向右、y 向下，绝对值不超过 0.05。 |
+| `keyframes[].root_offset` | `[dx, dy]`，身高的比例，x 向右、y 向下，绝对值不超过 0.12（`renderer/test_motions.py` 的上限；只有 `sit`、`stand` 用到 0.1 左右）。 |
 | `keyframes[].bones` | 骨骼名 → 相对静止姿势的转角，单位度，顺时针为正。某根骨骼在某个关键帧里没写时，在它自己前后两个关键帧之间插值。 |
 
 转角上限（度，正负对称）：`pelvis`、`torso` 14，`neck`、`head` 16，`upper_arm` 52，`lower_arm` 88，`hand` 35，`upper_leg` 35，`lower_leg` 60，`foot` 20。`root` 不转。`renderer/test_motions.py` 按这组上限检查每个片段；播放器另有一组略宽的硬限幅。片段名不存在时播放器改播 `idle`。
@@ -325,4 +345,19 @@ build_stage(manifest, timeline_shots, speech_tracks, captions, rigs_map, audio_t
 | `walk_medium` | 1.2 | 是 | 否 |
 | `step_shift` | 2.0 | 是 | 否 |
 
-`director.py` 的 `CLIP_SECONDS` 记着同一组时长，用来决定手势、点头、走路各占多少帧。改片段时长时两边一起改，`renderer/test_director.py` 会比对。
+第二批片段：
+
+| 片段 | 时长（秒） | 循环 | 钉脚 | 放开前臂限位 |
+| --- | --- | --- | --- | --- |
+| `operate` | 2.4 | 是 | 是 | 是 |
+| `carry` | 3.2 | 是 | 是 | 是 |
+| `cross_arms` | 3.0 | 是 | 是 | 是 |
+| `angry` | 1.8 | 是 | 是 | 是 |
+| `sad` | 4.0 | 是 | 是 | 否 |
+| `sit` | 3.2 | 是 | 否 | 是 |
+| `stand` | 1.0 | 否 | 否 | 否 |
+| `surprised` | 1.1 | 否 | 是 | 否 |
+
+`sit`、`stand` 不钉脚，整个人会下沉约一成身高，脚落到地面线以下。它们要配合桌椅之类的前景遮挡使用，空地上直接用会像陷进地面。
+
+`director.py` 的 `CLIP_SECONDS` 记着全部 19 个片段的时长，用来决定手势、点头、走路各占多少帧。改片段时长时两边一起改，`renderer/test_director.py` 会比对。

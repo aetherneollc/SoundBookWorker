@@ -4,6 +4,7 @@
   "duration": 1.8,
   "fps": 24,
   "foot_lock": true,
+  "arm_guard": false,
   "tags": [
     "angry",
     "emotion",

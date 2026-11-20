@@ -4,6 +4,7 @@
   "duration": 3.0,
   "fps": 24,
   "foot_lock": true,
+  "arm_guard": false,
   "tags": [
     "cross_arms",
     "think",

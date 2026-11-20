@@ -4,6 +4,7 @@
   "duration": 2.4,
   "fps": 24,
   "foot_lock": true,
+  "arm_guard": false,
   "tags": [
     "operate",
     "console",

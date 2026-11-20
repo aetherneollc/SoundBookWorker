@@ -39,7 +39,8 @@ except ImportError:  # ``python -m unittest`` imports this file as part of the p
 
 
 # Bump the salt when the mesh document changes shape, so old caches are not reused.
-_MESH_SALT = b'\0godot2d-mesh-v1'
+# v2: rigs built through the CLI before this had ``face_anchors: null``.
+_MESH_SALT = b'\0godot2d-mesh-v2'
 _IMAGE_KEYS = ('master_file', 'rig_file', 'file')
 
 

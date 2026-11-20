@@ -24,11 +24,11 @@ STAGE_SIZE = (1280, 720)  # godot/player/main.gd refuses any other canvas.
 CLIP_SECONDS: dict[str, float] = {
     'idle': 3.2, 'talk_calm': 2.4, 'talk_emphatic': 2.4, 'talk_explain': 2.8, 'listen': 3.0,
     'nod': 1.0, 'point': 2.4, 'wave': 1.6, 'react': 1.2, 'walk_medium': 1.2, 'step_shift': 2.0,
+    'sit': 3.2, 'stand': 1.0, 'operate': 2.4, 'carry': 3.2, 'cross_arms': 3.0,
+    'angry': 1.8, 'sad': 4.0, 'surprised': 1.1,
 }
-# M2 clips are validated by renderer/test_motions.py.  The director only needs
-# durations for clips it schedules for a fixed number of cycles.
 M2_CLIPS = ('sit', 'stand', 'operate', 'carry', 'cross_arms', 'angry', 'sad', 'surprised')
-CLIPS = (*CLIP_SECONDS, *M2_CLIPS)
+CLIPS = tuple(CLIP_SECONDS)
 FRAMINGS = ('wide', 'two_shot', 'medium', 'close')
 CAMERA_MOVES = ('push_in', 'slow_pan_left', 'slow_pan_right', 'static')
 VISEMES = ('X', 'A', 'B', 'C', 'D', 'E', 'F')
@@ -44,6 +44,17 @@ ROVER_ACTION_ALIASES = {
     'sample': 'inspect', 'reach': 'inspect', 'signal': 'scan',
     'fall': 'tilt', 'stand': 'recover',
 }
+# The Worker only names the rover's action. These place AT-1 when a shot carries no path:
+# it parks on the side away from the cast, a first drive rolls in from that screen edge,
+# and the arm works on the floor just ahead of the nose.
+ROVER_MOVING_ACTIONS = ('drive', 'patrol', 'carry')
+ROVER_MARK_X = 0.68
+ROVER_MARK_LIMIT = 0.80  # Farther out and the tail leaves the frame.
+ROVER_CLEARANCE = 0.33   # Centre-to-actor gap that keeps the nose and the arm's work area clear.
+ROVER_ENTRY_SPAN = 0.30
+ROVER_SHUTTLE_SPAN = 0.14
+ROVER_REACH_X = 0.22
+ROVER_REACH_ABOVE_GROUND = 0.07
 
 # CARTOON_ACTIONS (SoundBookCF/src/cartoon_stage.ts) -> clip. ``walk`` and ``carry`` are
 # resolved by displacement in map_action(); the values here apply to the largest moves.
@@ -67,7 +78,12 @@ REACTION_SECONDS = 1.5
 
 _ROTATION = ('push_in', 'slow_pan_right', 'static', 'slow_pan_left')
 # A one-cycle gesture opens the line, then the speaker settles into this clip.
-_GESTURE_FOLLOW = {'point': 'talk_explain', 'wave': 'talk_calm', 'react': 'talk_emphatic'}
+_GESTURE_FOLLOW = {'point': 'talk_explain', 'wave': 'talk_calm', 'react': 'talk_emphatic',
+                   'surprised': 'talk_emphatic', 'stand': 'talk_calm'}
+# Looping stances. An actor given one holds it while listening and through a first line;
+# dropping to the neutral listen pose would undo the stance every time someone else spoke.
+_POSTURE_CLIPS = ('operate', 'cross_arms', 'angry', 'sad', 'sit', 'carry')
+_ACTION_EMOTIONS = {'angry': 'angry', 'sad': 'sad', 'surprised': 'surprised'}
 _STRONG_EMOTIONS = ('angry', 'surprised')
 _RHUBARB_VISEMES = {'X': 'X', 'A': 'A', 'B': 'B', 'C': 'C', 'D': 'D', 'E': 'E', 'F': 'F',
                     'G': 'B', 'H': 'C'}  # Rhubarb's own fallbacks for its two extended shapes.
@@ -434,8 +450,17 @@ def _stage_set(shot: dict, motion: dict) -> dict:
     }
 
 
-def _normalize_rover(shot: dict, motion: dict) -> dict:
-    """Normalize the manifest's rover shorthand into the stage v1 record."""
+def _is_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def _normalize_rover(shot: dict, motion: dict, actors: list[dict] | None = None,
+                     ground_y: float = 0.86, previous: dict | None = None) -> dict:
+    """Normalize the manifest's rover shorthand into the stage v1 record.
+
+    ``previous`` is the rover record of the last shot in the same scene. With no authored
+    path the rover stays where that shot left it, so a cut never teleports it.
+    """
     motion_rover = motion.get('rover') if isinstance(motion.get('rover'), dict) else {}
     shot_rover = shot.get('rover') if isinstance(shot.get('rover'), dict) else {}
     if not shot_rover and not motion_rover and not _text(shot.get('rover_action')) and not _text(motion.get('rover_action')):
@@ -451,21 +476,52 @@ def _normalize_rover(shot: dict, motion: dict) -> dict:
     action = ROVER_ACTION_ALIASES.get(action, action)
     if action not in ROVER_ACTIONS:
         action = 'idle'
-    from_x = round(_clamp(_float(raw.get('from_x'), _float(raw.get('x'), 0.65)), 0.0, 1.0), 4)
-    to_x = round(_clamp(_float(raw.get('to_x'), from_x), 0.0, 1.0), 4)
+    cast_x = [actor['to_x'] for actor in actors or []]
+    crowd = sum(cast_x) / len(cast_x) if cast_x else None
+    authored = next((raw[key] for key in ('from_x', 'x') if _is_number(raw.get(key))), None)
+    if authored is not None:
+        from_x = _float(authored)
+        to_x = _float(raw.get('to_x'), from_x)
+    else:
+        # Park on the side away from the cast, clear of whoever stands nearest.
+        if crowd is None or crowd <= 0.5:
+            outward = 1.0
+            home = min(ROVER_MARK_LIMIT, max([ROVER_MARK_X] + [x + ROVER_CLEARANCE for x in cast_x]))
+        else:
+            outward = -1.0
+            home = max(1.0 - ROVER_MARK_LIMIT, min([1.0 - ROVER_MARK_X] + [x - ROVER_CLEARANCE for x in cast_x]))
+        from_x = previous['to_x'] if previous else home
+        to_x = _float(raw.get('to_x'), from_x)
+        if action in ROVER_MOVING_ACTIONS and not _is_number(raw.get('to_x')):
+            if previous is None:
+                from_x = home + outward * ROVER_ENTRY_SPAN
+                to_x = home
+            elif abs(from_x - home) > STEP_SHIFT_MIN_SPAN:
+                to_x = home  # Out on a run: come back to the mark.
+            else:
+                to_x = home + outward * ROVER_SHUTTLE_SPAN
+    from_x = round(_clamp(from_x, 0.0, 1.0), 4)
+    to_x = round(_clamp(to_x, 0.0, 1.0), 4)
     facing = _text(raw.get('facing')).lower()
     if facing not in FACINGS:
-        facing = 'left' if to_x < from_x else 'right'
+        if to_x != from_x:
+            facing = 'left' if to_x < from_x else 'right'
+        elif previous:
+            facing = previous['facing']
+        elif crowd is not None and abs(crowd - to_x) > STEP_SHIFT_MIN_SPAN:
+            facing = 'left' if crowd < to_x else 'right'  # Parked, it faces the people it works with.
+        else:
+            facing = 'right'
     depth = _text(raw.get('depth')).lower()
-    target_x_default = to_x + (0.14 if facing == 'right' else -0.14)
+    ahead = ROVER_REACH_X if facing == 'right' else -ROVER_REACH_X
     return {
         'action': action,
         'from_x': from_x,
         'to_x': to_x,
         'facing': facing,
         'depth': depth if depth in DEPTHS else 'mid',
-        'target_x': round(_clamp(_float(raw.get('target_x'), target_x_default), 0.0, 1.0), 4),
-        'target_y': round(_clamp(_float(raw.get('target_y'), 0.55), 0.0, 1.0), 4),
+        'target_x': round(_clamp(_float(raw.get('target_x'), to_x + ahead), 0.0, 1.0), 4),
+        'target_y': round(_clamp(_float(raw.get('target_y'), ground_y - ROVER_REACH_ABOVE_GROUND), 0.0, 1.0), 4),
         'active': bool(raw.get('active', True)),
     }
 
@@ -489,12 +545,16 @@ def _shot_cast(motion: dict, cast: _Cast) -> list[dict]:
         if move_clip not in ('walk_medium', 'step_shift'):
             move_clip, to_x = '', from_x
         depth, facing = _text(raw.get('depth')).lower(), _text(raw.get('facing')).lower()
+        stance = map_action(action)
+        emotion = normalize_emotion(raw.get('emotion'))
         actors.append({
             'id': actor_id, 'name': cast.names[actor_id], 'from_x': from_x, 'to_x': to_x,
             'action': action, 'move_clip': move_clip,
+            'posture': stance if stance in _POSTURE_CLIPS and not move_clip else '',
             'depth': depth if depth in DEPTHS else 'mid',
             'facing': facing if facing in FACINGS else '',
-            'emotion': normalize_emotion(raw.get('emotion')),
+            # "angry" names a stance and a face; the face follows unless the script set one.
+            'emotion': emotion if emotion != 'neutral' else _ACTION_EMOTIONS.get(action, 'neutral'),
         })
     return actors
 
@@ -542,6 +602,7 @@ def _build_segments(timeline_shots: Any, first_frame: int, cast: _Cast, director
     previous_scene: Any = None
     counters: dict[int, int] = {}
     used_ids: set[str] = set()
+    parked: dict[int, dict] = {}  # scene -> where its last rover shot left AT-1
 
     def unique(shot_id: str) -> str:
         while shot_id in used_ids:
@@ -563,11 +624,15 @@ def _build_segments(timeline_shots: Any, first_frame: int, cast: _Cast, director
         motion = shot.get('story_motion') if isinstance(shot.get('story_motion'), dict) else {}
         actors = _shot_cast(motion, cast)
         framing = _text(motion.get('framing')).lower()
+        rover = _normalize_rover(shot, motion, actors, _stage_set(shot, motion)['ground_y'], parked.get(scene))
+        if rover:
+            parked[scene] = rover
         common = {
             'scene_number': scene,
             'framing': framing if framing in ('wide', 'medium', 'close') else ('wide' if len(actors) >= 2 else 'medium'),
             'camera_hint': _camera_hint(motion.get('camera') or shot.get('camera')),
-            'rover': _normalize_rover(shot, motion),
+            'focus': _text(motion.get('focus')).lower(),
+            'rover': rover,
         }
         scene_first, previous_scene = scene != previous_scene, scene
         walker = max((actor for actor in actors if actor['move_clip'] == 'walk_medium'),
@@ -589,8 +654,10 @@ def _build_segments(timeline_shots: Any, first_frame: int, cast: _Cast, director
                          'actors': _block(actors, walk_frames, director)})
         if walk_frames < frames:
             rest = frames - walk_frames
+            # The rover finished its move during the walk; it must not drive the path twice.
+            arrived = {**rover, 'from_x': rover['to_x']} if rover else rover
             segments.append({**common, 'id': unique(f'{shot_id}b'), 'from': start + walk_frames, 'frames': rest,
-                             'scene_first': False, 'walk_actor': '', 'camera_hint': None,
+                             'scene_first': False, 'walk_actor': '', 'camera_hint': None, 'rover': arrived,
                              'set': _stage_set(shot, motion),
                              'actors': _block(actors, rest, director, settled=True)})
     return segments
@@ -633,10 +700,17 @@ def _line_framing(line: dict, base: str, director: _Director) -> str:
     return 'close' if base == 'close' or line['emotion'] in _STRONG_EMOTIONS or punchy else 'medium'
 
 
+def _rover_on_stage(segment: dict) -> bool:
+    rover = segment.get('rover')
+    return bool(rover) and bool(rover.get('active', True))
+
+
 def _desired_cuts(segment: dict, lines: list[dict], director: _Director) -> list[dict]:
     frames, actors, base = segment['frames'], segment['actors'], segment['framing']
     count = len(actors)
-    group = 'wide' if count != 2 or (segment['scene_first'] and base == 'wide') else 'two_shot'
+    # A two-shot crops to the pair, which would push a rover parked beside them out of frame.
+    group = ('wide' if count != 2 or _rover_on_stage(segment) or (segment['scene_first'] and base == 'wide')
+             else 'two_shot')
     primary = lines[0]['actor'] if lines else actors[0]['id']
     if count >= 2 and segment['scene_first'] and frames < director.long_take:
         return [{'at': 0, 'framing': group, 'focus': '', 'until': frames}]  # Too short to open and cut in.
@@ -732,6 +806,9 @@ def _plan_cuts(segment: dict, lines: list[dict], director: _Director) -> tuple[l
         plan = [(0, 'medium', segment['walk_actor'])]
     elif not segment['actors']:
         plan = [(0, 'wide', '')]
+    elif _rover_on_stage(segment) and (not lines or segment.get('focus') == 'robot'):
+        # The rover is the subject (it speaks or works while the cast watches): keep it in frame.
+        plan = [(0, 'wide', '')]
     else:
         accepted = _enforce_min_cut(_desired_cuts(segment, lines, director), frames, director)
         plan = []
@@ -768,13 +845,16 @@ def _pick_gesture(line: dict, action: str, director: _Director) -> str:
     text, emotion = line['text'], line['emotion']
     frames = line['to'] - line['from']
     strong = emotion in _STRONG_EMOTIONS
+    stance = map_action(action) if action else ''
     if action == 'wave' or _WAVE_RE.search(text):
         clip = 'wave'
     elif action == 'react' or (emotion == 'surprised' and frames <= director.frames(2.0)):
         clip = 'react'
-    elif action in ('work', 'console', 'operate'):
-        clip = 'operate'
-    elif action in ('point', 'console') or _POINT_RE.search(text):
+    elif stance in _POSTURE_CLIPS:
+        clip = stance  # work / console / operate, and the held stances (cross_arms, angry, ...).
+    elif action in ('surprised', 'stand'):
+        clip = action
+    elif action == 'point' or _POINT_RE.search(text):
         clip = 'point'
     elif strong or line['exclaim']:
         clip = 'talk_emphatic'
@@ -782,7 +862,7 @@ def _pick_gesture(line: dict, action: str, director: _Director) -> str:
         clip = 'talk_explain'
     else:
         clip = 'talk_calm'
-    if clip == director.last_gesture.get(line['actor']):
+    if clip == director.last_gesture.get(line['actor']) and clip not in _POSTURE_CLIPS:
         if clip in _GESTURE_FOLLOW:
             clip = 'talk_emphatic' if strong or line['exclaim'] else 'talk_explain'
         elif clip == 'talk_calm':
@@ -817,7 +897,8 @@ def _actor_beats(actor: dict, layers: dict[str, list[tuple]], frames: int) -> li
         elif speak:
             key = (speak['clip'], speak['emotion'], True, speak['look_at'])
         elif nod or listen:
-            key = ('nod' if nod else 'listen', actor['emotion'], False, (nod or listen)['look_at'])
+            key = ('nod' if nod else listen.get('clip', 'listen'), actor['emotion'], False,
+                   (nod or listen)['look_at'])
         elif action:
             key = (action['clip'], actor['emotion'], False, '')
         elif move and middle >= move[1]:
@@ -877,7 +958,8 @@ def _plan_beats(segment: dict, lines: list[dict], reactions: list[tuple], direct
         end = line['b']
         if following and following['actor'] == speaker and following['a'] - end <= director.frames(0.5):
             end = following['a']  # Keep gesturing through a breath instead of dropping to idle.
-        state = {'emotion': line['emotion'], 'look_at': line['target']}
+        emotion = line['emotion'] if line['emotion'] != 'neutral' else by_id[speaker]['emotion']
+        state = {'emotion': emotion, 'look_at': line['target']}
         head = director.clip_frames(clip) if clip in _GESTURE_FOLLOW else 0
         if head and end - line['a'] - head >= director.frames(0.75):
             layers[speaker]['speak'] += [(line['a'], line['a'] + head, {**state, 'clip': clip}),
@@ -889,13 +971,15 @@ def _plan_beats(segment: dict, lines: list[dict], reactions: list[tuple], direct
                 else min(frames, line['b'] + director.frames(0.5)))
         for actor in actors:
             if actor['id'] != speaker:
-                layers[actor['id']]['listen'].append((line['a'], hold, {'look_at': speaker}))
+                # A held stance (arms crossed, at the console) is how this actor listens.
+                layers[actor['id']]['listen'].append(
+                    (line['a'], hold, {'look_at': speaker, 'clip': actor['posture'] or 'listen'}))
 
     def add_nod(actor_id: str, start: int, speaker: str) -> None:
         end = start + nod_frames
         spacing = director.frames(2.0)
-        if start < 0 or end > frames:
-            return
+        if start < 0 or end > frames or by_id[actor_id]['posture']:
+            return  # The nod clip returns the arms to rest, which would break a held stance.
         if any(start < busy_end and end > busy_start for busy_start, busy_end, _ in layers[actor_id]['speak']):
             return
         if any(start < other_end + spacing and end > other_start - spacing
@@ -919,12 +1003,13 @@ def _plan_beats(segment: dict, lines: list[dict], reactions: list[tuple], direct
         lead = director.frames(0.25)
         for actor in actors:
             clip = map_action(actor['action'])
-            if actor['id'] in spoke:
+            if actor['posture']:
+                # Lowest layer for the whole shot, so the stance also fills the gaps around lines.
+                layers[actor['id']]['action'].append((0, frames, {'clip': actor['posture']}))
+            elif actor['id'] in spoke:
                 continue
-            if clip in _GESTURE_FOLLOW:
+            elif clip in _GESTURE_FOLLOW:
                 layers[actor['id']]['action'].append((lead, min(frames, lead + director.clip_frames(clip)), {'clip': clip}))
-            elif clip in M2_CLIPS:
-                layers[actor['id']]['action'].append((0, frames, {'clip': clip}))
 
     beats = [beat for actor in actors for beat in _actor_beats(actor, layers[actor['id']], frames)]
     order = {actor['id']: index for index, actor in enumerate(actors)}
