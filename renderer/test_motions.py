@@ -92,7 +92,7 @@ class MotionClipTest(unittest.TestCase):
             cls.motions[name] = json.loads(path.read_text(encoding="utf-8"))
 
     def test_all_nineteen_motion_files_exist(self) -> None:
-        self.assertEqual(set(self.paths), set(EXPECTED_NAMES))
+        self.assertEqual(set(self.paths) - {"walk_step"}, set(EXPECTED_NAMES))
 
     def test_required_document_and_keyframe_fields(self) -> None:
         for name in EXPECTED_NAMES:
@@ -178,7 +178,7 @@ class MotionClipTest(unittest.TestCase):
         }
         self.assertEqual(non_looping, {"nod", "react", "stand", "surprised"})
         self.assertEqual(
-            unlocked, {"walk_medium", "step_shift", "sit", "stand"}
+            unlocked, {"walk_medium", "walk_step", "step_shift", "sit", "stand"}
         )
         self.assertEqual(float(self.motions["nod"]["duration"]), 1.0)
         self.assertEqual(float(self.motions["react"]["duration"]), 1.2)
@@ -282,6 +282,33 @@ class MotionClipTest(unittest.TestCase):
             min(frame["bones"]["lower_leg_r"] for frame in step_frames),
             -20.0,
         )
+
+    def test_walk_step_is_the_four_pose_stride(self) -> None:
+        motion = self.motions["walk_step"]
+        self.assertEqual(motion["fps"], 24)
+        self.assertEqual(float(motion["duration"]), 1.0)
+        self.assertTrue(motion["loop"])
+        self.assertFalse(motion["foot_lock"])
+        self.assertEqual(motion["ease"], "linear")
+        frames = motion["keyframes"]
+        self.assertEqual(len(frames), 9)
+        self.assertEqual(frames[0]["bones"], frames[-1]["bones"])
+        self.assertEqual(frames[0]["root_offset"], frames[-1]["root_offset"])
+        contact = frames[0]["bones"]
+        self.assertEqual(contact["upper_leg_l"], -28.0)
+        self.assertEqual(contact["lower_leg_l"], 8.0)
+        self.assertEqual(contact["upper_leg_r"], 22.0)
+        self.assertEqual(contact["lower_leg_r"], 18.0)
+        swapped = frames[4]["bones"]
+        self.assertEqual(swapped["upper_leg_l"], contact["upper_leg_r"])
+        self.assertEqual(swapped["upper_leg_r"], contact["upper_leg_l"])
+        self.assertEqual(swapped["lower_leg_l"], contact["lower_leg_r"])
+        self.assertEqual(swapped["lower_leg_r"], contact["lower_leg_l"])
+        self.assertEqual(frames[2]["bones"]["lower_leg_r"], 70.0)
+        self.assertEqual(frames[6]["bones"]["lower_leg_l"], 70.0)
+        heights = [float(frame["root_offset"][1]) for frame in frames[:4]]
+        self.assertEqual(heights.index(max(heights)), 1)
+        self.assertEqual(heights.index(min(heights)), 3)
 
 
 if __name__ == "__main__":

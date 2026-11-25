@@ -1,0 +1,147 @@
+{
+  "name": "walk_step",
+  "loop": true,
+  "duration": 1.0,
+  "fps": 24,
+  "foot_lock": false,
+  "ease": "linear",
+  "arm_guard": true,
+  "tags": ["walk", "side", "locomotion"],
+  "keyframes": [
+    {
+      "t": 0.0,
+      "root_offset": [0.0, 0.0],
+      "bones": {
+        "torso": 4.0,
+        "upper_arm_l": 20.0,
+        "lower_arm_l": 15.0,
+        "upper_arm_r": -25.0,
+        "lower_arm_r": 10.0,
+        "upper_leg_l": -28.0,
+        "lower_leg_l": 8.0,
+        "upper_leg_r": 22.0,
+        "lower_leg_r": 18.0
+      }
+    },
+    {
+      "t": 0.125,
+      "root_offset": [0.0, 0.04],
+      "bones": {
+        "torso": 0.0,
+        "upper_arm_l": 0.0,
+        "lower_arm_l": 0.0,
+        "upper_arm_r": 0.0,
+        "lower_arm_r": 0.0,
+        "upper_leg_l": -8.0,
+        "lower_leg_l": 28.0,
+        "upper_leg_r": 8.0,
+        "lower_leg_r": 55.0
+      }
+    },
+    {
+      "t": 0.25,
+      "root_offset": [0.0, -0.02],
+      "bones": {
+        "torso": 0.0,
+        "upper_arm_l": 0.0,
+        "lower_arm_l": 0.0,
+        "upper_arm_r": 0.0,
+        "lower_arm_r": 0.0,
+        "upper_leg_l": 4.0,
+        "lower_leg_l": 6.0,
+        "upper_leg_r": -6.0,
+        "lower_leg_r": 70.0
+      }
+    },
+    {
+      "t": 0.375,
+      "root_offset": [0.0, -0.03],
+      "bones": {
+        "torso": 0.0,
+        "upper_arm_l": 0.0,
+        "lower_arm_l": 0.0,
+        "upper_arm_r": 0.0,
+        "lower_arm_r": 0.0,
+        "upper_leg_l": 18.0,
+        "lower_leg_l": 12.0,
+        "upper_leg_r": -20.0,
+        "lower_leg_r": 73.0
+      }
+    },
+    {
+      "t": 0.5,
+      "root_offset": [0.0, 0.0],
+      "bones": {
+        "torso": -4.0,
+        "upper_arm_l": -25.0,
+        "lower_arm_l": 10.0,
+        "upper_arm_r": 20.0,
+        "lower_arm_r": 15.0,
+        "upper_leg_l": 22.0,
+        "lower_leg_l": 18.0,
+        "upper_leg_r": -28.0,
+        "lower_leg_r": 8.0
+      }
+    },
+    {
+      "t": 0.625,
+      "root_offset": [0.0, 0.04],
+      "bones": {
+        "torso": 0.0,
+        "upper_arm_l": 0.0,
+        "lower_arm_l": 0.0,
+        "upper_arm_r": 0.0,
+        "lower_arm_r": 0.0,
+        "upper_leg_l": 8.0,
+        "lower_leg_l": 55.0,
+        "upper_leg_r": -8.0,
+        "lower_leg_r": 28.0
+      }
+    },
+    {
+      "t": 0.75,
+      "root_offset": [0.0, -0.02],
+      "bones": {
+        "torso": 0.0,
+        "upper_arm_l": 0.0,
+        "lower_arm_l": 0.0,
+        "upper_arm_r": 0.0,
+        "lower_arm_r": 0.0,
+        "upper_leg_l": -6.0,
+        "lower_leg_l": 70.0,
+        "upper_leg_r": 4.0,
+        "lower_leg_r": 6.0
+      }
+    },
+    {
+      "t": 0.875,
+      "root_offset": [0.0, -0.03],
+      "bones": {
+        "torso": 0.0,
+        "upper_arm_l": 0.0,
+        "lower_arm_l": 0.0,
+        "upper_arm_r": 0.0,
+        "lower_arm_r": 0.0,
+        "upper_leg_l": -20.0,
+        "lower_leg_l": 73.0,
+        "upper_leg_r": 18.0,
+        "lower_leg_r": 12.0
+      }
+    },
+    {
+      "t": 1.0,
+      "root_offset": [0.0, 0.0],
+      "bones": {
+        "torso": 4.0,
+        "upper_arm_l": 20.0,
+        "lower_arm_l": 15.0,
+        "upper_arm_r": -25.0,
+        "lower_arm_r": 10.0,
+        "upper_leg_l": -28.0,
+        "lower_leg_l": 8.0,
+        "upper_leg_r": 22.0,
+        "lower_leg_r": 18.0
+      }
+    }
+  ]
+}

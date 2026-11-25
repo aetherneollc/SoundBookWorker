@@ -10,6 +10,8 @@ import unittest
 import wave
 from pathlib import Path
 
+import cv2
+
 from renderer.director import validate_stage
 from renderer.prepare_stage import prepare
 from renderer.test_rig_mesh import _make_synthetic_character
@@ -42,9 +44,14 @@ class PrepareStageTests(unittest.TestCase):
         cls.addClassCleanup(cls._temporary.cleanup)
         cls.work = Path(cls._temporary.name)
         cls.master = cls.work / 'linlan.png'
+        cls.side = cls.work / 'linlan-3q.png'
         cls.voice = cls.work / 'linlan.wav'
         cls.bed = cls.work / 'room.wav'
         _make_synthetic_character(cls.master)
+        _make_synthetic_character(cls.side)
+        side_image = cv2.imread(str(cls.side), cv2.IMREAD_COLOR)
+        side_image[180:188, 176:184] = (220, 125, 70)
+        cv2.imwrite(str(cls.side), side_image)
         _write_wav(cls.voice, 2.0)
         _write_wav(cls.bed, 1.0)
         cls.cache = cls.work / 'rigs'
@@ -65,6 +72,8 @@ class PrepareStageTests(unittest.TestCase):
                 'id': 'linlan',
                 'name': '林岚',
                 'master_file': str(cls.master),
+                'side_master_file': str(cls.side),
+                'side_native_facing': 'right',
                 'stature_scale': 0.93,
             }],
             'shots': [{
@@ -137,11 +146,19 @@ class PrepareStageTests(unittest.TestCase):
         rig = stage['rigs']['linlan']
         self.assertAlmostEqual(rig['stature_scale'], 0.93)
         rig_path = Path(rig['rig_json'])
+        side_rig_path = Path(rig['side_rig_json'])
+        self.assertEqual(rig['side_native_facing'], 'right')
+        self.assertNotEqual(rig_path, side_rig_path)
         self.assertTrue(rig_path.is_file())
+        self.assertTrue(side_rig_path.is_file())
         document = json.loads(rig_path.read_text(encoding='utf-8'))
+        side_document = json.loads(side_rig_path.read_text(encoding='utf-8'))
         self.assertTrue(document['bones'])
         self.assertTrue(document['groups'])
         self.assertTrue((rig_path.parent / document['texture']).is_file())
+        self.assertTrue(side_document['bones'])
+        self.assertTrue(side_document['groups'])
+        self.assertTrue((side_rig_path.parent / side_document['texture']).is_file())
 
         self.assertTrue(stage['captions'])
         self.assertIn('月面', stage['captions'][0]['text'])
@@ -158,9 +175,11 @@ class PrepareStageTests(unittest.TestCase):
         self.assertAlmostEqual(beds[0]['volume'], 0.35)
 
         stamped = rig_path.stat().st_mtime_ns
+        side_stamped = side_rig_path.stat().st_mtime_ns
         again = prepare(self.manifest_path, self.stage_path, self.cache)
         self.assertEqual(validate_stage(again), [])
         self.assertEqual(rig_path.stat().st_mtime_ns, stamped)
+        self.assertEqual(side_rig_path.stat().st_mtime_ns, side_stamped)
 
         quiet = dict(self.manifest)
         quiet.pop('episode_title')
@@ -175,6 +194,17 @@ class PrepareStageTests(unittest.TestCase):
         self.assertEqual(silent['audio'], [])
         self.assertEqual(silent['intro']['frames'], 0)
         self.assertEqual(rig_path.stat().st_mtime_ns, stamped)
+
+        front_only = json.loads(json.dumps(self.manifest, ensure_ascii=False))
+        front_only['character_rigs'][0].pop('side_master_file')
+        front_only['character_rigs'][0].pop('side_native_facing')
+        front_only['audio_tracks'] = []
+        front_only['timeline_mode'] = 'authored'
+        front_only_path = self.work / 'front-only.json'
+        front_only_path.write_text(json.dumps(front_only, ensure_ascii=False), encoding='utf-8')
+        legacy = prepare(front_only_path, self.work / 'front-only-stage.json', self.cache)
+        self.assertEqual(validate_stage(legacy), [])
+        self.assertNotIn('side_rig_json', legacy['rigs']['linlan'])
 
 
 if __name__ == '__main__':

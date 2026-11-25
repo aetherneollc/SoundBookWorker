@@ -26,13 +26,13 @@ class GroundShadowLayer:
 		for shadow: Dictionary in shadows:
 			var center: Vector2 = shadow.get("position", Vector2.ZERO)
 			var scale_value: float = maxf(float(shadow.get("scale", 1.0)), 0.1)
-			_draw_soft_ellipse(center, Vector2(58.0, 12.0) * scale_value)
+			_draw_soft_ellipse(center, Vector2(78.0, 11.0) * scale_value)
 
 	func _draw_soft_ellipse(center: Vector2, radius: Vector2) -> void:
 		# Layered flat ellipses read as a soft contact shadow without a shader.
-		_draw_ellipse(center, radius * 1.28, Color(0.015, 0.025, 0.055, 0.08))
-		_draw_ellipse(center, radius * 1.08, Color(0.015, 0.025, 0.055, 0.12))
-		_draw_ellipse(center, radius * 0.82, Color(0.015, 0.025, 0.055, 0.18))
+		_draw_ellipse(center + Vector2(0.0, 3.0), radius * 1.15, Color(0.02, 0.03, 0.05, 0.28))
+		_draw_ellipse(center + Vector2(0.0, 2.0), radius * 0.92, Color(0.01, 0.02, 0.04, 0.48))
+		_draw_ellipse(center + Vector2(0.0, 1.0), radius * 0.62, Color(0.0, 0.0, 0.0, 0.62))
 
 	func _draw_ellipse(center: Vector2, radius: Vector2, color: Color) -> void:
 		var points := PackedVector2Array()

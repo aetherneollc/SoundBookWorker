@@ -23,7 +23,8 @@ STAGE_SIZE = (1280, 720)  # godot/player/main.gd refuses any other canvas.
 # Clip name -> seconds for one cycle. Mirrors godot/motions/*.json; the unit test compares them.
 CLIP_SECONDS: dict[str, float] = {
     'idle': 3.2, 'talk_calm': 2.4, 'talk_emphatic': 2.4, 'talk_explain': 2.8, 'listen': 3.0,
-    'nod': 1.0, 'point': 2.4, 'wave': 1.6, 'react': 1.2, 'walk_medium': 1.2, 'step_shift': 2.0,
+    'nod': 1.0, 'point': 2.4, 'wave': 1.6, 'react': 1.2, 'walk_medium': 1.2, 'walk_step': 1.0,
+    'step_shift': 2.0,
     'sit': 3.2, 'stand': 1.0, 'operate': 2.4, 'carry': 3.2, 'cross_arms': 3.0,
     'angry': 1.8, 'sad': 4.0, 'surprised': 1.1,
 }
@@ -35,6 +36,7 @@ VISEMES = ('X', 'A', 'B', 'C', 'D', 'E', 'F')
 EMOTIONS = ('neutral', 'happy', 'serious', 'angry', 'sad', 'surprised')
 DEPTHS = ('near', 'mid', 'far')
 FACINGS = ('left', 'right')
+VIEWS = ('front', 'three_quarter', 'side', 'back')
 PROP_KINDS = ('console_desk', 'telemetry_screen', 'workbench')
 ROVER_ACTIONS = (
     'idle', 'drive', 'patrol', 'scan', 'inspect', 'work', 'assemble',
@@ -157,8 +159,12 @@ def map_action(action: Any, displacement: float = 0.0) -> str:
     a waist-up ``walk_medium``, an in-place ``step_shift``, or no movement at all.
     """
     name = str(action or '').strip().lower()
-    if name in ('walk', 'walk_medium', 'step_shift'):
+    if name in ('walk', 'walk_medium', 'step_shift', 'walk_step'):
         span = abs(round(_float(displacement), 4))
+        if name == 'walk_step':
+            if span > WALK_MEDIUM_MIN_SPAN:
+                return 'walk_step'
+            return 'step_shift' if span > STEP_SHIFT_MIN_SPAN else 'idle'
         if span > WALK_MEDIUM_MIN_SPAN:
             return 'walk_medium'
         return 'step_shift' if span > STEP_SHIFT_MIN_SPAN else 'idle'
@@ -317,6 +323,11 @@ class _Cast:
         scale = _float(entry.get('stature_scale'), _float(stature, 1.0))
         self.used[actor_id] = {'rig_json': _text(entry.get('rig_json')).replace('\\', '/'),
                                'stature_scale': round(_clamp(scale, 0.5, 1.5), 3)}
+        side_rig = _text(entry.get('side_rig_json'))
+        if side_rig:
+            native = _text(entry.get('side_native_facing')).lower()
+            self.used[actor_id]['side_rig_json'] = side_rig.replace('\\', '/')
+            self.used[actor_id]['side_native_facing'] = native if native in FACINGS else 'right'
         return actor_id
 
     def speaker_id(self, line: dict) -> str | None:
@@ -541,8 +552,8 @@ def _shot_cast(motion: dict, cast: _Cast) -> list[dict]:
         from_x = round(_clamp(_float(raw.get('from_x'), _float(raw.get('x'), 0.5)), 0.0, 1.0), 4)
         to_x = round(_clamp(_float(raw.get('to_x'), from_x), 0.0, 1.0), 4)
         action = _text(raw.get('action')).lower() or 'idle'
-        move_clip = map_action(action, to_x - from_x) if action in ('walk', 'walk_medium', 'step_shift') else ''
-        if move_clip not in ('walk_medium', 'step_shift'):
+        move_clip = map_action(action, to_x - from_x) if action in ('walk', 'walk_medium', 'step_shift', 'walk_step') else ''
+        if move_clip not in ('walk_medium', 'step_shift', 'walk_step'):
             move_clip, to_x = '', from_x
         depth, facing = _text(raw.get('depth')).lower(), _text(raw.get('facing')).lower()
         stance = map_action(action)
@@ -553,13 +564,20 @@ def _shot_cast(motion: dict, cast: _Cast) -> list[dict]:
             'posture': stance if stance in _POSTURE_CLIPS and not move_clip else '',
             'depth': depth if depth in DEPTHS else 'mid',
             'facing': facing if facing in FACINGS else '',
+            'authored_view': _text(raw.get('view')).lower(),
             # "angry" names a stance and a face; the face follows unless the script set one.
             'emotion': emotion if emotion != 'neutral' else _ACTION_EMOTIONS.get(action, 'neutral'),
         })
     return actors
 
 
-def _block(actors: list[dict], frames: int, director: _Director, settled: bool = False) -> list[dict]:
+def _block(
+    actors: list[dict],
+    frames: int,
+    director: _Director,
+    settled: bool = False,
+    rover: dict | None = None,
+) -> list[dict]:
     """Place the cast for one stage shot. ``settled`` means every move already happened."""
     placed: list[dict] = []
     for actor in actors:
@@ -568,7 +586,7 @@ def _block(actors: list[dict], frames: int, director: _Director, settled: bool =
             start = end = actor['to_x'] if settled else actor['from_x']
         else:
             start, end = actor['from_x'], actor['to_x']
-            if actor['move_clip'] == 'walk_medium':
+            if actor['move_clip'] in ('walk_medium', 'walk_step'):
                 span = (0, frames)
             else:
                 length = min(frames, director.clip_frames('step_shift'))
@@ -579,15 +597,38 @@ def _block(actors: list[dict], frames: int, director: _Director, settled: bool =
     for actor in placed:
         others = [other['x_end'] for other in placed if other is not actor]
         offset = sum(others) / len(others) - actor['x_end'] if others else 0.0
-        # Front-facing rigs show who they talk to by leaning toward the rest of the group.
+        rover_offset = (
+            _float(rover.get('to_x'), actor['x_end']) - actor['x_end']
+            if rover and rover.get('active', True) else 0.0
+        )
+        # Lean remains screen-space even when a three-quarter view is mirrored.
         actor['lean'] = LEAN if offset > STEP_SHIFT_MIN_SPAN else -LEAN if offset < -STEP_SHIFT_MIN_SPAN else 0.0
         toward = 'right' if offset > 0 else 'left' if offset < 0 else ''
+        toward_rover = 'right' if rover_offset > STEP_SHIFT_MIN_SPAN else 'left' if rover_offset < -STEP_SHIFT_MIN_SPAN else ''
         if actor['move_span']:
             actor['facing'] = 'right' if actor['x_end'] >= actor['x'] else 'left'
         elif settled and actor['move_clip'] and toward:
             actor['facing'] = toward  # After walking in, turn to the group, not along the path.
+        elif toward_rover and (not others or actor['action'] in ('idle', 'listen', 'point', 'work', 'console', 'operate')):
+            actor['facing'] = toward_rover
         else:
             actor['facing'] = actor['facing'] or toward or 'right'
+        front_action = actor['action'] in ('wave', 'surprised', 'react')
+        authored = actor.get('authored_view') if actor.get('authored_view') in VIEWS else ''
+        if authored:
+            actor['view'] = authored
+        elif actor['move_span']:
+            actor['view'] = 'back'
+        else:
+            actor['view'] = (
+                'front' if front_action
+                else 'three_quarter' if others or rover
+                else 'front'
+            )
+        # A side-view stride ends standing, on the front doll, so the mouth can play.
+        if settled and actor.get('move_clip') == 'walk_step' and actor.get('view') == 'side':
+            actor['view'] = 'front'
+            actor['authored_view'] = 'front'
     return placed
 
 
@@ -635,23 +676,36 @@ def _build_segments(timeline_shots: Any, first_frame: int, cast: _Cast, director
             'rover': rover,
         }
         scene_first, previous_scene = scene != previous_scene, scene
-        walker = max((actor for actor in actors if actor['move_clip'] == 'walk_medium'),
+        walker = max((actor for actor in actors if actor['move_clip'] in ('walk_medium', 'walk_step')),
                      key=lambda actor: abs(actor['to_x'] - actor['from_x']), default=None)
         if walker is None:
             segments.append({**common, 'id': shot_id, 'from': start, 'frames': frames, 'scene_first': scene_first,
                              'walk_actor': '', 'set': _stage_set(shot, motion),
-                             'actors': _block(actors, frames, director)})
+                             'actors': _block(actors, frames, director, rover=rover)})
             continue
         # Whole walk cycles, so the last step lands as the shot cuts.
-        cycles = 2 if abs(walker['to_x'] - walker['from_x']) <= 0.24 else 3
-        walk_frames = cycles * director.clip_frames('walk_medium')
-        if frames - walk_frames < max(director.min_cut, director.frames(1.5)):
+        # walk_step is one stride per second; two cycles stay inside a wide frame.
+        if walker['move_clip'] == 'walk_step':
+            cycles = 2
+        else:
+            cycles = 2 if abs(walker['to_x'] - walker['from_x']) <= 0.24 else 3
+        walk_frames = cycles * director.clip_frames(walker['move_clip'])
+        # A side-view stride keeps its two cycles even when the standing tail is short,
+        # so the walker does not march off the wide frame.
+        if walker['move_clip'] == 'walk_step':
+            tail_floor = director.min_cut
+        else:
+            tail_floor = max(director.min_cut, director.frames(1.5))
+        if frames - walk_frames < tail_floor:
             walk_frames = frames
         walk_set = _stage_set(shot, motion)
-        walk_set['walk_scroll_speed'] = math.copysign(WALK_SCROLL_SPEED, walker['to_x'] - walker['from_x'])
+        if walker['move_clip'] == 'walk_step':
+            walk_set['walk_scroll_speed'] = 0.0
+        else:
+            walk_set['walk_scroll_speed'] = math.copysign(WALK_SCROLL_SPEED, walker['to_x'] - walker['from_x'])
         segments.append({**common, 'id': shot_id, 'from': start, 'frames': walk_frames, 'scene_first': scene_first,
                          'walk_actor': walker['id'], 'set': walk_set,
-                         'actors': _block(actors, walk_frames, director)})
+                         'actors': _block(actors, walk_frames, director, rover=rover)})
         if walk_frames < frames:
             rest = frames - walk_frames
             # The rover finished its move during the walk; it must not drive the path twice.
@@ -659,7 +713,7 @@ def _build_segments(timeline_shots: Any, first_frame: int, cast: _Cast, director
             segments.append({**common, 'id': unique(f'{shot_id}b'), 'from': start + walk_frames, 'frames': rest,
                              'scene_first': False, 'walk_actor': '', 'camera_hint': None, 'rover': arrived,
                              'set': _stage_set(shot, motion),
-                             'actors': _block(actors, rest, director, settled=True)})
+                             'actors': _block(actors, rest, director, settled=True, rover=arrived)})
     return segments
 
 
@@ -802,7 +856,11 @@ def _plan_cuts(segment: dict, lines: list[dict], director: _Director) -> tuple[l
     """Return cuts that tile ``[0, frames)`` and the listener cutaways ``(actor, from, to, speaker)``."""
     frames = segment['frames']
     reactions: list[tuple] = []
-    if segment['walk_actor']:
+    side_walk = any(actor.get('move_clip') == 'walk_step' for actor in segment['actors'])
+    if segment['walk_actor'] and side_walk:
+        # Full body stays in frame so the planted boot and the lifted boot both read.
+        plan = [(0, 'wide', '')]
+    elif segment['walk_actor']:
         plan = [(0, 'medium', segment['walk_actor'])]
     elif not segment['actors']:
         plan = [(0, 'wide', '')]
@@ -879,6 +937,19 @@ def _layer_at(layer: list[tuple], frame: float) -> dict | None:
     return next((data for start, end, data in reversed(layer) if start <= frame < end), None)
 
 
+def _performance_view(clip: str, look_at: str = '', default: str = 'front') -> str:
+    """Choose one stable art view for a performance span."""
+    if default == 'back':
+        return 'back'
+    if clip in ('wave', 'surprised', 'react'):
+        return 'front'
+    if clip == 'walk_step':
+        return 'side'
+    if clip in ('walk_medium', 'step_shift') or look_at:
+        return 'three_quarter'
+    return default if default in VIEWS else 'front'
+
+
 def _actor_beats(actor: dict, layers: dict[str, list[tuple]], frames: int) -> list[dict]:
     """Flatten one actor's layers into beats. Priority: move, speak, nod, listen, action."""
     move = actor['move_span']
@@ -893,17 +964,18 @@ def _actor_beats(actor: dict, layers: dict[str, list[tuple]], frames: int) -> li
         speak, nod, listen, action = (_layer_at(layers[name], middle) for name in ('speak', 'nod', 'listen', 'action'))
         if move and move[0] <= middle < move[1]:
             # One unbroken beat: the player restarts a clip at every beat boundary.
-            key = (actor['move_clip'], actor['emotion'], False, '')
+            key = (actor['move_clip'], actor['emotion'], False, '', actor.get('view') or 'three_quarter')
         elif speak:
-            key = (speak['clip'], speak['emotion'], True, speak['look_at'])
+            key = (speak['clip'], speak['emotion'], True, speak['look_at'], speak['view'])
         elif nod or listen:
+            state = nod or listen
             key = ('nod' if nod else listen.get('clip', 'listen'), actor['emotion'], False,
-                   (nod or listen)['look_at'])
+                   state['look_at'], state.get('view', 'three_quarter'))
         elif action:
-            key = (action['clip'], actor['emotion'], False, '')
+            key = (action['clip'], actor['emotion'], False, '', action.get('view', actor['view']))
         elif move and middle >= move[1]:
             # Without a beat the player puts the actor back at actors[].x.
-            key = (actor['base_clip'], actor['emotion'], False, '')
+            key = (actor['base_clip'], actor['emotion'], False, '', actor['view'])
         else:
             continue
         if spans and spans[-1][1] == start and spans[-1][2] == key:
@@ -939,8 +1011,9 @@ def _actor_beats(actor: dict, layers: dict[str, list[tuple]], frames: int) -> li
         return round(actor['x'] + (actor['x_end'] - actor['x']) * (frame - move[0]) / (move[1] - move[0]), 4)
 
     return [{'from': start, 'to': end, 'actor': actor['id'], 'clip': clip, 'emotion': emotion,
-             'speaking': speaking, 'look_at': look_at, 'move_x': [position(start), position(end)]}
-            for start, end, (clip, emotion, speaking, look_at) in merged]
+             'speaking': speaking, 'look_at': look_at, 'view': view,
+             'move_x': [position(start), position(end)]}
+            for start, end, (clip, emotion, speaking, look_at, view) in merged]
 
 
 def _plan_beats(segment: dict, lines: list[dict], reactions: list[tuple], director: _Director) -> list[dict]:
@@ -959,7 +1032,11 @@ def _plan_beats(segment: dict, lines: list[dict], reactions: list[tuple], direct
         if following and following['actor'] == speaker and following['a'] - end <= director.frames(0.5):
             end = following['a']  # Keep gesturing through a breath instead of dropping to idle.
         emotion = line['emotion'] if line['emotion'] != 'neutral' else by_id[speaker]['emotion']
-        state = {'emotion': emotion, 'look_at': line['target']}
+        # Pick once for the whole sentence. A gesture followed by a talk loop
+        # therefore cannot flash between front and three-quarter mid-line.
+        held = by_id[speaker].get('authored_view')
+        view = held if held in VIEWS else _performance_view(clip, line['target'], by_id[speaker]['view'])
+        state = {'emotion': emotion, 'look_at': line['target'], 'view': view}
         head = director.clip_frames(clip) if clip in _GESTURE_FOLLOW else 0
         if head and end - line['a'] - head >= director.frames(0.75):
             layers[speaker]['speak'] += [(line['a'], line['a'] + head, {**state, 'clip': clip}),
@@ -973,7 +1050,8 @@ def _plan_beats(segment: dict, lines: list[dict], reactions: list[tuple], direct
             if actor['id'] != speaker:
                 # A held stance (arms crossed, at the console) is how this actor listens.
                 layers[actor['id']]['listen'].append(
-                    (line['a'], hold, {'look_at': speaker, 'clip': actor['posture'] or 'listen'}))
+                    (line['a'], hold, {'look_at': speaker, 'clip': actor['posture'] or 'listen',
+                                      'view': actor['view']}))
 
     def add_nod(actor_id: str, start: int, speaker: str) -> None:
         end = start + nod_frames
@@ -985,7 +1063,7 @@ def _plan_beats(segment: dict, lines: list[dict], reactions: list[tuple], direct
         if any(start < other_end + spacing and end > other_start - spacing
                for other_start, other_end, _ in layers[actor_id]['nod']):
             return
-        layers[actor_id]['nod'].append((start, end, {'look_at': speaker}))
+        layers[actor_id]['nod'].append((start, end, {'look_at': speaker, 'view': by_id[actor_id]['view']}))
 
     for actor_id, start, end, speaker in reactions:  # Give the cutaway something to show.
         if any(busy_start < end and busy_end > start for busy_start, busy_end, _ in layers[speaker]['speak']):
@@ -1005,11 +1083,15 @@ def _plan_beats(segment: dict, lines: list[dict], reactions: list[tuple], direct
             clip = map_action(actor['action'])
             if actor['posture']:
                 # Lowest layer for the whole shot, so the stance also fills the gaps around lines.
-                layers[actor['id']]['action'].append((0, frames, {'clip': actor['posture']}))
+                layers[actor['id']]['action'].append(
+                    (0, frames, {'clip': actor['posture'], 'view': actor['view']}))
             elif actor['id'] in spoke:
                 continue
             elif clip in _GESTURE_FOLLOW:
-                layers[actor['id']]['action'].append((lead, min(frames, lead + director.clip_frames(clip)), {'clip': clip}))
+                layers[actor['id']]['action'].append((
+                    lead, min(frames, lead + director.clip_frames(clip)),
+                    {'clip': clip, 'view': _performance_view(clip, '', actor['view'])},
+                ))
 
     beats = [beat for actor in actors for beat in _actor_beats(actor, layers[actor['id']], frames)]
     order = {actor['id']: index for index, actor in enumerate(actors)}
@@ -1106,7 +1188,8 @@ def build_stage(
             'frames': segment['frames'],
             'set': segment['set'],
             'actors': [{'id': actor['id'], 'name': actor['name'], 'x': actor['x'], 'depth': actor['depth'],
-                        'facing': actor['facing'], 'lean': actor['lean'], 'base_clip': actor['base_clip'],
+                        'facing': actor['facing'], 'view': actor['view'],
+                        'lean': actor['lean'], 'base_clip': actor['base_clip'],
                         'emotion': actor['emotion']} for actor in segment['actors']],
             'beats': _plan_beats(segment, stage_lines, reactions, director),
             'cuts': cuts,
@@ -1176,6 +1259,20 @@ def validate_stage(stage: dict) -> list[str]:
         return problems
     min_cut = max(1, round(MIN_CUT_FRAMES_AT_24 * fps / 24))
     rigs = stage.get('rigs') or {}
+    if not isinstance(rigs, dict):
+        problems.append('rigs must be an object')
+        rigs = {}
+    for actor_id, rig in rigs.items():
+        if not isinstance(rig, dict) or not _text(rig.get('rig_json')):
+            problems.append(f'rig {actor_id}: rig_json must be non-empty')
+            continue
+        if 'side_rig_json' in rig and not _text(rig.get('side_rig_json')):
+            problems.append(f'rig {actor_id}: side_rig_json must be non-empty when present')
+        native = rig.get('side_native_facing')
+        if native is not None and _text(native).lower() not in FACINGS:
+            problems.append(f'rig {actor_id}: side_native_facing must be left or right')
+        if native is not None and not _text(rig.get('side_rig_json')):
+            problems.append(f'rig {actor_id}: side_native_facing requires side_rig_json')
     robot_rig = stage.get('robot_rig')
     robot_rig_valid = (
         isinstance(robot_rig, dict)
@@ -1214,6 +1311,8 @@ def validate_stage(stage: dict) -> list[str]:
                 problems.append(f"{label}: unknown base_clip {actor.get('base_clip')}")
             if actor.get('depth') not in DEPTHS or not -1.0 <= _float(actor.get('lean'), 9.0) <= 1.0:
                 problems.append(f"{label}: actor {actor.get('id')} has a bad depth or lean")
+            if actor.get('view', 'front') not in VIEWS:
+                problems.append(f"{label}: actor {actor.get('id')} has an unknown view")
         expected = 0
         cuts = shot.get('cuts') or []
         for cut in cuts:
@@ -1239,6 +1338,8 @@ def validate_stage(stage: dict) -> list[str]:
             look_at = beat.get('look_at')
             if look_at and (look_at not in actor_ids or look_at == actor_id):
                 problems.append(f'{label}: beat at {begin} looks at {look_at}')
+            if beat.get('view', 'front') not in VIEWS:
+                problems.append(f'{label}: beat at {begin} uses an unknown view')
             move = beat.get('move_x')
             if not (isinstance(move, list) and len(move) == 2 and all(0.0 <= _float(x, -1.0) <= 1.0 for x in move)):
                 problems.append(f'{label}: beat at {begin} needs move_x [from, to]')

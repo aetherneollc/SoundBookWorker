@@ -338,6 +338,84 @@ class ListenerTests(StageAssertions):
         self.assertEqual(stage_shot['cuts'][0]['framing'], 'wide')
 
 
+class MultiviewTests(StageAssertions):
+    def test_dialogue_and_listening_use_stable_three_quarter_views(self):
+        stage = build(
+            [shot(0, 220, [linlan(), chen()])],
+            [line('林岚', 20, 120, '你看这组读数。'), line('陈工', 130, 205, '我正在复核。')],
+        )
+        self.assertPlayable(stage)
+        stage_shot = stage['shots'][0]
+        self.assertEqual(
+            [(item['id'], item['view'], item['facing']) for item in stage_shot['actors']],
+            [('linlan', 'three_quarter', 'right'), ('chen', 'three_quarter', 'left')],
+        )
+        addressed = [beat for beat in stage_shot['beats'] if beat['look_at']]
+        self.assertTrue(addressed)
+        self.assertTrue(all(beat['view'] == 'three_quarter' for beat in addressed))
+
+    def test_walks_are_three_quarter_but_front_actions_and_solos_face_camera(self):
+        mover = actor('林岚', 'linlan', 0.30, 'walk', to_x=0.38)
+        moving = build([shot(0, 150, [mover])])['shots'][0]
+        step = beats_of(moving, 'linlan', 'step_shift')[0]
+        self.assertEqual((moving['actors'][0]['view'], step['view'], moving['actors'][0]['facing']),
+                         ('back', 'back', 'right'))
+
+        waving = build([shot(0, 120, [linlan(0.5, action='wave')])])['shots'][0]
+        self.assertEqual(waving['actors'][0]['view'], 'front')
+        self.assertTrue(all(beat['view'] == 'front' for beat in waving['beats']))
+        solo = build([shot(0, 120, [linlan(0.5)], framing='medium')])['shots'][0]
+        self.assertEqual(solo['actors'][0]['view'], 'front')
+
+    def test_one_sentence_never_switches_view_after_its_opening_gesture(self):
+        stage_shot = build(
+            [shot(0, 180, [linlan(), chen()])],
+            [line('林岚', 5, 170, '大家好，我们先把整套校准流程讲清楚。')],
+        )['shots'][0]
+        spoken = [beat for beat in beats_of(stage_shot, 'linlan') if beat['speaking']]
+        self.assertEqual([beat['clip'] for beat in spoken], ['wave', 'talk_calm'])
+        self.assertEqual({beat['view'] for beat in spoken}, {'front'})
+
+    def test_optional_side_rig_is_published_and_old_front_only_stage_remains_valid(self):
+        rigs = {
+            'linlan': {
+                'rig_json': 'media/rigs/linlan/rig.json',
+                'side_rig_json': 'media/rigs/linlan-side/rig.json',
+                'side_native_facing': 'left',
+                'name': '林岚',
+            },
+        }
+        stage = build([shot(0, 100, [linlan(0.5)])], rigs=rigs)
+        self.assertPlayable(stage)
+        self.assertEqual(stage['rigs']['linlan'], {
+            'rig_json': 'media/rigs/linlan/rig.json',
+            'stature_scale': 1.0,
+            'side_rig_json': 'media/rigs/linlan-side/rig.json',
+            'side_native_facing': 'left',
+        })
+
+        legacy = build([shot(0, 100, [linlan(0.5)])])
+        for actor_cfg in legacy['shots'][0]['actors']:
+            actor_cfg.pop('view')
+        for beat in legacy['shots'][0]['beats']:
+            beat.pop('view')
+        self.assertPlayable(legacy)
+
+    def test_validator_rejects_unknown_views_and_bad_side_metadata(self):
+        stage = build([shot(0, 120, [linlan(), chen()])])
+        stage['rigs']['linlan']['side_rig_json'] = 'side/rig.json'
+        stage['rigs']['linlan']['side_native_facing'] = 'forward'
+        stage['shots'][0]['actors'][0]['view'] = 'profile'
+        stage['shots'][0]['beats'].append({
+            'from': 0, 'to': 20, 'actor': 'linlan', 'clip': 'idle',
+            'emotion': 'neutral', 'speaking': False, 'look_at': '',
+            'view': 'rear', 'move_x': [0.32, 0.32],
+        })
+        problems = director.validate_stage(stage)
+        self.assertTrue(any('side_native_facing' in problem for problem in problems))
+        self.assertTrue(any('unknown view' in problem for problem in problems))
+
+
 class NarrationTests(StageAssertions):
     def test_narration_keeps_captions_and_audio_without_driving_anyone(self):
         captions = [{'from': 20, 'to': 120, 'text': '旁白：控制室里只剩下仪器的声音。'}]
@@ -694,10 +772,12 @@ class AssemblyTests(StageAssertions):
             'prop': {'kind': 'console_desk', 'x': 0.5, 'depth': 'mid', 'image': 'media/desk.png'},
         })
         self.assertEqual(stage_shot['actors'], [{'id': 'linlan', 'name': '林岚', 'x': 0.32, 'depth': 'mid',
-                                                 'facing': 'right', 'lean': 0.0, 'base_clip': 'idle',
+                                                 'facing': 'right', 'view': 'front',
+                                                 'lean': 0.0, 'base_clip': 'idle',
                                                  'emotion': 'neutral'}])
         for beat in stage_shot['beats']:
-            self.assertEqual(list(beat), ['from', 'to', 'actor', 'clip', 'emotion', 'speaking', 'look_at', 'move_x'])
+            self.assertEqual(list(beat), ['from', 'to', 'actor', 'clip', 'emotion', 'speaking',
+                                          'look_at', 'view', 'move_x'])
         for cut in stage_shot['cuts']:
             self.assertEqual(list(cut), ['from', 'to', 'framing', 'focus_actor', 'camera_move'])
 

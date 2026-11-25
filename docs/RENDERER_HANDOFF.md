@@ -24,7 +24,7 @@
 三份 JSON 的字段、导演规则和兜底都写在 `docs/STAGE2D_CONTRACT.md`，改代码前先读它。流程是：
 
 1. `renderer/rig_mesh.py`：一张正面 A-pose 立绘 → 抠底、17 根骨骼、5 个绘制组的蒙皮网格（`rig.json` + `texture.png`）。`renderer/face_anchors.py` 找出眼、眉、嘴的位置，口型、眨眼和表情都靠它。rig 按文件哈希缓存在 `media/rigs/`。
-2. `renderer/prepare_stage.py`：按实测配音时长锁定镜头和字幕（`renderer/timeline_common.py`，和 Remotion 共用），生成口型（有 `RHUBARB_BIN` 用 Rhubarb，否则用音量），再交给 `renderer/director.py` 排出切镜、手势、听者反应、站姿、走路和阿拓的站位，最后用 `validate_stage` 校验，不合契约就不出片。
+2. `renderer/prepare_stage.py`：按实测配音时长锁定镜头和字幕（`renderer/timeline_common.py`，和 Remotion 共用），生成口型（有 `RHUBARB_BIN` 用 Rhubarb，否则用音量包络加台词里的元音提示；每个口型至少保持 150ms，中文的 Rhubarb 结果也按同样的规则去抖），再交给 `renderer/director.py` 排出切镜、手势、听者反应、站姿、走路和阿拓的站位，最后用 `validate_stage` 校验，不合契约就不出片。
 3. `godot/player/`：`main.gd` 逐帧播放 `stage.json`，`puppet.gd` 蒙皮和钉脚，`motion.gd` 采样动作，`face.gd` 画嘴、眼、眉，`camera_director.gd` 取景，`stage.gd` 三层视差布景，`captions.gd`、`title_card.gd` 字幕和片头片尾卡，`rover.gd` 阿拓。
 4. `renderer/mux.py`：把 `stage.json` 的音轨混到无声 AVI 上，输出 H.264/AAC。
 
@@ -78,7 +78,7 @@
 
 - `sit`、`stand` 不钉脚，人物会下沉约一成身高，没有桌椅遮挡时脚在地面线以下。控制端的词表里有这两个词，编剧可能会用到。
 - 不同立绘的手臂张开角度不一样（林岚约 40°，陈工约 15°），放开前臂限位的五个片段在两人身上的样子不同：陈工的前臂会交叉得更深。
-- 嘴部只有画上去的口型，没有牙齿和舌头的细分；表情主要靠眉毛，幅度小。
+- 嘴是画上去的口型（口腔色、一小片舌面，大开口才有一条齿光），没有逐颗牙齿；表情主要靠眉毛，幅度小。原画里整条被刘海挡住的眉毛不会画出情绪眉，被挡住一部分的只在头发的空隙里露出来。
 - 立绘只有正面，远距离走路只能拍中景（`docs/SIDE_WALK_EXPERIMENT.md` 记录了侧面走路的试验，结论是不接入）。
 - Godot 录像比 `stage.json` 多一帧结尾帧，`mux.py` 按录像帧数定长，所以成片比舞台时间长 1/24 秒。
 - `renderer/quality_report.py` 只认 Remotion 的 props，Godot 2D 成片目前没有自动质检，靠 `STAGE_SAMPLE_FRAMES` 抽帧人工看。
@@ -90,7 +90,7 @@
 ```bash
 python -m unittest -v renderer/test_rig_mesh.py renderer/test_face_anchors.py renderer/test_motions.py \
   renderer/test_director.py renderer/test_prepare_stage.py renderer/test_mux.py \
-  renderer/test_rover_stage.py renderer/test_side_walk.py
+  renderer/test_rover_stage.py renderer/test_side_walk.py renderer/test_voice_cues.py
 ```
 
 ## 旧版（Legacy）：Remotion 故事剪纸偶与像素故事

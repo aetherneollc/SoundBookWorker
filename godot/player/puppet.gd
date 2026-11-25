@@ -18,7 +18,9 @@ extends Node2D
 # need the editor's class cache, which a fresh CI checkout does not have.
 const MotionLibraryScript := preload("res://player/motion.gd")
 const FACE_SCRIPT_PATH := "res://player/face.gd"
-const FACE_METHODS: Array[String] = ["set_viseme", "set_emotion", "set_blink", "set_gaze"]
+const FACE_METHODS: Array[String] = [
+	"set_viseme", "set_emotion", "set_blink", "set_gaze", "set_yaw", "set_time",
+]
 
 # Largest delta (degrees, either direction) the skin tolerates per bone.
 const LIMITS_DEG := {
@@ -48,6 +50,15 @@ const DEFAULT_LIMIT_DEG := 45.0
 # stops at these angles from vertical (or at the rest pose if already inside).
 const ARM_MIN_ABDUCTION_DEG := 6.0
 const FOREARM_MIN_ABDUCTION_DEG := 2.0
+
+# A painted sprite only survives a small bend. Anything past this lifts an arm
+# off its shoulder or turns a leg into a smear, so clips are re-centered on a
+# relaxed hang and then allowed only a short extra lift.
+const ARM_RELAX_ABDUCTION_DEG := 14.0
+const ARM_MAX_LIFT_DEG := 12.0
+const ARM_MAX_INWARD_TRAVEL_DEG := 36.0
+const FOREARM_MAX_BEND_DEG := 16.0
+const LEG_SAFE_DEG := 12.0
 
 # Root travel allowed while feet are locked (ratio of body height).
 const LOCK_SHIFT_X := 0.08
@@ -106,6 +117,38 @@ class ArmGuard:
 	var lower_abduction := 0.0
 
 
+## One complete rig instance. The fields below the class are working aliases
+## for the active instance, so all pose/IK code remains shared without letting
+## the front and three-quarter skeletons overwrite one another.
+class ViewData:
+	extends RefCounted
+
+	var body: Node2D
+	var skeleton: Skeleton2D
+	var texture: ImageTexture
+	var origin_px := Vector2.ZERO
+	var scale := 1.0
+	var bone_index: Dictionary = {}
+	var bone_names: Array[String] = []
+	var bone_nodes: Array[Bone2D] = []
+	var bone_parent: Array[int] = []
+	var bone_rest: Array[Vector2] = []
+	var bone_head: Array[Vector2] = []
+	var bone_tail: Array[Vector2] = []
+	var bone_limit: Array[float] = []
+	var torso_child: Array[bool] = []
+	var i_root := -1
+	var i_torso := -1
+	var i_head := -1
+	var legs: Array[LegChain] = []
+	var arms: Array[ArmGuard] = []
+	var degrees: Array[float] = []
+	var face: Node
+	var face_args: Dictionary = {}
+	var face_focus := Vector2.ZERO
+	var has_face_focus := false
+
+
 static var _texture_cache: Dictionary = {}
 
 var puppet_scale := 1.0
@@ -154,6 +197,29 @@ var _look := 0.0
 var _lean := 0.0
 var _talk := 0.0
 
+var _front_view: ViewData
+var _side_view: ViewData
+# Horizontally flipped bake of the three-quarter rig. Skeleton2D + Polygon2D
+# skinning explodes under a negative body.scale, so facing the opposite way
+# swaps to this pre-mirrored view instead of flipping the node.
+var _side_view_flip: ViewData
+var _active_view: ViewData
+var _side_native_facing := "right"
+var _cutout_mode := false
+var _cutout_sprites: Dictionary = {}
+var _cutout_faces: Dictionary = {}
+var _cutout_rigs: Dictionary = {}
+var _cutout_native := "right"
+var _flash_mode := false
+var _flash_body_height := 1.0
+var _flash_views: Dictionary = {}
+var _flash_lock_foot := ""
+var _flash_lock_x := 0.0
+var _flash_clip := ""
+var _flash_time := -1.0
+var _flash_focus_x := 0.0
+var _flash_ground_x := 0.0
+
 
 ## Builds the puppet from rig.json and the texture beside it. Returns false and
 ## leaves the puppet empty (apply_state becomes a no-op) when anything is missing.
@@ -164,24 +230,775 @@ func setup(
 ) -> bool:
 	_teardown()
 	_motion = motion_lib if motion_lib != null else MotionLibraryScript.new()
+	target_height_px = maxf(target_height, 1.0)
+	var rig: Dictionary = _read_rig(rig_path)
+	if str(rig.get("presentation", "")) == "cutout":
+		return _setup_cutout(rig, rig_path)
+	var built: ViewData = _build_view(rig_path, "BodyFront")
+	if built == null:
+		return false
+	_front_view = built
+	_active_view = built
+	_activate_view(built)
+	_ready_ok = true
+	return true
 
+
+func _setup_cutout(rig: Dictionary, rig_path: String) -> bool:
+	# Official shots show the painted cutout. The solid-color flash doll stays
+	# on disk so it can be mounted again, but it is not the person on screen.
+	var base := rig_path.get_base_dir()
+	var views: Dictionary = _dict(rig.get("views", null))
+	if views.is_empty():
+		return false
+	for key_value: Variant in views.keys():
+		var key := str(key_value)
+		var record: Dictionary = _dict(views[key_value]).duplicate(true)
+		record["parts"] = []
+		var file_name := str(record.get("file", "")).strip_edges()
+		if file_name == "":
+			continue
+		var texture := _load_texture(base.path_join(file_name))
+		if texture == null:
+			continue
+		var size := texture.get_size()
+		var center_x := _num(record.get("center_x", size.x * 0.5), size.x * 0.5)
+		var feet_y := _num(record.get("feet_y", size.y), size.y)
+		var body_height := maxf(_num(record.get("body_height", size.y), size.y), 1.0)
+		var fitted := target_height_px / body_height
+		var root := Node2D.new()
+		root.name = "Cutout_%s" % key
+		root.scale = Vector2(fitted, fitted)
+		root.visible = false
+		root.set_meta("rest_scale", fitted)
+		var space := Node2D.new()
+		space.name = "Space"
+		space.position = Vector2(-center_x, -feet_y)
+		root.add_child(space)
+		var parts: Array = _array(record.get("parts", null))
+		if parts.is_empty():
+			var body := Sprite2D.new()
+			body.name = "Body"
+			body.texture = texture
+			body.centered = false
+			body.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
+			space.add_child(body)
+			_attach_cutout_face(space, key, record, texture, Vector2.ZERO)
+		else:
+			var bones := _build_cutout_rig(space, base, parts)
+			_cutout_rigs[key] = bones
+			var head_bone := bones.get("head") as Node2D
+			var neck := Vector2.ZERO
+			if head_bone != null:
+				neck = head_bone.get_meta("joint", Vector2.ZERO)
+			var face_parent: Node = head_bone if head_bone != null else space
+			_attach_cutout_face(face_parent, key, record, texture, neck)
+		add_child(root)
+		_cutout_sprites[key] = root
+	if _cutout_sprites.is_empty():
+		return false
+	_cutout_native = str(rig.get("native_facing", "right")).strip_edges().to_lower()
+	if _cutout_native != "left":
+		_cutout_native = "right"
+	_cutout_mode = true
+	_ready_ok = true
+	return true
+
+
+func is_cutout() -> bool:
+	return _cutout_mode
+
+
+## Screen x of the planted sole. The stage shadow sits under that boot.
+func cutout_ground_x() -> float:
+	return position.x + _flash_ground_x
+
+
+func _build_cutout_rig(space: Node2D, base: String, parts: Array) -> Dictionary:
+	var bones: Dictionary = {}
+	var pending: Array = parts.duplicate()
+	var guard := 0
+	while pending.size() > 0 and guard < 24:
+		guard += 1
+		var leftover: Array = []
+		for part_value: Variant in pending:
+			var part := _dict(part_value)
+			var name := str(part.get("name", ""))
+			var parent_name := str(part.get("parent", ""))
+			if name == "" or (parent_name != "" and not bones.has(parent_name)):
+				if name != "":
+					leftover.append(part)
+				continue
+			var joint_value: Array = _array(part.get("joint", null))
+			var joint := Vector2.ZERO
+			if joint_value.size() >= 2:
+				joint = Vector2(float(joint_value[0]), float(joint_value[1]))
+			var bone := Node2D.new()
+			bone.name = name
+			bone.set_meta("joint", joint)
+			bone.set_meta("swing", bool(part.get("swing", false)))
+			var parent: Node = space if parent_name == "" else bones[parent_name]
+			parent.add_child(bone)
+			if parent_name == "":
+				bone.position = joint
+			else:
+				var parent_bone := bones[parent_name] as Node2D
+				var parent_joint: Vector2 = parent_bone.get_meta("joint", Vector2.ZERO)
+				bone.position = joint - parent_joint
+			var part_file := str(part.get("file", "")).strip_edges()
+			if part_file != "":
+				var piece := _load_texture(base.path_join(part_file))
+				if piece != null:
+					var origin_value: Array = _array(part.get("origin", null))
+					var origin := Vector2.ZERO
+					if origin_value.size() >= 2:
+						origin = Vector2(float(origin_value[0]), float(origin_value[1]))
+					var sprite := Sprite2D.new()
+					sprite.name = "Art"
+					sprite.texture = piece
+					sprite.centered = false
+					sprite.position = origin - joint
+					sprite.z_as_relative = false
+					sprite.z_index = int(part.get("z", 0))
+					sprite.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
+					bone.add_child(sprite)
+			bones[name] = bone
+		pending = leftover
+	return bones
+
+
+func _mount_flash_doll(doll: Dictionary, rig: Dictionary, cast_dir: String) -> void:
+	_flash_mode = true
+	_flash_body_height = maxf(_num(doll.get("body_height", 1.0), 1.0), 1.0)
+	var fitted := target_height_px / _flash_body_height
+	var bone_lengths := _dict(doll.get("bones", null))
+	var doll_views := _dict(doll.get("views", null))
+	var crops := _dict(doll.get("crops", null))
+	var doll_dir := cast_dir.path_join("flash_doll")
+	var cutout_views := _dict(rig.get("views", null))
+	for view_name in ["front", "side"]:
+		var record := _dict(doll_views.get(view_name, null))
+		var parts := _array(record.get("parts", null))
+		if parts.is_empty():
+			continue
+		var root := Node2D.new()
+		root.name = "Flash_%s" % view_name
+		root.scale = Vector2(fitted, fitted)
+		root.visible = false
+		root.set_meta("rest_scale", fitted)
+		var shift := Node2D.new()
+		shift.name = "Shift"
+		root.add_child(shift)
+		var built := _build_flash_bones(shift, doll_dir, parts, bone_lengths, view_name)
+		var anchor_view := "front" if view_name == "front" else "three_quarter"
+		var source_anchors := _dict(_dict(cutout_views.get(anchor_view, null)).get("face_anchors", null))
+		var head: Dictionary = built["bones"].get("head", {})
+		var head_sprite := head.get("sprite", null) as Sprite2D
+		if not source_anchors.is_empty() and head_sprite != null and head_sprite.texture != null:
+			var rect := _array(_dict(_dict(crops.get(view_name, null)).get("head", null)).get("rect", null))
+			var remapped := _remap_anchors(source_anchors, rect, head_sprite.texture.get_size())
+			var pivot: Vector2 = head["pivot"]
+			_attach_cutout_face(head["node"], view_name, {"face_anchors": remapped}, head_sprite.texture, pivot)
+			var face := _cutout_faces.get(view_name) as CanvasItem
+			if face != null:
+				face.z_as_relative = true
+				face.z_index = int(head.get("z", 14)) + 1
+		add_child(root)
+		_cutout_sprites[view_name] = root
+		_flash_views[view_name] = {
+			"shift": shift,
+			"bones": built["bones"],
+			"order": built["order"],
+		}
+
+
+func _build_flash_bones(
+	shift: Node2D,
+	doll_dir: String,
+	parts: Array,
+	bone_lengths: Dictionary,
+	view_name: String
+) -> Dictionary:
+	var bones: Dictionary = {}
+	var order: Array[String] = []
+	var pending: Array = parts.duplicate()
+	var guard := 0
+	while pending.size() > 0 and guard < 24:
+		guard += 1
+		var leftover: Array = []
+		for part_value: Variant in pending:
+			var part := _dict(part_value)
+			var bone_name := str(part.get("name", ""))
+			var parent_name := str(part.get("parent", ""))
+			if bone_name == "" or (parent_name != "" and not bones.has(parent_name)):
+				if bone_name != "":
+					leftover.append(part)
+				continue
+			var pivot_value := _array(part.get("pivot", null))
+			var pivot := Vector2.ZERO
+			if pivot_value.size() >= 2:
+				pivot = Vector2(_num(pivot_value[0], 0.0), _num(pivot_value[1], 0.0))
+			var offset := _flash_offset(bone_name, view_name, bone_lengths)
+			var bone := Node2D.new()
+			bone.name = bone_name
+			bone.position = offset
+			bone.rotation = 0.0
+			var parent: Node = shift if parent_name == "" else (bones[parent_name]["node"] as Node)
+			parent.add_child(bone)
+			var sprite: Sprite2D = null
+			var sole := PackedVector2Array()
+			var part_file := str(part.get("file", "")).strip_edges()
+			if part_file != "":
+				var piece := _load_texture(doll_dir.path_join(part_file))
+				if piece != null:
+					sprite = Sprite2D.new()
+					sprite.name = "Art"
+					sprite.texture = piece
+					sprite.centered = false
+					sprite.position = -pivot
+					sprite.z_as_relative = true
+					sprite.z_index = int(part.get("z", 0))
+					sprite.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
+					bone.add_child(sprite)
+					if bone_name.begins_with("foot"):
+						sole = _flash_sole_points(piece, pivot)
+			bones[bone_name] = {
+				"node": bone,
+				"sprite": sprite,
+				"parent": parent_name,
+				"offset": offset,
+				"pivot": pivot,
+				"sole": sole,
+				"group": _flash_group(bone_name),
+				"z": int(part.get("z", 0)),
+			}
+			order.append(bone_name)
+		pending = leftover
+	return {"bones": bones, "order": order}
+
+
+func _flash_offset(bone_name: String, view_name: String, bones: Dictionary) -> Vector2:
+	var hip_to_neck := _num(bones.get("hip_to_neck", 0.0), 0.0)
+	var hip_to_shoulder := _num(bones.get("hip_to_shoulder", 0.0), 0.0)
+	var upper_arm := _num(bones.get("upper_arm", 0.0), 0.0)
+	var forearm := _num(bones.get("forearm", 0.0), 0.0)
+	var thigh := _num(bones.get("thigh", 0.0), 0.0)
+	var shin := _num(bones.get("shin", 0.0), 0.0)
+	var shoulder_half := _num(bones.get("shoulder_half", 0.0), 0.0)
+	var hip_half := _num(bones.get("hip_half", 0.0), 0.0)
+	var shoulder_forward := _num(bones.get("shoulder_forward", 0.0), 0.0)
+	if bone_name == "head":
+		if view_name == "side":
+			# The painted chin sits a little above the collar. Drop the head onto it.
+			return Vector2(shoulder_forward * 0.15, -hip_to_neck * 0.93)
+		return Vector2(0.0, -hip_to_neck)
+	if bone_name.begins_with("upper_arm"):
+		if view_name == "side":
+			return Vector2(shoulder_forward, -hip_to_shoulder)
+		var arm_sign := -1.0 if bone_name.ends_with("_l") else 1.0
+		# The sleeve starts inside the shoulder, the way a Flash symbol overlaps its parent.
+		return Vector2(arm_sign * shoulder_half * 0.90, -hip_to_shoulder)
+	if bone_name.begins_with("lower_arm"):
+		return Vector2(0.0, upper_arm)
+	if bone_name.begins_with("hand"):
+		return Vector2(0.0, forearm)
+	if bone_name.begins_with("thigh"):
+		if view_name == "side":
+			return Vector2.ZERO
+		var hip_sign := -1.0 if bone_name.ends_with("_l") else 1.0
+		return Vector2(hip_sign * hip_half, 0.0)
+	if bone_name.begins_with("shin"):
+		return Vector2(0.0, thigh)
+	if bone_name.begins_with("foot"):
+		return Vector2(0.0, shin)
+	return Vector2.ZERO
+
+
+func _flash_group(bone_name: String) -> String:
+	if bone_name.ends_with("_l") or bone_name.ends_with("_r"):
+		var side := bone_name.substr(bone_name.length() - 2, 2)
+		var limb := "leg" if bone_name.begins_with("thigh") or bone_name.begins_with("shin") or bone_name.begins_with("foot") else "arm"
+		return limb + side
+	return bone_name
+
+
+func _flash_sole_points(texture: Texture2D, pivot: Vector2) -> PackedVector2Array:
+	var points := PackedVector2Array()
+	var image := texture.get_image()
+	if image == null or image.is_empty():
+		return points
+	var step := 3
+	var width := image.get_width()
+	var height := image.get_height()
+	for y in range(0, height, step):
+		for x in range(0, width, step):
+			if image.get_pixel(x, y).a >= 0.55:
+				points.append(Vector2(x, y) - pivot)
+	return points
+
+
+func _remap_anchors(anchors: Dictionary, rect: Array, tex_size: Vector2) -> Dictionary:
+	var remapped := anchors.duplicate(true)
+	if rect.size() < 4 or tex_size.x <= 1.0 or tex_size.y <= 1.0:
+		return remapped
+	var origin := Vector2(_num(rect[0], 0.0), _num(rect[1], 0.0))
+	var rect_size := Vector2(maxf(_num(rect[2], 1.0), 1.0), maxf(_num(rect[3], 1.0), 1.0))
+	var box_scale := Vector2(tex_size.x / rect_size.x, tex_size.y / rect_size.y)
+	for box_name in ["mouth", "eye_left", "eye_right", "brow_left", "brow_right", "head_box", "face_box"]:
+		if remapped.has(box_name):
+			remapped[box_name] = _scale_anchor_box(remapped[box_name], origin, box_scale)
+	return remapped
+
+
+func _scale_anchor_box(value: Variant, origin: Vector2, box_scale: Vector2) -> Variant:
+	if value is Dictionary:
+		var box: Dictionary = (value as Dictionary).duplicate()
+		box["x"] = (_num(box.get("x", 0.0), 0.0) - origin.x) * box_scale.x
+		box["y"] = (_num(box.get("y", 0.0), 0.0) - origin.y) * box_scale.y
+		box["w"] = _num(box.get("w", 0.0), 0.0) * box_scale.x
+		box["h"] = _num(box.get("h", 0.0), 0.0) * box_scale.y
+		return box
+	var items := _array(value)
+	if items.size() >= 4:
+		return [
+			(_num(items[0], 0.0) - origin.x) * box_scale.x,
+			(_num(items[1], 0.0) - origin.y) * box_scale.y,
+			_num(items[2], 0.0) * box_scale.x,
+			_num(items[3], 0.0) * box_scale.y,
+		]
+	return value
+
+
+func _pose_flash(key: String, state: Dictionary, time_sec: float) -> void:
+	var view: Dictionary = _flash_views[key]
+	var shift := view["shift"] as Node2D
+	var bones: Dictionary = view["bones"]
+	var order: Array = view["order"]
+	var root := _cutout_sprites[key] as Node2D
+	if shift == null or root == null:
+		return
+	var clip := str(state.get("clip", "idle"))
+	var clip_time := _num(state.get("clip_time", time_sec), time_sec)
+	var speaking := _num(state.get("speaking", 0.0), 0.0) > 0.5
+	var walking := key == "side" and clip == "walk_step"
+	if not walking or clip != _flash_clip or clip_time + 0.001 < _flash_time:
+		_flash_lock_foot = ""
+		_flash_lock_x = 0.0
+	_flash_clip = clip
+	_flash_time = clip_time
+	var pose_bones: Dictionary = {}
+	var hip_drop := 0.0
+	if walking and _motion != null:
+		var sampled: Dictionary = _motion.sample("walk_step", clip_time)
+		pose_bones = _dict(sampled.get("bones", null))
+		# Positive root y is the down pose. It bends the supporting knee so the hip drops.
+		hip_drop = _vec(sampled.get("root_offset", null)).y
+	var degrees: Dictionary = {}
+	for name_value: Variant in order:
+		var bone_name := str(name_value)
+		var angle := _flash_clip_degrees(bone_name, pose_bones) if walking else _flash_idle_degrees(bone_name, time_sec)
+		angle += _flash_speech_degrees(bone_name, time_sec, speaking, clip, clip_time)
+		degrees[bone_name] = angle
+	if walking:
+		var phase := fposmod(clip_time, 1.0)
+		var support := "shin_l" if phase < 0.5 else "shin_r"
+		degrees[support] = _num(degrees.get(support, 0.0), 0.0) + hip_drop * 160.0
+	var world := _flash_solve(order, bones, degrees)
+	var soles := {
+		"foot_l": _flash_sole(bones, world, "foot_l"),
+		"foot_r": _flash_sole(bones, world, "foot_r"),
+	}
+	var shift_pos := Vector2.ZERO
+	if walking:
+		shift_pos = _flash_plant(soles)
+	else:
+		var lower := "foot_l" if soles["foot_l"].y >= soles["foot_r"].y else "foot_r"
+		shift_pos = Vector2(0.0, -soles[lower].y)
+	shift.position = shift_pos
+	if key == "side":
+		_flash_layer_side(bones, world)
+	var fitted := float(root.get_meta("rest_scale", 1.0))
+	var facing_left := str(state.get("facing", "right")).strip_edges().to_lower() == "left"
+	var mirror := key == "side" and facing_left != (_cutout_native == "left")
+	root.scale = Vector2(-fitted if mirror else fitted, fitted)
+	_flash_ground_x = root.scale.x * (_flash_lock_x if walking else 0.0)
+	_flash_focus_x = root.scale.x * shift.position.x
+
+
+func _flash_clip_degrees(bone_name: String, pose_bones: Dictionary) -> float:
+	if pose_bones.has(bone_name):
+		return _num(pose_bones[bone_name], 0.0)
+	var alias := ""
+	match bone_name:
+		"thigh_l":
+			alias = "upper_leg_l"
+		"thigh_r":
+			alias = "upper_leg_r"
+		"shin_l":
+			alias = "lower_leg_l"
+		"shin_r":
+			alias = "lower_leg_r"
+		_:
+			alias = bone_name
+	if pose_bones.has(alias):
+		return _num(pose_bones[alias], 0.0)
+	return 0.0
+
+
+func _flash_idle_degrees(bone_name: String, time_sec: float) -> float:
+	# Weight shifts onto one leg. That knee softens and the opposite shoulder drops.
+	var weight := sin(TAU * time_sec / 3.2)
+	match bone_name:
+		"shin_l":
+			return 3.0 + 7.0 * maxf(weight, 0.0)
+		"shin_r":
+			return 3.0 + 7.0 * maxf(-weight, 0.0)
+		"thigh_l":
+			return 2.5 * weight
+		"thigh_r":
+			return -2.5 * weight
+		"torso":
+			return 2.2 * weight
+		_:
+			return 0.0
+
+
+func _flash_speech_degrees(
+	bone_name: String,
+	time_sec: float,
+	speaking: bool,
+	clip: String,
+	clip_time: float
+) -> float:
+	var extra := 0.0
+	if speaking:
+		var beat := sin(time_sec * 6.8)
+		if bone_name == "head":
+			extra += beat * 4.5 + sin(time_sec * 2.1) * 1.5
+		elif bone_name == "lower_arm_l":
+			extra += beat * 7.0
+		elif bone_name == "lower_arm_r":
+			extra -= beat * 7.0
+	if clip == "nod" and bone_name == "head":
+		extra += sin(clampf(clip_time, 0.0, 1.0) * PI) * 7.0
+	return extra
+
+
+func _flash_solve(order: Array, bones: Dictionary, degrees: Dictionary) -> Dictionary:
+	var world: Dictionary = {}
+	for name_value: Variant in order:
+		var bone_name := str(name_value)
+		var bone: Dictionary = bones[bone_name]
+		var parent := str(bone["parent"])
+		var parent_pos := Vector2.ZERO
+		var parent_rot := 0.0
+		if parent != "" and world.has(parent):
+			parent_pos = world[parent]["pos"]
+			parent_rot = float(world[parent]["rot"])
+		var local := deg_to_rad(_num(degrees.get(bone_name, 0.0), 0.0))
+		var offset: Vector2 = bone["offset"]
+		world[bone_name] = {
+			"pos": parent_pos + offset.rotated(parent_rot),
+			"rot": parent_rot + local,
+		}
+		var node := bone["node"] as Node2D
+		if node != null:
+			node.rotation = local
+	return world
+
+
+func _flash_sole(bones: Dictionary, world: Dictionary, bone_name: String) -> Vector2:
+	if not bones.has(bone_name) or not world.has(bone_name):
+		return Vector2.ZERO
+	var bone: Dictionary = bones[bone_name]
+	var points: PackedVector2Array = bone["sole"]
+	var origin: Vector2 = world[bone_name]["pos"]
+	var rotation := float(world[bone_name]["rot"])
+	if points.is_empty():
+		return origin
+	var best_y := -1.0e12
+	var sum_x := 0.0
+	var count := 0
+	for point in points:
+		var placed: Vector2 = origin + point.rotated(rotation)
+		if placed.y > best_y + 1.5:
+			best_y = placed.y
+			sum_x = placed.x
+			count = 1
+		elif placed.y >= best_y - 1.5:
+			if placed.y > best_y:
+				best_y = placed.y
+			sum_x += placed.x
+			count += 1
+	return Vector2(sum_x / float(maxi(count, 1)), best_y)
+
+
+func _flash_plant(soles: Dictionary) -> Vector2:
+	var left: Vector2 = soles["foot_l"]
+	var right: Vector2 = soles["foot_r"]
+	if _flash_lock_foot == "":
+		_flash_lock_foot = "foot_l" if left.y >= right.y else "foot_r"
+		_flash_lock_x = 0.0
+	var locked: Vector2 = soles[_flash_lock_foot]
+	var other_name := "foot_r" if _flash_lock_foot == "foot_l" else "foot_l"
+	var other: Vector2 = soles[other_name]
+	if other.y > locked.y + 0.75:
+		var shift_x := _flash_lock_x - locked.x
+		_flash_lock_x = shift_x + other.x
+		_flash_lock_foot = other_name
+		locked = other
+	return Vector2(_flash_lock_x - locked.x, -locked.y)
+
+
+func _flash_layer_side(bones: Dictionary, world: Dictionary) -> void:
+	if not world.has("pelvis"):
+		return
+	var hip_x: float = world["pelvis"]["pos"].x
+	var tol := 0.02 * _flash_body_height
+	for name_value: Variant in bones.keys():
+		var bone_name := str(name_value)
+		var bone: Dictionary = bones[bone_name]
+		var sprite := bone.get("sprite", null) as Sprite2D
+		if sprite == null:
+			continue
+		var group := str(bone["group"])
+		if group == "head":
+			sprite.z_index = 40
+			var face := (bone["node"] as Node).get_node_or_null("Face") as CanvasItem
+			if face != null:
+				face.z_as_relative = true
+				face.z_index = 41
+			continue
+		if group == "torso" or group == "pelvis":
+			sprite.z_index = 15
+			continue
+		var end_name := ""
+		var side := group.substr(group.length() - 1, 1)
+		if group.begins_with("leg"):
+			end_name = "foot_" + side
+		elif group.begins_with("arm"):
+			end_name = "hand_" + side
+		var end_x := hip_x
+		if world.has(end_name):
+			end_x = world[end_name]["pos"].x
+		var layer := 20
+		if end_x < hip_x - tol:
+			layer = 0
+		elif end_x <= hip_x + tol and not group.ends_with("_l"):
+			layer = 0
+		var extra := 0
+		if bone_name.begins_with("shin") or bone_name.begins_with("lower_arm"):
+			extra = 1
+		elif bone_name.begins_with("foot") or bone_name.begins_with("hand"):
+			extra = 2
+		sprite.z_index = layer + extra
+
+
+func _cutout_view_key(state: Dictionary) -> String:
+	var view := str(state.get("view", "front")).strip_edges().to_lower()
+	var facing := str(state.get("facing", "right")).strip_edges().to_lower()
+	var clip := str(state.get("clip", ""))
+	if view == "back":
+		var turned_left := facing == "left"
+		if _cutout_native == "left":
+			turned_left = not turned_left
+		var back_key := "back_left" if turned_left else "back"
+		if _cutout_sprites.has(back_key):
+			return back_key
+		if _cutout_sprites.has("back"):
+			return "back"
+	if _flash_mode and (view == "side" or clip == "walk_step") and _flash_views.has("side"):
+		return "side"
+	if _flash_mode and _flash_views.has("front") and view != "back":
+		return "front"
+	if view == "three_quarter" or view == "side":
+		var turned_left := facing == "left"
+		if _cutout_native == "left":
+			turned_left = not turned_left
+		var quarter := "three_quarter_left" if turned_left else "three_quarter"
+		if _cutout_sprites.has(quarter):
+			return quarter
+	if _cutout_sprites.has("front"):
+		return "front"
+	return ""
+
+
+func _attach_cutout_face(
+	parent: Node,
+	view_key: String,
+	record: Dictionary,
+	texture: Texture2D,
+	head_origin: Vector2
+) -> void:
+	var anchors := _dict(record.get("face_anchors", null))
+	if anchors.is_empty() or not ResourceLoader.exists(FACE_SCRIPT_PATH):
+		return
+	var face_script: GDScript = load(FACE_SCRIPT_PATH) as GDScript
+	if face_script == null or not face_script.can_instantiate():
+		return
+	var instance: Variant = face_script.new()
+	if not instance is Node:
+		if instance is Object and not instance is RefCounted:
+			(instance as Object).free()
+		return
+	var face: Node = instance
+	face.name = "Face"
+	parent.add_child(face)
+	if face.has_method("setup"):
+		face.call("setup", anchors, head_origin, 1.0, texture)
+	if face is CanvasItem:
+		var item := face as CanvasItem
+		item.z_as_relative = false
+		item.z_index = 8
+	_cutout_faces[view_key] = face
+	if _face_args.is_empty():
+		_remember_face_methods(face)
+
+
+func _remember_face_methods(face: Node) -> void:
+	for entry: Dictionary in face.get_method_list():
+		var method_name: String = str(entry.get("name", ""))
+		if not FACE_METHODS.has(method_name) or _face_args.has(method_name):
+			continue
+		var types: Array[int] = []
+		for arg: Variant in _array(entry.get("args", null)):
+			types.append(int(_num(_dict(arg).get("type", TYPE_NIL), float(TYPE_NIL))))
+		_face_args[method_name] = types
+
+
+func _drive_cutout_face(
+	face: Node,
+	state: Dictionary,
+	time_sec: float,
+	overlay: Dictionary,
+	speaking: bool
+) -> void:
+	_face = face
+	var viseme: String = str(state.get("viseme", "X")) if speaking else "X"
+	_face_send("set_viseme", viseme)
+	_face_send("set_emotion", str(state.get("emotion", "neutral")))
+	_face_send("set_blink", clampf(_num(overlay.get("blink", 0.0), 0.0), 0.0, 1.0))
+	_face_send("set_yaw", 0.0)
+	_face_send("set_time", time_sec)
+
+
+func _pose_cutout_rig(rig: Dictionary, _time_sec: float, _seed: float, _speaking: bool) -> void:
+	# Back plates and any leftover slices stay still. The flash doll poses itself.
+	for bone_name: Variant in rig.keys():
+		var bone := rig[bone_name] as Node2D
+		if bone != null:
+			bone.rotation = 0.0
+
+
+func _apply_cutout(state: Dictionary, time_sec: float) -> void:
+	var key := _cutout_view_key(state)
+	_flash_focus_x = 0.0
+	_flash_ground_x = 0.0
+	if key == "":
+		key = "front"
+	var speaking := _num(state.get("speaking", 0.0), 0.0) > 0.5
+	var seed := _num(state.get("actor_seed", 0.0), 0.0)
+	var overlay := {}
+	if _motion != null:
+		overlay = _motion.build_overlay(time_sec, seed, speaking, 0.0, 0.0, 1.0 if speaking else 0.0)
+	for sprite_key: Variant in _cutout_sprites.keys():
+		var root := _cutout_sprites[sprite_key] as Node2D
+		if root == null:
+			continue
+		var shown := str(sprite_key) == key
+		root.visible = shown
+		root.position = Vector2.ZERO
+		root.rotation = 0.0
+		var fitted := float(root.get_meta("rest_scale", 1.0))
+		root.scale = Vector2(fitted, fitted)
+	if _flash_views.has(key):
+		_pose_flash(key, state, time_sec)
+	else:
+		_pose_cutout_rig(_cutout_rigs.get(key, {}), time_sec, seed, speaking)
+	var face := _cutout_faces.get(key) as Node
+	if face != null and is_instance_valid(face):
+		_drive_cutout_face(face, state, time_sec, overlay, speaking)
+
+
+## Loads an optional three-quarter rig beside the front rig. Both views share
+## the same motion timeline and target height, but own every node and array
+## involved in skinning, IK, face animation, and focus calculations.
+func setup_side_view(rig_path: String, native_facing: String = "right") -> bool:
+	if not _ready_ok or _front_view == null:
+		return false
+	var restore: ViewData = _front_view
+	if _active_view == _side_view or _active_view == _side_view_flip:
+		restore = _front_view
+	elif _active_view != null:
+		restore = _active_view
+	_release_view(_side_view)
+	_release_view(_side_view_flip)
+	_side_view = null
+	_side_view_flip = null
+	var built: ViewData = _build_view(rig_path, "BodyThreeQuarter", false)
+	if built == null:
+		_activate_view(restore)
+		return false
+	_side_view = built
+	_side_view.body.visible = false
+	var flipped: ViewData = _build_view(rig_path, "BodyThreeQuarterFlip", true)
+	if flipped == null:
+		_release_view(_side_view)
+		_side_view = null
+		_activate_view(restore)
+		return false
+	_side_view_flip = flipped
+	_side_view_flip.body.visible = false
+	_side_native_facing = (
+		"left" if native_facing.strip_edges().to_lower() == "left" else "right"
+	)
+	_activate_view(restore)
+	return true
+
+
+func has_side_view() -> bool:
+	return _side_view != null and _side_view_flip != null
+
+
+func _build_view(rig_path: String, body_name: String, flip_x: bool = false) -> ViewData:
+	_reset_view_aliases()
 	var rig: Dictionary = _read_rig(rig_path)
 	if rig.is_empty():
-		return false
+		return null
 	var texture_name: String = str(rig.get("texture", "texture.png"))
 	if texture_name.strip_edges() == "":
 		texture_name = "texture.png"
-	_texture = _load_texture(rig_path.get_base_dir().path_join(texture_name))
-	if _texture == null:
-		return false
+	var texture_path: String = rig_path.get_base_dir().path_join(texture_name)
+	if flip_x:
+		var image: Image = Image.load_from_file(texture_path)
+		if image == null or image.is_empty():
+			push_error("Puppet2D: texture load failed: %s" % texture_path)
+			return null
+		var width_px: float = float(image.get_width())
+		image.flip_x()
+		rig = _mirror_rig_document(rig, width_px)
+		if not image.has_mipmaps():
+			var mip_error: Error = image.generate_mipmaps()
+			if mip_error != OK:
+				push_warning(
+					"Puppet2D: mipmaps unavailable for flipped %s (%s)"
+					% [texture_path, error_string(mip_error)]
+				)
+		_texture = ImageTexture.create_from_image(image)
+		if _texture == null:
+			push_error("Puppet2D: flipped texture creation failed: %s" % texture_path)
+			return null
+	else:
+		_texture = _load_texture(texture_path)
+		if _texture == null:
+			return null
 
 	var body_height: float = maxf(_num(rig.get("body_height", 0.0), 0.0), 1.0)
-	target_height_px = maxf(target_height, 1.0)
 	puppet_scale = target_height_px / body_height
 	_origin_px = Vector2(_num(rig.get("center_x", 0.0), 0.0), _num(rig.get("feet_y", 0.0), 0.0))
 
 	_body = Node2D.new()
-	_body.name = "Body"
+	_body.name = body_name
 	add_child(_body)
 	_skeleton = Skeleton2D.new()
 	_skeleton.name = "Skeleton2D"
@@ -189,20 +1006,151 @@ func setup(
 
 	if not _build_bones(rig):
 		push_error("Puppet2D: rig has no usable bones: %s" % rig_path)
-		_teardown()
-		return false
+		_discard_current_build()
+		return null
 	if _build_meshes(rig) == 0:
 		push_error("Puppet2D: rig has no drawable groups: %s" % rig_path)
-		_teardown()
-		return false
+		_discard_current_build()
+		return null
 	# The skeleton goes last so a face under the head bone, sharing the head
 	# mesh's z_index, draws over that mesh yet still under the arm meshes.
 	_body.move_child(_skeleton, -1)
 	_build_legs()
 	_build_arms()
 	_build_face(rig)
-	_ready_ok = true
-	return true
+	return _capture_view()
+
+
+## Mirror every pixel-space coordinate in a rig around the texture midline so a
+## right-facing three-quarter plate can face left without a negative Node2D scale.
+static func _mirror_rig_document(rig: Dictionary, width_px: float) -> Dictionary:
+	var mirrored: Dictionary = rig.duplicate(true)
+	var span: float = maxf(width_px - 1.0, 1.0)
+	mirrored["center_x"] = span - _num(mirrored.get("center_x", 0.0), 0.0)
+	var bones: Array = []
+	for item: Variant in _array(mirrored.get("bones", null)):
+		if not item is Dictionary:
+			continue
+		var bone: Dictionary = (item as Dictionary).duplicate(true)
+		bone["head"] = _mirror_pair(bone.get("head", null), span)
+		bone["tail"] = _mirror_pair(bone.get("tail", bone.get("head", null)), span)
+		bones.append(bone)
+	mirrored["bones"] = bones
+	var groups: Array = []
+	for group_value: Variant in _array(mirrored.get("groups", null)):
+		if not group_value is Dictionary:
+			continue
+		var group: Dictionary = (group_value as Dictionary).duplicate(true)
+		var vertices: Array = []
+		for vertex: Variant in _array(group.get("vertices", null)):
+			vertices.append(_mirror_pair(vertex, span))
+		group["vertices"] = vertices
+		var uvs: Array = []
+		for uv: Variant in _array(group.get("uvs", null)):
+			uvs.append(_mirror_pair(uv, span))
+		if not uvs.is_empty():
+			group["uvs"] = uvs
+		# Mirroring vertices reverses winding; flip each triangle or the fill disappears / skins explode.
+		var triangles: Array = []
+		for triangle_value: Variant in _array(group.get("triangles", null)):
+			var corners: Array = _array(triangle_value)
+			if corners.size() < 3:
+				continue
+			triangles.append([corners[0], corners[2], corners[1]])
+		if not triangles.is_empty():
+			group["triangles"] = triangles
+		groups.append(group)
+	mirrored["groups"] = groups
+	var anchors: Dictionary = _dict(mirrored.get("face_anchors", null)).duplicate(true)
+	if not anchors.is_empty():
+		for key: String in ["mouth", "eye_left", "eye_right", "brow_left", "brow_right"]:
+			if anchors.has(key):
+				anchors[key] = _mirror_box(anchors.get(key), span)
+		mirrored["face_anchors"] = anchors
+	return mirrored
+
+
+static func _mirror_pair(value: Variant, span: float) -> Array:
+	var point: Vector2 = _vec(value)
+	return [span - point.x, point.y]
+
+
+static func _mirror_box(value: Variant, span: float) -> Dictionary:
+	var box: Dictionary = _dict(value).duplicate(true)
+	var width: float = _num(box.get("w", 0.0), 0.0)
+	box["x"] = span - _num(box.get("x", 0.0), 0.0) - width
+	return box
+
+
+func _capture_view() -> ViewData:
+	var view := ViewData.new()
+	view.body = _body
+	view.skeleton = _skeleton
+	view.texture = _texture
+	view.origin_px = _origin_px
+	view.scale = puppet_scale
+	view.bone_index = _bone_index
+	view.bone_names = _bone_names
+	view.bone_nodes = _bone_nodes
+	view.bone_parent = _bone_parent
+	view.bone_rest = _bone_rest
+	view.bone_head = _bone_head
+	view.bone_tail = _bone_tail
+	view.bone_limit = _bone_limit
+	view.torso_child = _torso_child
+	view.i_root = _i_root
+	view.i_torso = _i_torso
+	view.i_head = _i_head
+	view.legs = _legs
+	view.arms = _arms
+	view.degrees = _degrees
+	view.face = _face
+	view.face_args = _face_args
+	view.face_focus = _face_focus
+	view.has_face_focus = _has_face_focus
+	return view
+
+
+func _activate_view(view: ViewData) -> void:
+	if view == null:
+		_reset_view_aliases()
+		return
+	_active_view = view
+	_body = view.body
+	_skeleton = view.skeleton
+	_texture = view.texture
+	_origin_px = view.origin_px
+	puppet_scale = view.scale
+	_bone_index = view.bone_index
+	_bone_names = view.bone_names
+	_bone_nodes = view.bone_nodes
+	_bone_parent = view.bone_parent
+	_bone_rest = view.bone_rest
+	_bone_head = view.bone_head
+	_bone_tail = view.bone_tail
+	_bone_limit = view.bone_limit
+	_torso_child = view.torso_child
+	_i_root = view.i_root
+	_i_torso = view.i_torso
+	_i_head = view.i_head
+	_legs = view.legs
+	_arms = view.arms
+	_degrees = view.degrees
+	_face = view.face
+	_face_args = view.face_args
+	_face_focus = view.face_focus
+	_has_face_focus = view.has_face_focus
+
+
+func _switch_view(next: ViewData) -> void:
+	if next == null:
+		next = _front_view
+	if next == null:
+		return
+	for view: ViewData in [_front_view, _side_view, _side_view_flip]:
+		if view != null and view.body != null and is_instance_valid(view.body):
+			view.body.visible = view == next
+	_activate_view(next)
 
 
 func is_ready() -> bool:
@@ -226,11 +1174,30 @@ func get_texture() -> ImageTexture:
 
 ## Poses the puppet for one frame. Recognised keys: clip, prev_clip, blend,
 ## clip_time, prev_clip_time, speaking, viseme, emotion, look_dir, lean,
-## facing, mirror, mirror_pose, scale_mult, actor_seed. mirror_pose reflects
-## the clip's pose (left and right limbs trade roles) without flipping the art.
+## view, facing, mirror, mirror_pose, scale_mult, actor_seed. mirror_pose
+## reflects the clip's pose (left and right limbs trade roles) without flipping
+## the art. The automatic side-view art mirror never changes mirror_pose:
+## main.gd includes that art mirror in its aimed-gesture calculation.
 func apply_state(state: Dictionary, time_sec: float) -> void:
 	if not _ready_ok:
 		return
+	if _cutout_mode:
+		_apply_cutout(state, time_sec)
+		return
+	var requested_view: String = str(state.get("view", "front")).strip_edges().to_lower()
+	var wants_side: bool = requested_view == "three_quarter" or requested_view == "side"
+	var use_side: bool = wants_side and has_side_view()
+	var facing: String = str(state.get("facing", "front")).strip_edges().to_lower()
+	var side_mirror := (
+		use_side
+		and (facing == "left" or facing == "right")
+		and facing != _side_native_facing
+	)
+	if use_side:
+		_switch_view(_side_view_flip if side_mirror else _side_view)
+	else:
+		_switch_view(_front_view)
+
 	var step: float = time_sec - _last_time
 	var continuous: bool = _has_last and step >= 0.0 and step <= MAX_STEP_SEC
 	if not continuous:
@@ -243,12 +1210,14 @@ func apply_state(state: Dictionary, time_sec: float) -> void:
 		clip_name = MotionLibraryScript.FALLBACK_CLIP
 	var clip_time: float = _num(state.get("clip_time", time_sec), time_sec)
 	var speaking: bool = _num(state.get("speaking", false), 0.0) > 0.5
-	var mirror: bool = _num(state.get("mirror", false), 0.0) > 0.5
+	# Side facing is handled by the baked flip view. An explicit mirror flag is
+	# the only remaining reason to apply a negative body scale (front view).
+	var mirror: bool = (not use_side) and _num(state.get("mirror", false), 0.0) > 0.5
 	var size_mult: float = maxf(_num(state.get("scale_mult", 1.0), 1.0), 0.01)
 	var actor_seed: float = _num(state.get("actor_seed", float(get_instance_id() % 8191)), 0.0)
 	var look_target: float = clampf(
 		_num(state.get("look_dir", 0.0), 0.0)
-		+ FACING_LOOK_BIAS * _facing_value(state.get("facing", 0.0)),
+		+ FACING_LOOK_BIAS * _facing_value(facing),
 		-1.0,
 		1.0
 	)
@@ -265,14 +1234,22 @@ func apply_state(state: Dictionary, time_sec: float) -> void:
 		_talk = 1.0 if speaking else 0.0
 
 	var base_pose: Dictionary = _resolve_base_pose(state, clip_name, clip_time, time_sec, step, continuous)
-	# Mirroring flips the body node, so directions flip with it.
+	# Body mirroring flips screen-space directions, so overlays and yaw are
+	# converted back to the active rig's local coordinate system.
 	var local_sign: float = -1.0 if mirror else 1.0
 	var overlay: Dictionary = _motion.build_overlay(
 		time_sec, actor_seed, speaking, _look * local_sign, _lean * local_sign, _talk
 	)
 	_body.scale = Vector2(-size_mult if mirror else size_mult, size_mult)
-	_apply_pose(base_pose, overlay)
+	var local_yaw: float = _look * local_sign
+	_apply_pose(base_pose, overlay, 0.0 if use_side else local_yaw)
 	_drive_face(state, overlay)
+	_face_send(
+		"set_yaw",
+		clampf(local_yaw * (0.22 if use_side else 0.78), -1.0, 1.0)
+	)
+	# Last: the face eases its mouth toward this frame's shape by the time that has passed.
+	_face_send("set_time", time_sec)
 
 
 ## Global position of "head", "chest" or "feet" (also "face", "hips", "top",
@@ -280,6 +1257,23 @@ func apply_state(state: Dictionary, time_sec: float) -> void:
 ## framed on it does not inherit every nod and breath; pass animated = true
 ## for the live bone position.
 func get_focus_point(part: String = "head", animated: bool = false) -> Vector2:
+	if _cutout_mode and _ready_ok:
+		var local := Vector2(0.0, -target_height_px * 0.86)
+		match part.to_lower():
+			"feet", "foot", "ground":
+				local = Vector2.ZERO
+			"top":
+				local = Vector2(0.0, -target_height_px)
+			"center", "centre", "body":
+				local = Vector2(0.0, -target_height_px * 0.5)
+			"chest", "torso":
+				local = Vector2(0.0, -target_height_px * 0.62)
+			_:
+				local = Vector2(0.0, -target_height_px * 0.86)
+		local.x += _flash_focus_x
+		if is_inside_tree():
+			return to_global(local)
+		return get_transform() * local
 	if not _ready_ok or _body == null:
 		return global_position if is_inside_tree() else position
 	var body_xf: Transform2D = get_transform() * _body.get_transform()
@@ -374,7 +1368,7 @@ func _resolve_base_pose(
 	return base_pose
 
 
-func _apply_pose(pose: Dictionary, overlay: Dictionary) -> void:
+func _apply_pose(pose: Dictionary, overlay: Dictionary, front_yaw: float = 0.0) -> void:
 	var pose_bones: Dictionary = _dict(pose.get("bones", null))
 	var over_bones: Dictionary = _dict(overlay.get("bones", null))
 	var lock: float = 0.0
@@ -396,11 +1390,20 @@ func _apply_pose(pose: Dictionary, overlay: Dictionary) -> void:
 	if chest_value is Vector2:
 		var chest_raw: Vector2 = chest_value
 		chest = chest_raw.clamp(Vector2(0.9, 0.9), Vector2(1.1, 1.1))
+	# Front artwork gets a restrained 2.5D yaw: the torso narrows in
+	# perspective while the head and chest travel slightly toward the look.
+	var turn: float = clampf(front_yaw, -1.0, 1.0)
+	chest.x *= 1.0 - absf(turn) * 0.055
+	head_shift.x += turn * target_height_px * 0.012
 	var chest_inv := Vector2(1.0 / chest.x, 1.0 / chest.y)
 
 	var count: int = _bone_nodes.size()
 	for index: int in count:
-		_degrees[index] = _num(pose_bones.get(_bone_names[index], 0.0), 0.0)
+		var raw: float = _num(pose_bones.get(_bone_names[index], 0.0), 0.0)
+		var bone_name: String = _bone_names[index]
+		if bone_name.begins_with("upper_leg") or bone_name.begins_with("lower_leg") or bone_name.begins_with("foot"):
+			raw = clampf(raw, -LEG_SAFE_DEG, LEG_SAFE_DEG)
+		_degrees[index] = raw
 	_guard_arms(clampf(_num(pose.get("arm_guard", 1.0), 1.0), 0.0, 1.0))
 
 	for index: int in count:
@@ -412,12 +1415,19 @@ func _apply_pose(pose: Dictionary, overlay: Dictionary) -> void:
 		var origin: Vector2 = _bone_rest[index]
 		if index == _i_root:
 			origin += root_shift * target_height_px
+		if index == _i_torso:
+			origin.x += turn * target_height_px * 0.004
 		elif index == _i_head:
 			origin += head_shift
 		var bone: Bone2D = _bone_nodes[index]
 		if index == _i_torso:
 			# Breathing: the chest swells from the waist.
 			bone.transform = Transform2D(angle, chest, 0.0, origin)
+		elif index == _i_head and absf(turn) > 0.0001:
+			# A smaller head squeeze completes the yaw without changing the
+			# rest pose at turn == 0.
+			var head_scale := Vector2(1.0 - absf(turn) * 0.025, 1.0)
+			bone.transform = Transform2D(angle, head_scale, 0.0, origin)
 		elif _torso_child[index]:
 			# Undo the chest scale so the head and arms ride it without
 			# changing size themselves: local basis = inverse(scale) * rotation.
@@ -441,17 +1451,33 @@ func _guard_arms(weight: float) -> void:
 		return
 	for arm: ArmGuard in _arms:
 		# Work in "outward" degrees so both sides share one rule.
-		var upper_out: float = -arm.side * _degrees[arm.upper_index]
+		# Wide A-pose paintings settle to a hang first; a pointing clip then
+		# adds only ARM_MAX_LIFT_DEG, which the shoulder mesh can follow.
+		var clip_out: float = -arm.side * _degrees[arm.upper_index]
+		var baseline: float = clampf(
+			ARM_RELAX_ABDUCTION_DEG - arm.upper_abduction,
+			-ARM_MAX_INWARD_TRAVEL_DEG,
+			0.0
+		)
+		var upper_out: float = baseline + clampf(maxf(clip_out, 0.0), 0.0, ARM_MAX_LIFT_DEG)
+		if clip_out < 0.0:
+			upper_out = minf(clip_out, baseline)
 		var upper_stop: float = minf(arm.upper_abduction, ARM_MIN_ABDUCTION_DEG) - arm.upper_abduction
 		upper_out = lerpf(upper_out, maxf(upper_out, upper_stop), weight)
 		_degrees[arm.upper_index] = -arm.side * upper_out
 		if arm.lower_index < 0:
 			continue
-		var lower_out: float = -arm.side * _degrees[arm.lower_index]
+		var lower_out: float = clampf(
+			-arm.side * _degrees[arm.lower_index],
+			-FOREARM_MAX_BEND_DEG,
+			FOREARM_MAX_BEND_DEG
+		)
 		var forearm: float = arm.lower_abduction + upper_out + lower_out
 		var forearm_stop: float = minf(arm.lower_abduction, FOREARM_MIN_ABDUCTION_DEG)
 		if forearm < forearm_stop:
 			lower_out = lerpf(lower_out, lower_out + forearm_stop - forearm, weight)
+			_degrees[arm.lower_index] = -arm.side * lower_out
+		else:
 			_degrees[arm.lower_index] = -arm.side * lower_out
 
 
@@ -594,7 +1620,7 @@ func _drive_face(state: Dictionary, overlay: Dictionary) -> void:
 
 
 func _face_send(method_name: String, value: Variant) -> void:
-	if not _face_args.has(method_name):
+	if _face == null or not is_instance_valid(_face) or not _face_args.has(method_name):
 		return
 	var types: Array[int] = _face_args[method_name]
 	if types.is_empty():
@@ -987,31 +2013,33 @@ func _head_mesh_z(rig: Dictionary) -> int:
 
 func _teardown() -> void:
 	_ready_ok = false
-	if _body != null and is_instance_valid(_body):
-		if _body.get_parent() != null:
-			_body.get_parent().remove_child(_body)
-		_body.free()
-	_body = null
-	_skeleton = null
-	_texture = null
-	_face = null
-	_face_args.clear()
-	_has_face_focus = false
-	_bone_index.clear()
-	_bone_names.clear()
-	_bone_nodes.clear()
-	_bone_parent.clear()
-	_bone_rest.clear()
-	_bone_head.clear()
-	_bone_tail.clear()
-	_bone_limit.clear()
-	_torso_child.clear()
-	_degrees.clear()
-	_legs.clear()
-	_arms.clear()
-	_i_root = -1
-	_i_torso = -1
-	_i_head = -1
+	_release_view(_front_view)
+	_release_view(_side_view)
+	_release_view(_side_view_flip)
+	_front_view = null
+	_side_view = null
+	_side_view_flip = null
+	_active_view = null
+	_side_native_facing = "right"
+	for sprite_key: Variant in _cutout_sprites.keys():
+		var sprite := _cutout_sprites[sprite_key] as Node
+		if sprite != null and is_instance_valid(sprite):
+			sprite.queue_free()
+	_cutout_sprites.clear()
+	_cutout_faces.clear()
+	_cutout_rigs.clear()
+	_cutout_mode = false
+	_cutout_native = "right"
+	_flash_views.clear()
+	_flash_mode = false
+	_flash_body_height = 1.0
+	_flash_lock_foot = ""
+	_flash_lock_x = 0.0
+	_flash_clip = ""
+	_flash_time = -1.0
+	_flash_focus_x = 0.0
+	_flash_ground_x = 0.0
+	_reset_view_aliases()
 	_has_last = false
 	_cur_clip = ""
 	_last_base_pose = {}
@@ -1021,6 +2049,49 @@ func _teardown() -> void:
 	_look = 0.0
 	_lean = 0.0
 	_talk = 0.0
+
+
+func _release_view(view: ViewData) -> void:
+	if view == null or view.body == null or not is_instance_valid(view.body):
+		return
+	if view.body.get_parent() != null:
+		view.body.get_parent().remove_child(view.body)
+	view.body.free()
+
+
+func _discard_current_build() -> void:
+	if _body != null and is_instance_valid(_body):
+		if _body.get_parent() != null:
+			_body.get_parent().remove_child(_body)
+		_body.free()
+	_reset_view_aliases()
+
+
+func _reset_view_aliases() -> void:
+	_body = null
+	_skeleton = null
+	_texture = null
+	_origin_px = Vector2.ZERO
+	puppet_scale = 1.0
+	_face = null
+	_face_args = {}
+	_face_focus = Vector2.ZERO
+	_has_face_focus = false
+	_bone_index = {}
+	_bone_names = []
+	_bone_nodes = []
+	_bone_parent = []
+	_bone_rest = []
+	_bone_head = []
+	_bone_tail = []
+	_bone_limit = []
+	_torso_child = []
+	_degrees = []
+	_legs = []
+	_arms = []
+	_i_root = -1
+	_i_torso = -1
+	_i_head = -1
 
 
 static func _parent_name(record: Dictionary) -> String:

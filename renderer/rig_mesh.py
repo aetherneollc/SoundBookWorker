@@ -177,6 +177,47 @@ def _remove_boundary_background(rgba: np.ndarray) -> np.ndarray:
     return out
 
 
+def _punch_enclosed_chroma(rgba: np.ndarray) -> np.ndarray:
+    """Drop saturated green pockets sealed between an arm and the torso.
+
+    Border flood cannot reach a hole that the limbs pinch shut, and that
+    leftover screen shows up as a green slit once the arm settles.
+    """
+    out = np.ascontiguousarray(rgba.copy())
+    hsv = cv2.cvtColor(out[:, :, :3], cv2.COLOR_RGB2HSV)
+    hue = hsv[:, :, 0]
+    saturation = hsv[:, :, 1]
+    value = hsv[:, :, 2]
+    chroma = (hue >= 42) & (hue <= 78) & (saturation >= 110) & (value >= 120)
+    out[:, :, 3] = np.where(chroma, 0, out[:, :, 3]).astype(np.uint8)
+    return out
+
+
+def _drop_ground_stain(rgba: np.ndarray) -> np.ndarray:
+    """Remove the pale yellow floor Kolors paints under the shoes.
+
+    It survives the border flood once it touches a sole. Orange clothing sits
+    higher and on a redder hue, so a tight yellow key in the bottom band
+    leaves the boots alone.
+    """
+    out = np.ascontiguousarray(rgba.copy())
+    height = out.shape[0]
+    band_top = int(height * 0.86)
+    hsv = cv2.cvtColor(out[:, :, :3], cv2.COLOR_RGB2HSV)
+    hue = hsv[:, :, 0]
+    saturation = hsv[:, :, 1]
+    value = hsv[:, :, 2]
+    stain = np.zeros(out.shape[:2], dtype=bool)
+    stain[band_top:] = (
+        (hue[band_top:] >= 18)
+        & (hue[band_top:] <= 40)
+        & (saturation[band_top:] >= 50)
+        & (value[band_top:] >= 140)
+    )
+    out[:, :, 3] = np.where(stain, 0, out[:, :, 3]).astype(np.uint8)
+    return out
+
+
 def _keep_main_island(rgba: np.ndarray) -> np.ndarray:
     """Keep the torso-containing component and discard watermarks/islands."""
     out = np.ascontiguousarray(rgba.copy())
@@ -1327,9 +1368,10 @@ def build_mesh_rig(
 
     raw = np.asarray(Image.open(master_path).convert("RGBA"))
     cleaned = rig_characters._ensure_rgba_matte(raw)
-    cleaned = _remove_boundary_background(cleaned)
+    cleaned = _drop_ground_stain(_punch_enclosed_chroma(_remove_boundary_background(cleaned)))
     cleaned = _suppress_green_spill(_keep_main_island(cleaned))
     rgba = _upscale_clean_rgba(cleaned, float(upscale))
+    rgba = _punch_enclosed_chroma(rgba)
     rgba = _suppress_green_spill(_keep_main_island(rgba))
     texture_path = out_dir / "texture.png"
     Image.fromarray(rgba, "RGBA").save(texture_path, optimize=True)

@@ -39,9 +39,35 @@ except ImportError:  # ``python -m unittest`` imports this file as part of the p
 
 
 # Bump the salt when the mesh document changes shape, so old caches are not reused.
-# v2: rigs built through the CLI before this had ``face_anchors: null``.
-_MESH_SALT = b'\0godot2d-mesh-v2'
+# v4: pale floor stains under the shoes are keyed out.
+_MESH_SALT = b'\0godot2d-mesh-v4'
 _IMAGE_KEYS = ('master_file', 'rig_file', 'file')
+_SIDE_IMAGE_KEYS = ('side_master_file', 'side_rig_file')
+
+
+def _texture_opaque_enough(texture: Path) -> bool:
+    """Reject a large matte that the flood-fill ate down to jacket shreds.
+
+    Small fixtures (unit-test sprites) only need a real silhouette. The shred
+    we hit in production was a 1024x1536 master whose texture kept under 3%
+    of its pixels.
+    """
+    try:
+        from PIL import Image
+        import numpy as np
+    except ImportError:
+        return texture.is_file()
+    try:
+        rgba = np.asarray(Image.open(texture).convert('RGBA'))
+    except OSError:
+        return False
+    if rgba.ndim != 3 or rgba.shape[2] < 4:
+        return False
+    opaque = int((rgba[:, :, 3] > 8).sum())
+    area = int(rgba.shape[0] * rgba.shape[1])
+    if area < 900_000:
+        return opaque > 1000
+    return opaque >= 400_000 and opaque >= int(area * 0.08)
 
 
 def _mesh_cache_valid(rig_json: Path) -> bool:
@@ -54,7 +80,7 @@ def _mesh_cache_valid(rig_json: Path) -> bool:
     if data.get('version') != 1 or not data.get('bones') or not data.get('groups'):
         return False
     texture = rig_json.parent / str(data.get('texture') or 'texture.png')
-    return texture.is_file()
+    return texture.is_file() and _texture_opaque_enough(texture)
 
 
 def _source_image(entry: dict) -> Path | None:
@@ -70,6 +96,28 @@ def _source_image(entry: dict) -> Path | None:
 
 def _existing_mesh(entry: dict) -> Path | None:
     for key in ('rig_json', 'rig_file', 'master_file', 'file'):
+        raw = entry.get(key)
+        if not isinstance(raw, str) or not raw.lower().endswith('.json'):
+            continue
+        path = Path(raw)
+        if _mesh_cache_valid(path):
+            return path
+    return None
+
+
+def _side_source_image(entry: dict) -> Path | None:
+    for key in _SIDE_IMAGE_KEYS:
+        raw = entry.get(key)
+        if not isinstance(raw, str) or not raw or raw.lower().endswith('.json'):
+            continue
+        path = Path(raw)
+        if path.is_file():
+            return path
+    return None
+
+
+def _existing_side_mesh(entry: dict) -> Path | None:
+    for key in ('side_rig_json', 'side_rig_file', 'side_master_file'):
         raw = entry.get(key)
         if not isinstance(raw, str) or not raw.lower().endswith('.json'):
             continue
@@ -97,7 +145,27 @@ def cached_mesh_rig(image: Path, cache_root: Path, memo: dict[str, Path]) -> Pat
     return rig_json
 
 
+def _cutout_json(entry: dict) -> Path | None:
+    for key in ('cutout_json', 'rig_json', 'rig_file', 'file'):
+        raw = entry.get(key)
+        if not isinstance(raw, str) or not raw.lower().endswith('.json'):
+            continue
+        path = Path(raw)
+        if not path.is_file():
+            continue
+        try:
+            data = json.loads(path.read_text(encoding='utf-8'))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if data.get('presentation') == 'cutout' and isinstance(data.get('views'), dict) and data['views']:
+            return path
+    return None
+
+
 def _rig_path_for(entry: dict, cache_root: Path, memo: dict[str, Path]) -> Path | None:
+    cutout = _cutout_json(entry)
+    if cutout is not None:
+        return cutout
     existing = _existing_mesh(entry)
     if existing is not None:
         return existing
@@ -107,7 +175,24 @@ def _rig_path_for(entry: dict, cache_root: Path, memo: dict[str, Path]) -> Path 
     return cached_mesh_rig(image, cache_root, memo)
 
 
-def _publish_rig(rigs: dict[str, dict], entry: dict, rig_json: Path) -> None:
+def _side_rig_path_for(entry: dict, cache_root: Path, memo: dict[str, Path]) -> Path | None:
+    if _cutout_json(entry) is not None:
+        return None
+    existing = _existing_side_mesh(entry)
+    if existing is not None:
+        return existing
+    image = _side_source_image(entry)
+    if image is None:
+        return None
+    return cached_mesh_rig(image, cache_root, memo)
+
+
+def _publish_rig(
+    rigs: dict[str, dict],
+    entry: dict,
+    rig_json: Path,
+    side_rig_json: Path | None = None,
+) -> None:
     ident = str(entry.get('id') or entry.get('character_id') or '')
     name = str(entry.get('name') or '')
     record = {
@@ -118,6 +203,10 @@ def _publish_rig(rigs: dict[str, dict], entry: dict, rig_json: Path) -> None:
     scale = entry.get('stature_scale')
     if isinstance(scale, (int, float)) and not isinstance(scale, bool):
         record['stature_scale'] = float(scale)
+    if side_rig_json is not None:
+        native = str(entry.get('side_native_facing') or 'right').strip().lower()
+        record['side_rig_json'] = side_rig_json.resolve().as_posix()
+        record['side_native_facing'] = native if native in ('left', 'right') else 'right'
     for key in (ident, name):
         if not key:
             continue
@@ -125,13 +214,10 @@ def _publish_rig(rigs: dict[str, dict], entry: dict, rig_json: Path) -> None:
         if current is None:
             rigs[key] = dict(record)
             continue
-        if current.get('rig_json') == record['rig_json']:
-            if 'stature_scale' not in current and 'stature_scale' in record:
-                current['stature_scale'] = record['stature_scale']
-            continue
         merged = dict(record)
-        if 'stature_scale' not in merged and 'stature_scale' in current:
-            merged['stature_scale'] = current['stature_scale']
+        for optional in ('stature_scale', 'side_rig_json', 'side_native_facing'):
+            if optional not in merged and optional in current:
+                merged[optional] = current[optional]
         rigs[key] = merged
 
 
@@ -145,7 +231,7 @@ def ensure_mesh_rigs(doc: dict, cache_root: Path) -> dict[str, dict]:
             continue
         rig_json = _rig_path_for(entry, cache_root, memo)
         if rig_json is not None:
-            _publish_rig(rigs, entry, rig_json)
+            _publish_rig(rigs, entry, rig_json, _side_rig_path_for(entry, cache_root, memo))
         elif entry.get('master_file') or entry.get('rig_file'):
             label = entry.get('id') or entry.get('name') or 'character'
             print(f'prepare_stage: no readable master for {label}', flush=True)
@@ -160,7 +246,7 @@ def ensure_mesh_rigs(doc: dict, cache_root: Path) -> dict[str, dict]:
                 continue
             rig_json = _rig_path_for(actor, cache_root, memo)
             if rig_json is not None:
-                _publish_rig(rigs, actor, rig_json)
+                _publish_rig(rigs, actor, rig_json, _side_rig_path_for(actor, cache_root, memo))
     return rigs
 
 

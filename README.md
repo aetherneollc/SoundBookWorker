@@ -126,8 +126,10 @@ Remotion (`remotion/`, `npm run render`) renders everything whose manifest has n
 ```bash
 python -m unittest -v renderer/test_rig_mesh.py renderer/test_face_anchors.py renderer/test_motions.py \
   renderer/test_director.py renderer/test_prepare_stage.py renderer/test_mux.py \
-  renderer/test_rover_stage.py renderer/test_side_walk.py
+  renderer/test_rover_stage.py renderer/test_side_walk.py renderer/test_voice_cues.py
 ```
+
+`godot/tools/face_preview.gd` renders face close-up contact sheets (every mouth shape against every brow emotion) for any `rig.json`; the header of the script lists its environment variables.
 
 `.github/workflows/probe-godot2d.yml` records a short skinned-mesh probe on the software renderer for pushes to `feat/godot2d` that touch `godot/`, and on manual dispatch.
 

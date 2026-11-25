@@ -10,6 +10,7 @@ const BASE_ROVER_HEIGHT := BASE_ACTOR_HEIGHT * 0.53
 # Clips drawn aiming at one side of the screen (-1 = left). They are posed
 # mirrored when the actor addresses the other side.
 const AIMED_CLIPS := {"point": -1.0, "talk_explain": -1.0}
+const ROVER_FACING_CLIPS := {"point": true, "talk_explain": true, "operate": true}
 const DEFAULT_VISEME := "X"
 const VALID_VISEMES := ["X", "A", "B", "C", "D", "E", "F"]
 
@@ -282,10 +283,27 @@ func _build_puppets() -> bool:
 			return false
 		var rig_path: String = _resolve_asset_path(rig_json)
 		puppet.call("setup", rig_path, _motion_library, BASE_ACTOR_HEIGHT * setup_scale)
+		var side_native_facing: String = str(
+			rig_cfg.get("side_native_facing", "right")
+		).strip_edges().to_lower()
+		if side_native_facing != "left":
+			side_native_facing = "right"
+		var side_loaded := false
+		var side_rig_json: String = str(rig_cfg.get("side_rig_json", "")).strip_edges()
+		if side_rig_json != "" and puppet.has_method("setup_side_view"):
+			side_loaded = bool(puppet.call(
+				"setup_side_view",
+				_resolve_asset_path(side_rig_json),
+				side_native_facing
+			))
+			if not side_loaded:
+				push_warning("StagePlayer: side rig could not be loaded for actor %s" % actor_id)
 		_puppets[actor_id] = {
 			"puppet": puppet,
 			"stature": stature,
 			"setup_scale": setup_scale,
+			"side_loaded": side_loaded,
+			"side_native_facing": side_native_facing,
 			"current_clip": "",
 			"previous_clip": "",
 			"clip_change_frame": -1000000,
@@ -517,6 +535,7 @@ func _apply_shot_frame(frame_index: int) -> void:
 
 	var actor_records: Array[Dictionary] = _position_active_actors(shot, shot_frame)
 	_apply_actor_states(actor_records, frame_index, shot_frame, shot)
+	_refresh_actor_shadows(actor_records)
 	_apply_rover_state(shot, shot_frame, frame_index)
 	var cut: Dictionary = _find_cut(shot, shot_frame)
 	_camera_director.call("update_camera", cut, actor_records, shot_frame)
@@ -556,21 +575,20 @@ func _position_active_actors(shot: Dictionary, shot_frame: int) -> Array[Diction
 		if puppet == null:
 			continue
 		var beat: Dictionary = _find_beat(shot, actor_id, shot_frame)
-		var x_value: float = float(actor_cfg.get("x", 0.5))
-		var move_value: Variant = beat.get("move_x", [])
-		if move_value is Array and (move_value as Array).size() >= 2:
-			var move: Array = move_value as Array
-			var beat_from: int = int(beat.get("from", 0))
-			var beat_to: int = int(beat.get("to", beat_from + 1))
-			var move_progress: float = clampf(
-				float(shot_frame - beat_from) / float(maxi(beat_to - beat_from, 1)),
-				0.0,
-				1.0
-			)
-			x_value = lerpf(float(move[0]), float(move[1]), move_progress)
+		var step: Dictionary = _step_motion(actor_cfg, beat, shot_frame)
+		# A cutout is one painting. Sliding it, or swinging a sliced leg, reads as
+		# floating. It stays where it was blocked, with both soles on the floor.
+		if puppet.has_method("is_cutout") and bool(puppet.call("is_cutout")):
+			step = {
+				"x": float(actor_cfg.get("x", 0.5)),
+				"moving": 0.0,
+				"step_u": 0.0,
+				"step_parity": 0,
+			}
+		var x_value: float = float(step.get("x", actor_cfg.get("x", 0.5)))
 		var depth: String = str(actor_cfg.get("depth", "mid")).to_lower()
 		var depth_scale: float = _stage_depth_scale(depth)
-		puppet.position = Vector2(_horizontal_to_pixels(x_value), ground_y)
+		puppet.position = Vector2(_horizontal_to_pixels(x_value), ground_y + 16.0)
 		puppet.z_index = _depth_z_index(depth)
 		puppet.visible = true
 		var facing: String = str(actor_cfg.get("facing", "front")).to_lower()
@@ -579,6 +597,7 @@ func _position_active_actors(shot: Dictionary, shot_frame: int) -> Array[Diction
 			"puppet": puppet,
 			"cfg": actor_cfg,
 			"beat": beat,
+			"step": step,
 			"facing": facing,
 			"depth_scale": depth_scale,
 		})
@@ -588,6 +607,22 @@ func _position_active_actors(shot: Dictionary, shot_frame: int) -> Array[Diction
 		})
 	_stage.call("set_actor_shadows", shadows)
 	return records
+
+
+func _refresh_actor_shadows(actor_records: Array[Dictionary]) -> void:
+	var shadows: Array[Dictionary] = []
+	for record: Dictionary in actor_records:
+		var puppet := record.get("puppet") as Node2D
+		if puppet == null:
+			continue
+		var anchor_x := puppet.position.x
+		if puppet.has_method("cutout_ground_x"):
+			anchor_x = float(puppet.call("cutout_ground_x"))
+		shadows.append({
+			"position": Vector2(anchor_x, puppet.position.y),
+			"scale": float(record.get("depth_scale", 1.0)),
+		})
+	_stage.call("set_actor_shadows", shadows)
 
 
 func _apply_rover_state(shot: Dictionary, shot_frame: int, frame_index: int) -> void:
@@ -649,8 +684,11 @@ func _apply_actor_states(
 			or bool(speech_state.get("speaking", false))
 		)
 		var viseme: String = str(speech_state.get("viseme", DEFAULT_VISEME))
-		var facing: String = str(record.get("facing", "front"))
-		var look_dir: float = _look_direction(record, actor_records)
+		var view: String = _view_name(beat.get("view", actor_cfg.get("view", "front")))
+		var facing: String = _actor_facing(
+			record, actor_records, desired_clip, shot
+		)
+		var look_dir: float = _look_direction(record, actor_records, facing)
 		var lean: float = clampf(float(actor_cfg.get("lean", 0.0)), -1.0, 1.0)
 		var stature: float = float(runtime.get("stature", 1.0))
 		var setup_scale: float = maxf(float(runtime.get("setup_scale", 1.0)), 0.001)
@@ -658,9 +696,22 @@ func _apply_actor_states(
 		var clip_origin: int = int(beat.get("from", 0)) if not beat.is_empty() else 0
 		var aim: float = float(AIMED_CLIPS.get(desired_clip, 0.0))
 		var aim_dir: float = _aim_direction(puppet, look_dir, shot) if aim != 0.0 else 0.0
+		var mirror_pose := aim_dir != 0.0 and signf(aim_dir) != signf(aim)
+		var side_art_mirrored := (
+			view == "three_quarter"
+			and bool(runtime.get("side_loaded", false))
+			and (facing == "left" or facing == "right")
+			and facing != str(runtime.get("side_native_facing", "right"))
+		)
+		# Puppet2D mirrors the whole three-quarter body to reverse its native
+		# facing. XOR that art transform into an aimed clip's pose reflection,
+		# otherwise point/talk_explain would point away from the target.
+		if aim_dir != 0.0 and side_art_mirrored:
+			mirror_pose = not mirror_pose
+		var step: Dictionary = record.get("step", {})
 		var state := {
 			"clip": desired_clip,
-			"mirror_pose": aim_dir != 0.0 and signf(aim_dir) != signf(aim),
+			"mirror_pose": mirror_pose,
 			"prev_clip": str(transition.get("prev_clip", desired_clip)),
 			"blend": float(transition.get("blend", 1.0)),
 			"clip_time": float(maxi(shot_frame - clip_origin, 0)) / float(_fps),
@@ -669,11 +720,51 @@ func _apply_actor_states(
 			"emotion": emotion,
 			"look_dir": look_dir,
 			"lean": lean,
+			"view": view,
 			"facing": facing,
+			"moving": float(step.get("moving", 0.0)),
+			"step_u": float(step.get("step_u", 0.0)),
+			"step_parity": int(step.get("step_parity", 0)),
 			"scale_mult": current_scale / setup_scale,
 			"actor_seed": int(runtime.get("actor_seed", 0)),
 		}
 		puppet.call("apply_state", state, float(frame_index) / float(_fps))
+
+
+func _step_motion(actor_cfg: Dictionary, beat: Dictionary, shot_frame: int) -> Dictionary:
+	var x_value: float = float(actor_cfg.get("x", 0.5))
+	var move_value: Variant = beat.get("move_x", [])
+	if not move_value is Array or (move_value as Array).size() < 2:
+		return {"x": x_value, "moving": 0.0, "step_u": 0.0, "step_parity": 0}
+	var move: Array = move_value as Array
+	var start_x: float = float(move[0])
+	var end_x: float = float(move[1])
+	var travel: float = end_x - start_x
+	if absf(travel) < 0.012:
+		return {"x": end_x, "moving": 0.0, "step_u": 0.0, "step_parity": 0}
+	var beat_from: int = int(beat.get("from", 0))
+	var beat_to: int = int(beat.get("to", beat_from + 1))
+	var span: int = maxi(beat_to - beat_from, 1)
+	# One footfall is about 0.45 seconds. The body only advances while a foot is swinging.
+	var stride: float = 0.034 * signf(travel)
+	var steps: int = maxi(1, int(round(absf(travel / stride))))
+	var frames_per: int = maxi(1, int(round(float(span) / float(steps))))
+	var local: int = maxi(shot_frame - beat_from, 0)
+	var step_index: int = mini(int(local / frames_per), steps - 1)
+	var step_u: float = clampf(float(local % frames_per) / float(frames_per), 0.0, 1.0)
+	var swing: float = clampf((step_u - 0.18) / 0.64, 0.0, 1.0)
+	swing = swing * swing * (3.0 - 2.0 * swing)
+	var walked: float = stride * (float(step_index) + swing)
+	if travel > 0.0:
+		walked = minf(walked, travel)
+	else:
+		walked = maxf(walked, travel)
+	return {
+		"x": start_x + walked,
+		"moving": 1.0,
+		"step_u": step_u,
+		"step_parity": step_index,
+	}
 
 
 func _clip_transition(runtime: Dictionary, desired_clip: String, frame_index: int) -> Dictionary:
@@ -697,6 +788,11 @@ func _clip_transition(runtime: Dictionary, desired_clip: String, frame_index: in
 ## Screen side an aimed gesture should address: the rover when it is on stage,
 ## otherwise whoever the actor is looking at.
 func _aim_direction(puppet: Node2D, look_dir: float, shot: Dictionary) -> float:
+	var rover_dir: float = _rover_direction(puppet, shot)
+	return rover_dir if rover_dir != 0.0 else look_dir
+
+
+func _rover_direction(puppet: Node2D, shot: Dictionary) -> float:
 	var rover_value: Variant = shot.get("rover")
 	if _rover != null and puppet != null and rover_value is Dictionary:
 		var rover_cfg: Dictionary = rover_value as Dictionary
@@ -705,10 +801,41 @@ func _aim_direction(puppet: Node2D, look_dir: float, shot: Dictionary) -> float:
 			var offset: float = _horizontal_to_pixels(mark) - puppet.position.x
 			if absf(offset) > 1.0:
 				return signf(offset)
-	return look_dir
+	return 0.0
 
 
-func _look_direction(record: Dictionary, actor_records: Array[Dictionary]) -> float:
+func _actor_facing(
+	record: Dictionary,
+	actor_records: Array[Dictionary],
+	desired_clip: String,
+	shot: Dictionary
+) -> String:
+	var beat: Dictionary = record.get("beat", {})
+	var look_at: String = str(beat.get("look_at", "")).strip_edges()
+	var puppet := record.get("puppet") as Node2D
+	if look_at != "" and puppet != null:
+		for target: Dictionary in actor_records:
+			if str(target.get("id", "")) != look_at:
+				continue
+			var target_puppet := target.get("puppet") as Node2D
+			if target_puppet != null:
+				var offset: float = target_puppet.position.x - puppet.position.x
+				if absf(offset) > 1.0:
+					return "right" if offset > 0.0 else "left"
+	if ROVER_FACING_CLIPS.has(desired_clip):
+		var rover_dir: float = _rover_direction(puppet, shot)
+		if rover_dir != 0.0:
+			return "right" if rover_dir > 0.0 else "left"
+	var actor_cfg: Dictionary = record.get("cfg", {})
+	var fallback: String = str(actor_cfg.get("facing", record.get("facing", "front"))).to_lower()
+	return fallback if fallback == "left" or fallback == "right" else "front"
+
+
+func _look_direction(
+	record: Dictionary,
+	actor_records: Array[Dictionary],
+	fallback_facing: String = ""
+) -> float:
 	var beat: Dictionary = record.get("beat", {})
 	var look_at: String = str(beat.get("look_at", ""))
 	var puppet := record.get("puppet") as Node2D
@@ -719,12 +846,19 @@ func _look_direction(record: Dictionary, actor_records: Array[Dictionary]) -> fl
 			var target_puppet := target.get("puppet") as Node2D
 			if target_puppet != null:
 				return signf(target_puppet.position.x - puppet.position.x)
-	var facing: String = str(record.get("facing", "front"))
+	var facing: String = fallback_facing if fallback_facing != "" else str(record.get("facing", "front"))
 	if facing == "right":
 		return 1.0
 	if facing == "left":
 		return -1.0
 	return 0.0
+
+
+func _view_name(value: Variant) -> String:
+	var name: String = str(value).strip_edges().to_lower()
+	if name == "back":
+		return "back"
+	return "three_quarter" if name == "three_quarter" or name == "side" else "front"
 
 
 func _speech_state(actor_id: String, frame_index: int) -> Dictionary:
