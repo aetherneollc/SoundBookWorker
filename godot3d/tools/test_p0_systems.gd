@@ -83,10 +83,15 @@ func _run() -> void:
 	var clip_cas: String = str(linlan.call("resolve_locomotion_clip", "casual"))
 	var clip_caut: String = str(linlan.call("resolve_locomotion_clip", "cautious"))
 	var clip_urg: String = str(linlan.call("resolve_locomotion_clip", "urgent"))
+	var clip_sprint: String = str(linlan.call("resolve_locomotion_clip", "sprint"))
 	_assert(clip_conf == "walk_formal", "confident gait selects walk_formal (got %s)" % clip_conf)
 	_assert(clip_cas == "walk", "casual gait selects walk (got %s)" % clip_cas)
 	_assert(clip_caut == "crouch_walk", "cautious gait selects crouch_walk (got %s)" % clip_caut)
-	_assert(clip_urg == "jog", "urgent gait selects jog (got %s)" % clip_urg)
+	if bool(linlan.call("has_clip", "Sprint_Urgent_Upright")):
+		_assert(clip_urg == "Sprint_Urgent_Upright", "urgent gait selects Sprint_Urgent_Upright (got %s)" % clip_urg)
+		_assert(clip_sprint == "Sprint_Urgent_Upright", "sprint gait selects Sprint_Urgent_Upright (got %s)" % clip_sprint)
+	else:
+		_assert(clip_urg == "jog", "urgent gait selects jog (got %s)" % clip_urg)
 
 	# 3. Verify BlendShape facial controller drives real morphs + emotions + lip-sync
 	var facial: Node = linlan.call("get_facial_controller")

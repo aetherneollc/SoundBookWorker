@@ -456,6 +456,8 @@ class PerformancePlanner:
             "to": int(max(end, start + 1)),
             "action_id": spec["action_id"],
             "base_clip": spec["base_clip"],
+            "dedicated_clip": spec.get("dedicated_clip") or "",
+            "clip_source": spec.get("clip_source") or "",
             "intensity": float(spec["intensity"]),
             "target": str(target or spec["target"]),
             "root_motion": bool(spec["root_motion"]),

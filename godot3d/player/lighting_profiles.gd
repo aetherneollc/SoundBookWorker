@@ -658,10 +658,14 @@ static func apply_art_profile(rig: Node3D, profile: Dictionary) -> void:
 		"ps2_urban":
 			_add_fill(rig, "RetroFillMagenta", Vector3(room_min.x + 1.1, 1.7, center.z), Color("#c45cff"), 0.42, 7.5)
 			_add_fill(rig, "RetroFillTeal", Vector3(room_max.x - 1.1, 1.35, center.z + 0.4), Color("#14b8b0"), 0.48, 7.2)
+			_add_fill(rig, "RetroShadowFill", Vector3(center.x, 0.42, center.z), Color("#6d8c96"), 0.34, maxf(room_max.x - room_min.x, 8.0))
+			_lift_retro_ambient(rig)
 		"retro_industrial_scifi":
 			_add_fill(rig, "RetroSodiumFill", Vector3(center.x, 2.05, room_max.z - 1.2), Color("#ffb060"), 0.36, 6.5)
 			_add_fill(rig, "RetroBeacon", Vector3(room_max.x - 0.8, room_max.y - 0.55, room_min.z + 1.3), Color("#ff5a1f"), 0.55, 5.5)
 			_add_fill(rig, "RetroFluorescent", Vector3(room_min.x + 1.4, 1.6, center.z), Color("#c5e8ff"), 0.34, 6.0)
+			_add_fill(rig, "RetroShadowFill", Vector3(center.x, 0.42, center.z), Color("#6d8c96"), 0.38, maxf(room_max.x - room_min.x, 8.0))
+			_lift_retro_ambient(rig)
 		"retro_horror":
 			var spot := SpotLight3D.new()
 			spot.name = "RetroHorrorCone"
@@ -688,8 +692,71 @@ static func apply_art_profile(rig: Node3D, profile: Dictionary) -> void:
 			_add_fill(rig, "RetroBunkerFill", Vector3(center.x, 1.15, room_max.z - 1.0), Color("#6d7464"), 0.28, 6.0)
 		_:
 			pass
+	_clamp_named_face_lights(rig)
 	rig.set_meta("art_decorated", true)
 	rig.set_meta("art_preset", preset)
+
+
+static func _lift_retro_ambient(rig: Node3D) -> void:
+	if not rig.has_meta("world_env"):
+		return
+	var world: WorldEnvironment = rig.get_meta("world_env") as WorldEnvironment
+	if world == null or world.environment == null:
+		return
+	var env := world.environment
+	env.ambient_light_energy = maxf(env.ambient_light_energy, 0.64)
+	env.ambient_light_color = env.ambient_light_color.lerp(Color("#8ea4b0"), 0.22)
+	env.tonemap_exposure = clampf(env.tonemap_exposure, 0.92, 1.08)
+	rig.set_meta("base_ambient_energy", env.ambient_light_energy)
+	rig.set_meta("base_exposure", env.tonemap_exposure)
+
+
+static func _clamp_named_face_lights(rig: Node3D) -> void:
+	for child: Node in rig.get_children():
+		if not child is OmniLight3D:
+			continue
+		var light := child as OmniLight3D
+		var node_name := str(light.name).to_lower()
+		if node_name.contains("face"):
+			light.light_energy = minf(light.light_energy, 0.32)
+			if light.light_color.r > 0.92 and light.light_color.g > 0.84:
+				light.light_color = Color("#f0ddc8")
+
+
+static func _apply_storm_sky(rig: Node3D, env: Environment, storm_c: float) -> void:
+	if not rig.has_meta("clear_bg"):
+		rig.set_meta("clear_bg", env.background_color)
+		rig.set_meta("clear_fog", env.fog_enabled)
+		rig.set_meta("clear_fog_density", env.fog_density)
+		rig.set_meta("clear_fog_color", env.fog_light_color)
+		if env.sky != null and env.sky.sky_material is ProceduralSkyMaterial:
+			var sky_mat := env.sky.sky_material as ProceduralSkyMaterial
+			rig.set_meta("clear_sky_top", sky_mat.sky_top_color)
+			rig.set_meta("clear_sky_horizon", sky_mat.sky_horizon_color)
+			rig.set_meta("clear_ground_horizon", sky_mat.ground_horizon_color)
+	var bg0: Color = rig.get_meta("clear_bg") as Color
+	var u := 0.0
+	if storm_c > 0.1:
+		u = clampf((storm_c - 0.1) / 0.9, 0.0, 1.0)
+	env.background_color = bg0.lerp(Color("#141a2c"), u)
+	if env.sky != null and env.sky.sky_material is ProceduralSkyMaterial and rig.has_meta("clear_sky_top"):
+		var sky_mat2 := env.sky.sky_material as ProceduralSkyMaterial
+		var top0: Color = rig.get_meta("clear_sky_top") as Color
+		var hor0: Color = rig.get_meta("clear_sky_horizon") as Color
+		var gnd0: Color = rig.get_meta("clear_ground_horizon") as Color
+		sky_mat2.sky_top_color = top0.lerp(Color("#12182e"), u)
+		sky_mat2.sky_horizon_color = hor0.lerp(Color("#3a465c"), u)
+		sky_mat2.ground_horizon_color = gnd0.lerp(Color("#2a3142"), u)
+		sky_mat2.sky_curve = lerpf(0.12, 0.22, u)
+	if u > 0.02:
+		env.fog_enabled = true
+		env.fog_light_color = Color("#2a3344")
+		env.fog_density = lerpf(float(rig.get_meta("clear_fog_density", 0.0)), 0.012, u)
+		env.fog_sky_affect = maxf(env.fog_sky_affect, 0.8)
+	else:
+		env.fog_enabled = bool(rig.get_meta("clear_fog", false))
+		env.fog_density = float(rig.get_meta("clear_fog_density", env.fog_density))
+		env.fog_light_color = rig.get_meta("clear_fog_color", env.fog_light_color) as Color
 
 
 static func _add_fill(rig: Node3D, node_name: String, pos: Vector3, color: Color, energy: float, range_m: float) -> void:
@@ -749,17 +816,20 @@ static func update_subject_fill(rig: Node3D, cam_pos: Vector3, subject_head: Vec
 	fill.position = subject_head + dir_c * minf(0.85, dist * 0.55) + Vector3(0.0, 0.22, 0.0)
 	var is_closeup: bool = shot_type in ["close_up", "closeup", "extreme_close_up", "reaction", "over_the_shoulder", "over_shoulder"]
 	var is_dark: bool = prof in ["dim_corridor", "night_alert", "storm_exterior"]
+	# Cap close-up fill so cheeks and foreheads do not blow out to white.
 	if is_dark and is_closeup:
-		fill.light_energy = 0.58
-		fill.omni_range = 2.6
-	elif is_dark:
-		fill.light_energy = 0.42
-		fill.omni_range = 3.2
-	elif is_closeup and prof != "med_lab":
-		fill.light_energy = 0.26
+		fill.light_energy = 0.32
 		fill.omni_range = 2.4
+	elif is_dark:
+		fill.light_energy = 0.28
+		fill.omni_range = 3.0
+	elif is_closeup and prof != "med_lab":
+		fill.light_energy = 0.22
+		fill.omni_range = 2.2
 	else:
 		fill.light_energy = 0.0
+	fill.light_energy = minf(fill.light_energy, 0.32)
+	fill.light_color = Color("#f0ddc8")
 
 
 ## Modulates scene lighting in response to SceneEventController events.
@@ -792,10 +862,11 @@ static func apply_event_feedback(rig: Node3D, alert_pulse: float, storm_intensit
 				if group == "overhead":
 					light.light_energy = base_e * stutter
 				elif group == "key":
-					var key_mul: float = lerpf(1.0, 0.58 + 0.2 * clampf(stutter, 0.0, 1.0), flicker)
+					var key_mul: float = lerpf(1.0, 0.62 + 0.22 * clampf(stutter, 0.0, 1.0), flicker)
 					light.light_energy = base_e * key_mul + flash * 3.2
 				elif group == "rim":
-					light.light_energy = base_e * lerpf(1.0, 0.75, flicker) + flash * 0.8
+					# Keep a readable silhouette rim even while the overheads stutter.
+					light.light_energy = base_e * lerpf(1.0, 0.92, flicker) + flash * 0.8
 
 	if rig.has_meta("event_emergency"):
 		var emerg: OmniLight3D = rig.get_meta("event_emergency") as OmniLight3D
@@ -842,10 +913,12 @@ static func apply_event_feedback(rig: Node3D, alert_pulse: float, storm_intensit
 			var amb_mul := 1.0
 			var exp_mul := 1.0
 			if flicker > 0.01:
-				amb_mul = lerpf(1.0, 0.28 + 0.45 * clampf(stutter, 0.0, 1.0), flicker)
-				exp_mul = lerpf(1.0, 0.72, flicker * (1.0 - clampf(stutter, 0.0, 1.0)))
-			world.environment.tonemap_exposure = base_exp * (1.0 - 0.10 * storm_c) * (1.0 + 0.38 * flash) * exp_mul
-			world.environment.ambient_light_energy = base_amb * (1.0 - 0.16 * storm_c) * amb_mul
+				# Shadow floor stays high enough that dark clothing keeps its creases.
+				amb_mul = lerpf(1.0, 0.74 + 0.18 * clampf(stutter, 0.0, 1.0), flicker)
+				exp_mul = lerpf(1.0, 0.9, flicker * (1.0 - clampf(stutter, 0.0, 1.0)))
+			world.environment.tonemap_exposure = base_exp * (1.0 - 0.08 * storm_c) * (1.0 + 0.38 * flash) * exp_mul
+			world.environment.ambient_light_energy = base_amb * (1.0 - 0.08 * storm_c) * amb_mul
+			_apply_storm_sky(rig, world.environment, storm_c)
 
 
 static func update_time(rig: Node3D, time_sec: float) -> void:

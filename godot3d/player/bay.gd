@@ -141,6 +141,9 @@ var _lightning_light: OmniLight3D
 var _lightning_flash: MeshInstance3D
 var _lightning_energy := 0.0
 var _dressing_count := 0
+var _sky_backdrop_mats: Array[StandardMaterial3D] = []
+var _planet_mat: ShaderMaterial
+var _module_slot: Node3D
 
 
 func build(set_cfg: Dictionary, character_script: Script) -> void:
@@ -183,6 +186,9 @@ func build(set_cfg: Dictionary, character_script: Script) -> void:
 	_lightning_flash = null
 	_lightning_energy = 0.0
 	_dressing_count = 0
+	_sky_backdrop_mats.clear()
+	_planet_mat = null
+	_module_slot = null
 	_light_bar_mat = null
 	props_loaded = 0
 	props_failed = 0
@@ -227,6 +233,8 @@ func build(set_cfg: Dictionary, character_script: Script) -> void:
 
 	if bool(_art_profile.get("enabled", false)) and bool(_art_profile.get("environment_dressing", false)):
 		_build_environment_dressing()
+	if _wants_modular_scene():
+		_build_modular_industrial_bay()
 	_build_emergency_power_strips()
 	if _has_front_window and scene_type in ["observation_bay", "command_deck"]:
 		_build_exterior_array()
@@ -1005,7 +1013,9 @@ func _build_cyclorama(backdrop: Dictionary) -> bool:
 	var mipped: Image = image.duplicate() as Image
 	mipped.generate_mipmaps()
 	material.albedo_texture = ImageTexture.create_from_image(mipped)
+	material.albedo_color = Color.WHITE
 	screen.material_override = material
+	_sky_backdrop_mats.append(material)
 	screen.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(screen)
 
@@ -1196,6 +1206,7 @@ func _build_planet(cfg: Dictionary) -> void:
 	material.set_shader_parameter("light_color", _palette_color("planet_light", "#eef4fb"))
 	material.set_shader_parameter("sea_color", _palette_color("planet_mid", "#7fb0d8"))
 	material.set_shader_parameter("shadow_color", _palette_color("planet_shadow", "#4f7fb5"))
+	_planet_mat = material
 	var radius: float = float(cfg.get("radius", 58.0))
 	var sphere := SphereMesh.new()
 	sphere.radius = radius
@@ -1231,9 +1242,11 @@ func _build_image_backdrop(backdrop: Dictionary) -> void:
 	var material := StandardMaterial3D.new()
 	material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	material.albedo_texture = ImageTexture.create_from_image(image)
+	material.albedo_color = Color.WHITE
 	material.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
 	material.disable_fog = true
 	plane.material_override = material
+	_sky_backdrop_mats.append(material)
 	plane.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	var bottom: float = float(backdrop.get("bottom_y", ground_y - 1.0))
 	plane.position = Vector3(float(backdrop.get("center_x", 0.0)), bottom + height * 0.5, room_min.z - distance)
@@ -1408,6 +1421,8 @@ func _build_procedural_prop(holder: Node3D, kind: String, cfg: Dictionary) -> Ve
 			return size
 		"console", "workstation":
 			var size: Vector3 = _vec3(cfg.get("size", null), Vector3(1.6, 0.92, 0.72))
+			if _wants_modular_scene() and _build_modular_console(holder, size):
+				return Vector3(size.x, size.y + 0.62, size.z)
 			var glow_key: String = "teal_glow" if scene_type == "med_lab" else "cyan_glow"
 			_child_box(holder, "Base", Vector3(size.x * 0.9, size.y - 0.08, size.z * 0.8), Vector3(0.0, (size.y - 0.08) * 0.5, 0.0), "metal_dark")
 			_child_box(holder, "Top", Vector3(size.x, 0.08, size.z), Vector3(0.0, size.y - 0.04, 0.0), "metal_light")
@@ -1837,6 +1852,8 @@ func _build_storm_front_mesh() -> void:
 	_storm_band = _make_storm_band("StormFrontBand", Vector2(26.0, 5.2), Vector3(0.0, 2.4, room_min.z - 11.5), Color(0.16, 0.18, 0.22, 1.0))
 	_make_storm_band("StormDeckHigh", Vector2(32.0, 3.4), Vector3(-1.5, 4.6, room_min.z - 16.0), Color(0.08, 0.09, 0.12, 1.0))
 	_make_storm_band("StormDeckLow", Vector2(22.0, 2.6), Vector3(2.0, 1.15, room_min.z - 8.5), Color(0.12, 0.13, 0.16, 1.0))
+	_make_storm_band("StormVeilA", Vector2(42.0, 9.0), Vector3(0.0, 3.4, room_min.z - 6.4), Color(0.05, 0.06, 0.10, 1.0))
+	_make_storm_band("StormVeilB", Vector2(36.0, 7.0), Vector3(1.4, 2.1, room_min.z - 9.2), Color(0.06, 0.07, 0.11, 1.0))
 	var flash := MeshInstance3D.new()
 	flash.name = "StormLightningSheet"
 	var flash_quad := QuadMesh.new()
@@ -1884,6 +1901,8 @@ func apply_scene_events(state: Dictionary) -> void:
 
 	# Subtle live screen pulse on active alert/error modes.
 	var scr_energy: float = 0.92 + (0.28 * alert_pulse if screen_mode == "red_alert" else 0.0)
+	if screen_mode == "locked_carrier":
+		scr_energy = 1.7
 	for entry2: Dictionary in _dynamic_screens:
 		var mat2: StandardMaterial3D = entry2["material"] as StandardMaterial3D
 		mat2.emission_energy_multiplier = scr_energy
@@ -2000,6 +2019,8 @@ func _dress_wants(key: String) -> bool:
 
 
 func _build_environment_dressing() -> void:
+	if _wants_modular_scene():
+		return
 	var z0: float = room_min.z + 0.55
 	var z1: float = room_max.z - 0.55
 	if z1 - z0 < 1.0:
@@ -2161,12 +2182,17 @@ func _build_emergency_power_strips() -> void:
 
 func _build_exterior_array() -> void:
 	var root := Node3D.new()
-	root.name = "ExteriorArray"
+	root.name = "ExteriorArrayRoot"
 	root.position = Vector3((room_min.x + room_max.x) * 0.5, 0.0, room_min.z - 3.35)
 	add_child(root)
 	_array_root = root
-	_child_box(root, "Plinth", Vector3(0.72, 0.16, 0.72), Vector3(0.0, 0.08, 0.0), "frame")
-	_child_box(root, "Mast", Vector3(0.12, 2.35, 0.12), Vector3(0.0, 1.28, 0.0), "metal_dark")
+	var modular_mast := false
+	if _wants_modular_scene():
+		modular_mast = _spawn_kenney(root, "supports_high.glb", Vector3.ZERO, 0.0, 2.2, false) != null
+		_spawn_kenney(root, "satelliteDish_detailed.glb", Vector3(1.25, 0.0, 0.35), 25.0, 1.15, false)
+	if not modular_mast:
+		_child_box(root, "Plinth", Vector3(0.72, 0.16, 0.72), Vector3(0.0, 0.08, 0.0), "frame")
+		_child_box(root, "Mast", Vector3(0.12, 2.35, 0.12), Vector3(0.0, 1.28, 0.0), "metal_dark")
 	var yaw := Node3D.new()
 	yaw.name = "YawPivot"
 	yaw.position = Vector3(0.0, 2.42, 0.0)
@@ -2176,17 +2202,25 @@ func _build_exterior_array() -> void:
 	pitch.name = "PitchPivot"
 	yaw.add_child(pitch)
 	_array_pitch_pivot = pitch
-	var dish := MeshInstance3D.new()
-	dish.name = "Dish"
-	var cyl := CylinderMesh.new()
-	cyl.top_radius = 0.62
-	cyl.bottom_radius = 0.18
-	cyl.height = 0.1
-	cyl.radial_segments = 16
-	dish.mesh = cyl
-	dish.rotation_degrees = Vector3(90.0, 0.0, 0.0)
-	dish.material_override = _materials["metal_light"] if _materials.has("metal_light") else _materials["frame"]
-	pitch.add_child(dish)
+	var dish_glb: Node3D = null
+	if _wants_modular_scene():
+		dish_glb = _spawn_kenney(pitch, "satelliteDish_large.glb", Vector3.ZERO, 0.0, 1.85, false, false)
+		if dish_glb != null:
+			# Bowl faces the bay so the window camera sees the reflector, not the housing.
+			dish_glb.rotation_degrees = Vector3(-72.0, 180.0, 0.0)
+			dish_glb.name = "Dish"
+	if dish_glb == null:
+		var dish := MeshInstance3D.new()
+		dish.name = "Dish"
+		var cyl := CylinderMesh.new()
+		cyl.top_radius = 0.62
+		cyl.bottom_radius = 0.18
+		cyl.height = 0.1
+		cyl.radial_segments = 16
+		dish.mesh = cyl
+		dish.rotation_degrees = Vector3(90.0, 0.0, 0.0)
+		dish.material_override = _materials["metal_light"] if _materials.has("metal_light") else _materials["frame"]
+		pitch.add_child(dish)
 	var feed := MeshInstance3D.new()
 	feed.name = "Feed"
 	var feed_mesh := BoxMesh.new()
@@ -2288,8 +2322,8 @@ func _advance_array(state: Dictionary, t_s: float) -> void:
 			_array_beacon_mat.emission_energy_multiplier = 0.4 + 1.8 * blink
 		elif _array_lock > 0.05 or _array_held_lock:
 			var lock_u: float = _array_lock if _array_lock > 0.05 else 1.0
-			col = Color("#ff2a18").lerp(Color("#39ffb0"), lock_u)
-			_array_beacon_mat.emission_energy_multiplier = 0.5 + 1.6 * lock_u
+			col = Color("#ff2a18").lerp(Color("#14ffd0"), lock_u)
+			_array_beacon_mat.emission_energy_multiplier = 0.6 + 2.3 * lock_u
 		else:
 			_array_beacon_mat.emission_energy_multiplier = 0.45
 		_array_beacon_mat.albedo_color = col
@@ -2356,11 +2390,16 @@ func _advance_storm(storm_intensity: float, t_s: float) -> void:
 			cloud.position.x = sin(t_s * 0.22 + float(index)) * (1.5 + float(index) * 0.45)
 			var sm: StandardMaterial3D = cloud.material_override as StandardMaterial3D
 			if sm != null:
-				var darkness: float = 0.22 + 0.18 * float(index)
-				sm.albedo_color = Color(darkness, darkness + 0.02, darkness + 0.05, clampf(storm_intensity * 0.82, 0.0, 0.9))
+				var storm_u: float = clampf(storm_intensity, 0.0, 1.0)
+				var darkness: float = lerpf(0.14, 0.045, storm_u) + 0.012 * float(index)
+				var alpha: float = clampf(0.35 + storm_u * 0.58, 0.0, 0.96)
+				if storm_intensity > 0.1:
+					alpha = clampf(0.62 + storm_u * 0.32, 0.0, 0.97)
+				sm.albedo_color = Color(darkness * 0.75, darkness * 0.82, darkness + 0.06, alpha)
 		index += 1
 	if _storm_band != null and is_instance_valid(_storm_band):
 		_storm_band.visible = storm_intensity > 0.02
+	_apply_storm_sky(storm_intensity, flash)
 
 
 func _make_storm_band(node_name: String, size: Vector2, pos: Vector3, tint: Color) -> MeshInstance3D:
@@ -2407,4 +2446,344 @@ func _child_status_led(parent: Node3D, pos: Vector3) -> void:
 	mi.material_override = mat
 	parent.add_child(mi)
 	_module_leds.append(mat)
+
+
+## World position of the subject plus an interior camera origin and look direction.
+## Keys: event_type, position, view_origin, view_direction.
+## array_restore -> exterior dish, module_install/table_impact -> ModuleSlot,
+## door_open -> bulkhead, storm_approaching -> window vista.
+func get_event_focus_point(event_type: String) -> Dictionary:
+	var key := event_type.strip_edges().to_lower()
+	var position := Vector3.ZERO
+	var origin := Vector3.ZERO
+	match key:
+		"array_restore":
+			position = _array_focus_position()
+			origin = Vector3(position.x, 1.62, room_min.z + 2.35)
+		"module_install", "table_impact":
+			position = _console_focus_position()
+			origin = position + Vector3(0.42, 0.58, 1.45)
+		"door_open", "door_close":
+			position = Vector3(door_x, door_height * 0.5, room_max.z - 0.04)
+			origin = Vector3(door_x, 1.55, room_max.z - 2.45)
+		"storm_approaching":
+			position = Vector3((window_x.x + window_x.y) * 0.5, (window_y.x + window_y.y) * 0.5, room_min.z - 1.6)
+			origin = Vector3(position.x, 1.6, room_min.z + 2.55)
+		_:
+			position = (room_min + room_max) * 0.5
+			position.y = 1.4
+			origin = position + Vector3(0.0, 0.2, 2.2)
+	origin.x = clampf(origin.x, room_min.x + 0.7, room_max.x - 0.7)
+	origin.y = clampf(origin.y, 1.35, minf(room_max.y - 0.4, 1.9))
+	origin.z = clampf(origin.z, room_min.z + 0.75, room_max.z - 0.75)
+	var direction := position - origin
+	if direction.length_squared() < 1e-6:
+		direction = Vector3(0.0, 0.0, -1.0)
+	else:
+		direction = direction.normalized()
+	return {
+		"event_type": key,
+		"position": position,
+		"view_origin": origin,
+		"view_direction": direction,
+	}
+
+
+func _wants_modular_scene() -> bool:
+	# Explicit false keeps the Version-B room. Explicit true builds the Kenney bay.
+	# When the key is absent, worn panels may still opt into the modular set.
+	if _art_profile.has("modular_scene_assets"):
+		return bool(_art_profile["modular_scene_assets"])
+	var spec: Variant = _art_profile.get("environment_dressing_spec", {})
+	if spec is Dictionary and bool((spec as Dictionary).get("worn_panels", false)):
+		return true
+	return false
+
+
+func _world_of(node: Node3D) -> Vector3:
+	if node == null:
+		return Vector3.ZERO
+	if is_inside_tree() and node.is_inside_tree():
+		return node.global_position
+	var pos := node.position
+	var current: Node = node.get_parent()
+	while current is Node3D:
+		pos = (current as Node3D).transform * pos
+		if current == self:
+			break
+		current = current.get_parent()
+	return pos
+
+
+func _array_focus_position() -> Vector3:
+	if _array_pitch_pivot != null and is_instance_valid(_array_pitch_pivot):
+		return _world_of(_array_pitch_pivot)
+	return Vector3((room_min.x + room_max.x) * 0.5, 2.42, room_min.z - 3.35)
+
+
+func _console_focus_position() -> Vector3:
+	if _module_slot != null and is_instance_valid(_module_slot):
+		return _world_of(_module_slot)
+	var found := find_child("ModuleSlot", true, false)
+	if found is Node3D and is_instance_valid(found):
+		_module_slot = found as Node3D
+		return _world_of(_module_slot)
+	var width := room_max.x - room_min.x
+	return Vector3(room_min.x + width * 0.26 + 0.18, 1.02, room_min.z + 0.9)
+
+
+func _canonical_console_pos() -> Vector3:
+	var width := room_max.x - room_min.x
+	return Vector3(room_min.x + width * 0.26, 0.0, room_min.z + 0.72)
+
+
+func _kenney_path(file_name: String) -> String:
+	var repo := ProjectSettings.globalize_path("res://").simplify_path().get_base_dir()
+	return repo.path_join("media/assets3d/cc0/kenney_space_kit").path_join(file_name)
+
+
+func _spawn_kenney(
+	parent: Node3D,
+	file_name: String,
+	local_pos: Vector3,
+	yaw_deg: float,
+	target_height: float,
+	obstacle: bool,
+	anchor_bottom: bool = true
+) -> Node3D:
+	if parent == null or _character_script == null:
+		return null
+	var path := _kenney_path(file_name)
+	var model: Node3D = _character_script.call("load_gltf_scene", path) as Node3D
+	if model == null:
+		props_failed += 1
+		return null
+	var holder := Node3D.new()
+	holder.name = file_name.get_basename()
+	parent.add_child(holder)
+	holder.add_child(model)
+	var box := _bounds(model)
+	var height := maxf(box.size.y, 0.001)
+	var fit := 1.0 if target_height <= 0.0 else target_height / height
+	var y_off := box.position.y + (0.0 if anchor_bottom else box.size.y * 0.5)
+	model.position = Vector3(-(box.position.x + box.size.x * 0.5), -y_off, -(box.position.z + box.size.z * 0.5))
+	holder.scale = Vector3.ONE * fit
+	holder.position = local_pos
+	holder.rotation.y = deg_to_rad(yaw_deg)
+	if obstacle and parent == self:
+		var half := box.size * fit * 0.5
+		var center := local_pos + Vector3(0.0, half.y if anchor_bottom else 0.0, 0.0)
+		var reach := maxf(half.x, half.z)
+		_register_obstacle(center - Vector3(reach, 0.0, reach), center + Vector3(reach, half.y * 2.0, reach))
+	_dressing_count += 1
+	return holder
+
+
+func _clear_of_door(pos: Vector3, pad: float) -> bool:
+	if pos.z < room_max.z - 1.5:
+		return true
+	return absf(pos.x - door_x) > door_width * 0.5 + pad
+
+
+func _build_modular_industrial_bay() -> void:
+	_place_modular_walls()
+	_place_modular_pipes()
+	_place_modular_machinery()
+	_ensure_modular_console()
+
+
+func _place_modular_walls() -> void:
+	var z := room_min.z + 1.7
+	var step := 3.15
+	var index := 0
+	while z < room_max.z - 1.15:
+		var file := "supports_high.glb"
+		var height := 2.15
+		if index % 3 == 1:
+			file = "structure_detailed.glb"
+			height = 1.45
+		elif index % 3 == 2:
+			file = "chimney_detailed.glb"
+			height = 2.45
+		var left := Vector3(room_min.x + 0.5, 0.0, z)
+		var right := Vector3(room_max.x - 0.5, 0.0, z + 0.35)
+		if _clear_of_door(left, 0.7):
+			_spawn_kenney(self, file, left, 90.0, height, true)
+		if _clear_of_door(right, 0.7):
+			_spawn_kenney(self, file, right, -90.0, height, true)
+		z += step
+		index += 1
+	for side: float in [-1.0, 1.0]:
+		var px := room_min.x + 0.42 if side < 0.0 else room_max.x - 0.42
+		var corner := Vector3(px, 0.0, room_min.z + 0.48)
+		if absf(corner.x) > absf(window_x.x) - 0.2 or absf(corner.x) > absf(window_x.y) - 0.2:
+			_spawn_kenney(self, "chimney_detailed.glb", corner, 0.0, 2.3, true)
+		var gate_x := door_x + side * (door_width * 0.5 + 0.95)
+		var gate_pos := Vector3(gate_x, 0.0, room_max.z - 0.42)
+		if gate_pos.x > room_min.x + 0.6 and gate_pos.x < room_max.x - 0.6 and _clear_of_door(gate_pos, 0.35):
+			_spawn_kenney(self, "gate_complex.glb", gate_pos, 180.0, 1.7, true)
+	var bulkhead := Vector3(room_max.x - 0.85, 0.0, (room_min.z + room_max.z) * 0.5)
+	if _clear_of_door(bulkhead, 0.8):
+		_spawn_kenney(self, "corridor_detailed.glb", bulkhead, -90.0, 1.55, true)
+
+
+func _place_modular_pipes() -> void:
+	var y := room_max.y - 0.46
+	var z := room_min.z + 0.7
+	var use_ring := false
+	while z < room_max.z - 0.7:
+		var file := "pipe_ring.glb" if use_ring else "pipe_straight.glb"
+		_spawn_kenney(self, file, Vector3(room_min.x + 0.22, y, z), 0.0, 0.4, false)
+		_spawn_kenney(self, file, Vector3(room_max.x - 0.22, y, z), 0.0, 0.4, false)
+		z += 0.78
+		use_ring = not use_ring
+	_spawn_kenney(self, "pipe_cornerRound.glb", Vector3(room_min.x + 0.22, y, room_min.z + 0.42), 90.0, 0.48, false)
+	_spawn_kenney(self, "pipe_cornerRound.glb", Vector3(room_max.x - 0.22, y, room_max.z - 0.42), -90.0, 0.48, false)
+
+
+func _place_modular_machinery() -> void:
+	var spots: Array[Dictionary] = [
+		{"file": "machine_generatorLarge.glb", "pos": Vector3(room_max.x - 0.9, 0.0, room_max.z - 1.05), "yaw": -90.0, "h": 1.3},
+		{"file": "machine_wirelessCable.glb", "pos": Vector3(room_max.x - 0.75, 0.0, room_max.z - 2.35), "yaw": -80.0, "h": 1.1},
+		{"file": "machine_barrelLarge.glb", "pos": Vector3(room_min.x + 0.72, 0.0, room_max.z - 1.2), "yaw": 15.0, "h": 0.95},
+		{"file": "barrels_rail.glb", "pos": Vector3(room_min.x + 0.62, 0.0, room_min.z + 1.45), "yaw": 90.0, "h": 0.55},
+	]
+	for spot: Dictionary in spots:
+		var pos: Vector3 = spot["pos"]
+		if not _clear_of_door(pos, 0.85):
+			continue
+		if absf(pos.x) < 1.15 and pos.z > room_min.z + 1.8 and pos.z < room_max.z - 1.7:
+			continue
+		_spawn_kenney(self, str(spot["file"]), pos, float(spot["yaw"]), float(spot["h"]), true)
+	var has_chair := false
+	for child: Node in get_children():
+		if str(child.name).to_lower().contains("chair"):
+			has_chair = true
+			break
+	if not has_chair:
+		var seat := _canonical_console_pos() + Vector3(0.05, 0.0, 1.05)
+		_spawn_kenney(self, "desk_chairArms.glb", seat, 180.0, 0.92, true)
+
+
+func _find_main_console() -> Node3D:
+	var best: Node3D = null
+	var best_d := 2.4
+	var want := _canonical_console_pos()
+	for child: Node in get_children():
+		if not child is Node3D:
+			continue
+		var node := child as Node3D
+		var node_name := str(node.name).to_lower()
+		if not (node_name.contains("console") or node_name.contains("workstation")):
+			continue
+		var dist := Vector2(node.position.x - want.x, node.position.z - want.z).length()
+		if dist < best_d:
+			best = node
+			best_d = dist
+	return best
+
+
+func _ensure_modular_console() -> void:
+	if find_child("ModuleSlot", true, false) != null:
+		_point_console_anchor_at_slot()
+		return
+	var existing := _find_main_console()
+	var origin := existing.position if existing != null else _canonical_console_pos()
+	var host := Node3D.new()
+	host.name = "MainConsoleStation"
+	host.position = origin
+	add_child(host)
+	if existing == null:
+		if _spawn_kenney(host, "desk_computer.glb", Vector3.ZERO, 0.0, 1.05, false) == null:
+			_build_modular_console(host, Vector3(1.7, 0.92, 0.78))
+			_register_obstacle(origin + Vector3(-0.9, 0.0, -0.45), origin + Vector3(1.15, 1.45, 0.5))
+			_jolt_targets.append(host)
+			_jolt_home[host.get_instance_id()] = host.position
+			_register_interactive_device("main_console", "console", host, Vector3(1.8, 1.35, 0.9))
+			_point_console_anchor_at_slot()
+			return
+	_spawn_kenney(host, "desk_computerCorner.glb", Vector3(-0.98, 0.0, 0.02), 0.0, 0.9, false)
+	_spawn_kenney(host, "desk_computerScreen.glb", Vector3(0.02, 0.74, -0.1), 0.0, 0.6, false)
+	_spawn_kenney(host, "machine_wireless.glb", Vector3(0.92, 0.0, 0.06), 18.0, 0.7, false)
+	_add_module_slot(host, Vector3(0.2, 1.0, 0.16))
+	_add_switch_bank(host, Vector3(-0.05, 1.01, 0.28))
+	_child_dynamic_screen(host, "ScreenPanel", Vector3(0.62, 0.34, 0.02), Vector3(0.02, 1.18, -0.16), "console")
+	_register_obstacle(origin + Vector3(-1.2, 0.0, -0.5), origin + Vector3(1.25, 1.5, 0.55))
+	_jolt_targets.append(host)
+	_jolt_home[host.get_instance_id()] = host.position
+	if existing == null:
+		_register_interactive_device("main_console", "console", host, Vector3(1.9, 1.4, 0.95))
+	_point_console_anchor_at_slot()
+
+
+func _build_modular_console(holder: Node3D, size: Vector3) -> bool:
+	if _spawn_kenney(holder, "desk_computer.glb", Vector3.ZERO, 0.0, size.y, false) == null:
+		return false
+	_spawn_kenney(holder, "desk_computerCorner.glb", Vector3(-size.x * 0.46, 0.0, 0.02), 0.0, size.y * 0.94, false)
+	_spawn_kenney(holder, "desk_computerScreen.glb", Vector3(0.0, size.y * 0.62, -size.z * 0.18), 0.0, 0.58, false)
+	_spawn_kenney(holder, "machine_wireless.glb", Vector3(size.x * 0.46, 0.0, 0.04), 12.0, 0.68, false)
+	_add_module_slot(holder, Vector3(size.x * 0.12, size.y + 0.02, size.z * 0.16))
+	_add_switch_bank(holder, Vector3(0.0, size.y + 0.035, size.z * 0.28))
+	_child_dynamic_screen(holder, "ScreenPanel", Vector3(size.x * 0.46, 0.32, 0.02), Vector3(0.0, size.y + 0.48, -size.z * 0.24), "console")
+	return true
+
+
+func _add_module_slot(parent: Node3D, pos: Vector3) -> void:
+	var slot := Node3D.new()
+	slot.name = "ModuleSlot"
+	slot.position = pos
+	parent.add_child(slot)
+	_module_slot = slot
+	_child_box(slot, "BayCavity", Vector3(0.28, 0.045, 0.16), Vector3.ZERO, "metal_dark", false)
+	_child_status_led(slot, Vector3(-0.08, 0.045, 0.07))
+	_child_status_led(slot, Vector3(0.0, 0.045, 0.07))
+	_child_status_led(slot, Vector3(0.08, 0.045, 0.07))
+
+
+func _add_switch_bank(parent: Node3D, pos: Vector3) -> void:
+	var bank := Node3D.new()
+	bank.name = "SwitchBank"
+	bank.position = pos
+	parent.add_child(bank)
+	_child_box(bank, "KeyRail", Vector3(0.5, 0.018, 0.1), Vector3(0.0, -0.01, 0.0), "frame", false)
+	for i in 8:
+		_child_box(bank, "Key%d" % i, Vector3(0.042, 0.02, 0.045), Vector3(-0.2 + float(i) * 0.055, 0.012, 0.0), "metal_dark", false)
+
+
+func _point_console_anchor_at_slot() -> void:
+	if _module_slot == null or not is_instance_valid(_module_slot):
+		var found := find_child("ModuleSlot", true, false)
+		if found is Node3D:
+			_module_slot = found as Node3D
+	if _module_slot == null:
+		return
+	var world_slot := _world_of(_module_slot)
+	var patched := false
+	for i in _interactive_devices.size():
+		var dev: Dictionary = _interactive_devices[i]
+		var id := str(dev.get("id", "")).to_lower()
+		if id.contains("console") or str(dev.get("kind", "")) in ["console", "workstation"]:
+			dev["interaction_anchor"] = world_slot
+			dev["look_target"] = world_slot + Vector3(0.0, 0.14, 0.0)
+			_interactive_devices[i] = dev
+			patched = true
+			break
+	if not patched and _module_slot.get_parent() is Node3D:
+		_register_interactive_device("main_console", "console", _module_slot.get_parent() as Node3D, Vector3(1.8, 1.35, 0.9))
+
+
+func _apply_storm_sky(storm_intensity: float, flash: float) -> void:
+	var u := 0.0
+	if storm_intensity > 0.1:
+		u = clampf((storm_intensity - 0.1) / 0.9, 0.0, 1.0)
+	var tint := Color(1.0, 1.0, 1.0).lerp(Color(0.16, 0.18, 0.30), u)
+	if flash > 0.04:
+		tint = tint.lerp(Color(0.74, 0.82, 0.96), clampf(flash, 0.0, 1.0) * 0.7)
+	for mat: StandardMaterial3D in _sky_backdrop_mats:
+		if mat != null:
+			mat.albedo_color = Color(tint.r, tint.g, tint.b, 1.0)
+	if _planet_mat != null:
+		_planet_mat.set_shader_parameter("light_color", Color("#eef4fb").lerp(Color("#6d7688"), u))
+		_planet_mat.set_shader_parameter("sea_color", Color("#7fb0d8").lerp(Color("#243044"), u))
+		_planet_mat.set_shader_parameter("shadow_color", Color("#4f7fb5").lerp(Color("#141a28"), u))
 

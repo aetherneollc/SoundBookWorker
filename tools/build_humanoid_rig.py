@@ -173,6 +173,280 @@ DEFAULT_CAST_RECIPES: dict[str, dict[str, Any]] = {
 }
 
 
+class PS2CharacterArtProfile:
+    """Opt-in grounded PS2 human proportions and matte fabric finish.
+
+    Default recipes stay on the original sculpt. Enable with ``ps2_profile``
+    or ``--ps2-profile``. The 65-bone UAL skeleton and y=0 grounding are unchanged.
+    """
+
+    SPECULAR = 0.12
+    METALLIC = 0.04
+    ROUGHNESS_MIN = 0.82
+    ROUGHNESS_MAX = 0.94
+
+    _PALETTES: dict[str, dict[str, str]] = {
+        "male": {
+            "jacket_color": "#5d6c7a",
+            "accent_color": "#e07a22",
+            "collar_color": "#465460",
+            "pants_color": "#3e4650",
+            "boots_color": "#323840",
+            "belt_color": "#2e343c",
+            "shirt_color": "#d8dce2",
+        },
+        "female": {
+            "jacket_color": "#426484",
+            "accent_color": "#d4893a",
+            "collar_color": "#c47a32",
+            "pants_color": "#355270",
+            "boots_color": "#2c3238",
+            "belt_color": "#2a3036",
+            "shirt_color": "#d5dae0",
+        },
+    }
+
+    def __init__(self, gender: str) -> None:
+        self.gender = "male" if str(gender).lower() == "male" else "female"
+        if self.gender == "male":
+            # Sturdy industrial engineer: narrower deltoids, filled waist, smaller hands.
+            self.shoulder_taper = 0.10
+            self.waist_fill = 0.09
+            self.hand_scale = 0.91
+        else:
+            # Balanced silhouette; hands refined about 7%.
+            self.shoulder_taper = 0.05
+            self.waist_fill = 0.04
+            self.hand_scale = 0.93
+
+    @classmethod
+    def apply_palette(cls, outfit: dict[str, Any], gender: str) -> None:
+        """Replace crushed-black superhero dyes with readable weathered kit colors."""
+        palette = cls._PALETTES["male" if str(gender).lower() == "male" else "female"]
+        for key, value in palette.items():
+            outfit[key] = value
+        outfit["ps2_profile"] = True
+        outfit["ps2_gender"] = "male" if str(gender).lower() == "male" else "female"
+
+    def apply_proportions(
+        self,
+        pos: np.ndarray,
+        nrm: np.ndarray,
+        faces: np.ndarray,
+        j0: np.ndarray,
+        w0: np.ndarray,
+        bgroups: dict[str, set[int]],
+        joint_world_pos: dict[str, np.ndarray],
+        lm: dict[str, float],
+        fields: dict[str, np.ndarray],
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Reshape cloth/shoulder/hand volume. Bone translations are not touched."""
+        pos = np.array(pos, dtype=np.float64, copy=True)
+        upper = _bone_weight_sum(j0, w0, bgroups["upper_arm"])
+        torso = _bone_weight_sum(j0, w0, bgroups["torso"])
+        pelvis = _bone_weight_sum(j0, w0, bgroups["pelvis"])
+        hand = _bone_weight_sum(j0, w0, bgroups["hand"])
+        skin = fields["skin_protect"]
+        y = pos[:, 1]
+        ax = np.abs(pos[:, 0])
+
+        shoulder_y = (
+            smoothstep(lm["shoulder_y"] - 0.16, lm["shoulder_y"] - 0.03, y)
+            * (1.0 - smoothstep(lm["shoulder_y"] + 0.015, lm["shoulder_y"] + 0.07, y))
+        )
+        lateral = smoothstep(0.09, 0.20, ax)
+        shoulder_mask = np.clip(upper * 0.9 + torso * lateral * 0.7, 0.0, 1.0)
+        shoulder_mask *= shoulder_y * (1.0 - skin)
+        pos[:, 0] *= 1.0 - self.shoulder_taper * shoulder_mask
+
+        rib_y = smoothstep(lm["waist_y"] - 0.03, lm["waist_y"] + 0.02, y) * (
+            1.0 - smoothstep(lm["chest_y"] + 0.01, lm["chest_y"] + 0.07, y)
+        )
+        arm = fields["arm_w"]
+        rib_mask = rib_y * np.clip(torso + pelvis, 0.0, 1.0) * (1.0 - smoothstep(0.25, 0.6, arm))
+        rib_mask *= 1.0 - skin
+        pos[:, 0] *= 1.0 + self.waist_fill * rib_mask
+        pos[:, 2] *= 1.0 + self.waist_fill * 0.62 * rib_mask
+
+        for name in ("hand_l", "hand_r"):
+            center = joint_world_pos[name]
+            side = (pos[:, 0] * float(center[0]) > 0.0).astype(np.float64)
+            weight = np.clip(hand * side, 0.0, 1.0)
+            delta = pos - center.reshape(1, 3)
+            pos -= delta * ((1.0 - self.hand_scale) * weight)[:, None]
+
+        if self.gender == "female":
+            z = pos[:, 2]
+            x = pos[:, 0]
+            front = smoothstep(0.0, 0.045, z - lm["neck_z"])
+            cloth = 1.0 - skin
+            pouch = (
+                smoothstep(0.085, 0.115, ax)
+                * (1.0 - smoothstep(0.155, 0.185, ax))
+                * np.exp(-0.5 * ((y - (lm["waist_y"] - 0.035)) / 0.028) ** 2)
+                * front
+                * cloth
+            )
+            pos[:, 0] += np.sign(x) * 0.011 * pouch
+            pos[:, 2] += 0.008 * pouch
+            strap = (
+                np.exp(-0.5 * ((ax - 0.072) / 0.014) ** 2)
+                * smoothstep(lm["waist_y"] + 0.01, lm["chest_y"], y)
+                * (1.0 - smoothstep(lm["shoulder_y"] - 0.01, lm["shoulder_y"] + 0.03, y))
+                * front
+                * cloth
+            )
+            pos[:, 2] += 0.0065 * strap
+
+        moved = np.clip(shoulder_mask + rib_mask + hand, 0.0, 1.0)
+        welded = compute_welded_normals(pos, faces)
+        blend = smoothstep(0.04, 0.35, moved)[:, None]
+        out_n = nrm * (1.0 - blend) + welded * blend
+        lens = np.linalg.norm(out_n, axis=1, keepdims=True)
+        out_n = np.where(lens > 1e-8, out_n / np.maximum(lens, 1e-8), nrm)
+        return pos, out_n
+
+    @staticmethod
+    def paint_fabric(
+        cloth_rgb: np.ndarray,
+        height_field: np.ndarray,
+        cloth_rough: np.ndarray,
+        cloth_metal: np.ndarray,
+        lm: dict[str, float],
+        gender: str,
+        x: np.ndarray,
+        y: np.ndarray,
+        z: np.ndarray,
+        ax: np.ndarray,
+        nrm_y: np.ndarray,
+        is_upper: np.ndarray,
+        is_front: np.ndarray,
+        is_arm: np.ndarray,
+        is_boot: np.ndarray,
+    ) -> None:
+        """Baked PS2 folds, stitching, pockets, patches, harness, and matte ORM."""
+        fold_a = 0.5 + 0.5 * np.sin(y * 78.0 + ax * 36.0)
+        fold_b = 0.5 + 0.5 * np.sin(y * 46.0 - z * 28.0 + 1.3)
+        crease = np.clip((fold_a * fold_b - 0.28) * 1.35, 0.0, 1.0) * is_upper
+        crease = np.maximum(crease, np.clip((fold_b - 0.62) * 1.6, 0.0, 1.0) * (1.0 - is_upper) * (1.0 - is_boot))
+        cloth_rgb *= 1.0 - 0.18 * crease[:, :, None]
+        height_field -= 0.42 * crease
+
+        stitch = (np.sin(y * 380.0) > 0.45).astype(np.float32)
+        seam = np.exp(-0.5 * (x / 0.0032) ** 2) * is_front * is_upper
+        flank = np.exp(-0.5 * ((ax - 0.012) / 0.0024) ** 2) * is_front * is_upper
+        cloth_rgb *= 1.0 - 0.42 * (seam * stitch)[:, :, None]
+        cloth_rgb *= 1.0 - 0.22 * flank[:, :, None]
+        height_field -= 0.28 * seam
+
+        def _rect_outline(x0: float, x1: float, y0: float, y1: float, front_only: bool = True) -> np.ndarray:
+            in_x = smoothstep(x0, x0 + 0.004, ax) * (1.0 - smoothstep(x1 - 0.004, x1, ax))
+            in_y = smoothstep(y0, y0 + 0.004, y) * (1.0 - smoothstep(y1 - 0.004, y1, y))
+            edge = np.exp(-0.5 * ((ax - x0) / 0.0032) ** 2) + np.exp(-0.5 * ((ax - x1) / 0.0032) ** 2)
+            edge = edge * in_y + (
+                np.exp(-0.5 * ((y - y0) / 0.004) ** 2) + np.exp(-0.5 * ((y - y1) / 0.004) ** 2)
+            ) * in_x
+            mask = np.clip(edge, 0.0, 1.0) * (1.0 - is_arm)
+            if front_only:
+                mask *= is_front
+            return mask
+
+        chest = _rect_outline(0.048, 0.128, lm["chest_y"] - 0.055, lm["chest_y"] + 0.012)
+        thigh_mid = 0.5 * (lm["thigh_y"] + lm["knee_y"])
+        cargo = _rect_outline(0.145, 0.195, thigh_mid - 0.055, thigh_mid + 0.055, front_only=False)
+        cargo *= 1.0 - is_upper
+        cloth_rgb *= 1.0 - 0.40 * np.clip(chest + cargo, 0.0, 1.0)[:, :, None]
+        height_field += 0.22 * np.clip(chest + cargo, 0.0, 1.0)
+
+        insignia = (
+            is_arm
+            * smoothstep(lm["chest_y"] + 0.012, lm["chest_y"] + 0.02, y)
+            * (1.0 - smoothstep(lm["chest_y"] + 0.048, lm["chest_y"] + 0.058, y))
+            * smoothstep(0.12, 0.18, ax)
+        )
+        accent = hex_to_rgb01("#e07a22").astype(np.float32)
+        cloth_rgb[:] = cloth_rgb * (1.0 - insignia[:, :, None]) + accent[None, None, :] * insignia[:, :, None]
+
+        elbow = is_arm * np.exp(-0.5 * ((y - (lm["waist_y"] + 0.02)) / 0.032) ** 2) * smoothstep(0.12, 0.18, ax)
+        knee = (
+            (1.0 - is_upper)
+            * (1.0 - is_boot)
+            * np.exp(-0.5 * ((y - lm["knee_y"]) / 0.03) ** 2)
+            * is_front
+        )
+        patch = np.clip(np.maximum(elbow, knee), 0.0, 1.0)
+        cloth_rgb *= 1.0 - 0.16 * patch[:, :, None]
+        height_field += 0.2 * patch
+
+        if gender == "male":
+            span = max(lm["shoulder_y"] - lm["waist_y"], 0.2)
+            t = np.clip((y - lm["waist_y"]) / span, 0.0, 1.0)
+            diag = np.abs(t - (0.5 + 0.45 * np.clip(x / 0.16, -1.0, 1.0)))
+            harness = np.exp(-0.5 * (diag / 0.045) ** 2) * is_front * is_upper * (1.0 - is_arm)
+            harness_col = np.array([0.23, 0.25, 0.28], dtype=np.float32)
+            cloth_rgb[:] = cloth_rgb * (1.0 - 0.82 * harness[:, :, None]) + harness_col[None, None, :] * (0.82 * harness[:, :, None])
+            yoke = (
+                is_upper
+                * smoothstep(lm["shoulder_y"] - 0.045, lm["shoulder_y"] - 0.012, y)
+                * (1.0 - smoothstep(lm["shoulder_y"] + 0.012, lm["shoulder_y"] + 0.04, y))
+            )
+            cloth_rgb[:] = cloth_rgb * (1.0 - 0.72 * yoke[:, :, None]) + accent[None, None, :] * (0.72 * yoke[:, :, None])
+            height_field += 0.18 * harness
+        else:
+            strap = (
+                np.exp(-0.5 * ((ax - 0.07) / 0.012) ** 2)
+                * smoothstep(lm["waist_y"], lm["chest_y"], y)
+                * (1.0 - smoothstep(lm["shoulder_y"] - 0.01, lm["shoulder_y"] + 0.025, y))
+                * is_front
+                * (1.0 - is_arm)
+            )
+            strap_col = np.array([0.20, 0.23, 0.27], dtype=np.float32)
+            cloth_rgb[:] = cloth_rgb * (1.0 - 0.8 * strap[:, :, None]) + strap_col[None, None, :] * (0.8 * strap[:, :, None])
+            pouch = (
+                smoothstep(0.09, 0.105, ax)
+                * (1.0 - smoothstep(0.15, 0.168, ax))
+                * smoothstep(lm["waist_y"] - 0.07, lm["waist_y"] - 0.055, y)
+                * (1.0 - smoothstep(lm["waist_y"] - 0.005, lm["waist_y"] + 0.012, y))
+                * is_front
+                * (1.0 - is_arm)
+            )
+            pouch_col = np.array([0.24, 0.27, 0.31], dtype=np.float32)
+            cloth_rgb[:] = cloth_rgb * (1.0 - 0.65 * pouch[:, :, None]) + pouch_col[None, None, :] * (0.65 * pouch[:, :, None])
+            height_field += 0.26 * pouch + 0.16 * strap
+
+        low = 1.0 - smoothstep(lm["knee_y"], lm["chest_y"], y)
+        grime = np.clip(low * 0.85 + is_boot * 0.35, 0.0, 1.0)
+        dirt = np.array([0.45, 0.40, 0.34], dtype=np.float32)
+        cloth_rgb[:] = cloth_rgb * (1.0 - 0.16 * grime[:, :, None]) + (cloth_rgb * dirt) * (0.16 * grime[:, :, None])
+        # Keep upward-facing panels a touch lighter so folds stay readable.
+        cloth_rgb *= (0.94 + 0.06 * np.clip(nrm_y * 0.5 + 0.5, 0.0, 1.0))[:, :, None]
+
+        lum = cloth_rgb[:, :, 0] * 0.30 + cloth_rgb[:, :, 1] * 0.57 + cloth_rgb[:, :, 2] * 0.13
+        cloth_rgb *= 0.86
+        cloth_rgb += lum[:, :, None] * 0.14
+        np.clip(cloth_rgb, 0.0, 1.0, out=cloth_rgb)
+        cloth_rough[:] = np.clip(cloth_rough, PS2CharacterArtProfile.ROUGHNESS_MIN, PS2CharacterArtProfile.ROUGHNESS_MAX)
+        cloth_metal[:] = PS2CharacterArtProfile.METALLIC
+
+    @staticmethod
+    def bake_contact_ao(
+        albedo: np.ndarray,
+        lm: dict[str, float],
+        x: np.ndarray,
+        y: np.ndarray,
+        z: np.ndarray,
+        ax: np.ndarray,
+    ) -> np.ndarray:
+        neck_r = np.hypot(x, z - lm["neck_z"])
+        neck = np.exp(-0.5 * ((y - lm["neck_y"]) / 0.02) ** 2) * np.exp(-0.5 * (neck_r / 0.055) ** 2)
+        collar = np.exp(-0.5 * ((y - lm["collar_bot_y"]) / 0.012) ** 2) * np.exp(-0.5 * (neck_r / 0.07) ** 2)
+        under = np.exp(-0.5 * ((y - (lm["shoulder_y"] - 0.055)) / 0.028) ** 2) * np.exp(
+            -0.5 * ((ax - 0.155) / 0.045) ** 2
+        )
+        ao = np.clip(0.20 * neck + 0.22 * collar + 0.16 * under, 0.0, 0.42)
+        return albedo * (1.0 - ao[:, :, None])
+
+
 # ------------------------------------------------------------------ utilities
 
 
@@ -1125,11 +1399,32 @@ def paint_outfit_textures(
     )
     cloth_rgb = cloth_rgb * (1.0 - 0.45 * ankle_strap[:, :, None]) + (c_boots * 0.65 + c_accent * 0.35)[None, None, :] * (0.45 * ankle_strap[:, :, None])
 
+    if bool(outfit.get("ps2_profile", False)):
+        PS2CharacterArtProfile.paint_fabric(
+            cloth_rgb,
+            height_field,
+            cloth_rough,
+            cloth_metal,
+            lm,
+            str(outfit.get("ps2_gender", "female")),
+            X,
+            Y,
+            Z,
+            AX,
+            N[:, :, 1],
+            is_upper,
+            is_front,
+            is_arm,
+            is_boot,
+        )
+
     # Add subtle fabric weave luminance variation
     cloth_rgb = np.clip(cloth_rgb + weave[:, :, None], 0.0, 1.0)
 
     # Composite clothed pixels cleanly over tinted native skin texture
     out_albedo = albedo * (1.0 - cloth_mask[:, :, None]) + cloth_rgb * cloth_mask[:, :, None]
+    if bool(outfit.get("ps2_profile", False)):
+        out_albedo = PS2CharacterArtProfile.bake_contact_ao(out_albedo, lm, X, Y, Z, AX)
 
     # Darken ONLY the interior mouth pocket UV island (v > 0.42, strictly separated from outer face UV v < 0.36)
     mouth_y_approx = lm["head_y"] + 0.030
@@ -1170,6 +1465,13 @@ def paint_outfit_textures(
     out_rough[:, :, 0] = 1.0
     out_rough[:, :, 1] = rough_f[:, :, 1] * (1.0 - cloth_mask) + cloth_rough * cloth_mask
     out_rough[:, :, 2] = 0.0 * (1.0 - cloth_mask) + cloth_metal * cloth_mask
+    if bool(outfit.get("ps2_profile", False)):
+        skin_only = np.clip(uv_maps["skin"], 0.0, 1.0) * (1.0 - cloth_mask)
+        out_rough[:, :, 1] = np.clip(
+            np.maximum(out_rough[:, :, 1], 0.78 * skin_only + out_rough[:, :, 1] * (1.0 - skin_only)),
+            0.0,
+            1.0,
+        )
 
     return (
         Image.fromarray(np.clip(out_albedo * 255.0, 0, 255).astype(np.uint8), "RGB"),
@@ -1855,6 +2157,9 @@ def normalize_recipe(recipe: dict[str, Any]) -> dict[str, Any]:
         "belt_color": outfit.get("belt_color", "#232830"),
         "shirt_color": outfit.get("shirt_color", "#e8ecf2"),
     }
+    r["ps2_profile"] = bool(r.get("ps2_profile", False))
+    if r["ps2_profile"]:
+        PS2CharacterArtProfile.apply_palette(r["outfit"], r["base"])
     return r
 
 
@@ -1914,6 +2219,19 @@ def build_humanoid_rig(recipe: dict[str, Any], output_path: Path) -> dict[str, A
     sculpted_pos, sculpted_nrm = sculpt_clothing_geometry(
         body_pos, body_nrm, body_faces, fields, lm, outfit["style"]
     )
+    if cfg.get("ps2_profile"):
+        profile = PS2CharacterArtProfile(base_gender)
+        sculpted_pos, sculpted_nrm = profile.apply_proportions(
+            sculpted_pos,
+            sculpted_nrm,
+            body_faces,
+            body_j0,
+            body_w0,
+            bgroups,
+            joint_world_pos,
+            lm,
+            fields,
+        )
 
     # 3. Paint crisp 2048x2048 UV outfit textures (preserving native face/neck/hand skin!)
     # x_3d is the sculpted bind-pose world X so jacket lapels cut on the mesh that renders.
@@ -2024,19 +2342,31 @@ def build_humanoid_rig(recipe: dict[str, Any], output_path: Path) -> dict[str, A
     tex_body_nrm = gb.add_image_png(body_normal_im, "Body_Normal")
     tex_body_rgh = gb.add_image_png(body_rough_im, "Body_MetallicRoughness")
     mat_body = len(gb.materials)
-    gb.materials.append(
-        {
-            "name": "MI_Character_Body",
-            "doubleSided": True,
-            "pbrMetallicRoughness": {
-                "baseColorTexture": {"index": tex_body_alb},
-                "metallicFactor": 1.0,
-                "roughnessFactor": 1.0,
-                "metallicRoughnessTexture": {"index": tex_body_rgh},
-            },
-            "normalTexture": {"index": tex_body_nrm},
+    body_material: dict[str, Any] = {
+        "name": "MI_Character_Body",
+        "doubleSided": True,
+        "pbrMetallicRoughness": {
+            "baseColorTexture": {"index": tex_body_alb},
+            "metallicFactor": 1.0,
+            "roughnessFactor": 1.0,
+            "metallicRoughnessTexture": {"index": tex_body_rgh},
+        },
+        "normalTexture": {"index": tex_body_nrm},
+    }
+    if cfg.get("ps2_profile"):
+        # Texture already stores cloth metallic 0.04 and roughness 0.82–0.94.
+        # specularFactor keeps skin and fabric satin-matte instead of plastic.
+        body_material["extensions"] = {
+            "KHR_materials_specular": {"specularFactor": PS2CharacterArtProfile.SPECULAR}
         }
-    )
+        body_material["extras"] = {
+            "ps2_profile": True,
+            "metallic": PS2CharacterArtProfile.METALLIC,
+            "roughness_min": PS2CharacterArtProfile.ROUGHNESS_MIN,
+            "roughness_max": PS2CharacterArtProfile.ROUGHNESS_MAX,
+            "specular": PS2CharacterArtProfile.SPECULAR,
+        }
+    gb.materials.append(body_material)
 
     tex_eye_alb = gb.add_image_png(
         Image.open(QUATERNIUS_DIR / "T_Eye_Brown.png").convert("RGB"), "Eyes_BaseColor"
@@ -2223,6 +2553,8 @@ def build_humanoid_rig(recipe: dict[str, Any], output_path: Path) -> dict[str, A
         "bufferViews": gb.buffer_views,
         "buffers": [{"byteLength": len(gb.blob)}],
     }
+    if cfg.get("ps2_profile"):
+        out_doc["extensionsUsed"] = ["KHR_materials_specular"]
 
     output_path = Path(output_path)
     write_glb(output_path, out_doc, bytes(gb.blob))
@@ -2243,6 +2575,7 @@ def build_humanoid_rig(recipe: dict[str, Any], output_path: Path) -> dict[str, A
         "hair": hair_cfg["style"],
         "beard": bool(hair_cfg.get("beard", False)),
         "outfit_style": outfit["style"],
+        "ps2_profile": bool(cfg.get("ps2_profile", False)),
     }
 
 
@@ -2279,11 +2612,46 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--boots-color", default="#1c2028")
     p.add_argument("--belt-color", default="#232830")
     p.add_argument("--shirt-color", default="#e8ecf2")
+    p.add_argument(
+        "--ps2-profile",
+        action="store_true",
+        help="Apply PS2CharacterArtProfile (grounded proportions + matte baked kit). Does not replace default output names.",
+    )
+    p.add_argument(
+        "--build-ps2-cast",
+        action="store_true",
+        help="Write linlan_ps2.glb and chen_ps2.glb. Never overwrites linlan.glb or chen.glb.",
+    )
     return p
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
+    if args.build_cast and args.ps2_profile:
+        print(
+            "error: --ps2-profile cannot be combined with --build-cast "
+            "(that would overwrite linlan.glb / chen.glb). Use --build-ps2-cast.",
+            file=sys.stderr,
+        )
+        return 2
+    if args.build_ps2_cast:
+        out_dir = ROOT / "media" / "assets3d" / "characters"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        for cid in ("linlan", "chen"):
+            recipe = copy.deepcopy(DEFAULT_CAST_RECIPES[cid])
+            recipe["ps2_profile"] = True
+            destination = out_dir / f"{cid}_ps2.glb"
+            if destination.name in ("linlan.glb", "chen.glb"):
+                print(f"error: refused to overwrite {destination}", file=sys.stderr)
+                return 2
+            rep = build_humanoid_rig(recipe, destination)
+            print(
+                f"BUILT {cid}_ps2.glb: h={rep['height_m']}m y_min={rep['y_min']} "
+                f"bones={rep['bones']} tris={rep['triangles']} hair={rep['hair']} "
+                f"style={rep['outfit_style']} ps2={rep['ps2_profile']}"
+            )
+        return 0
+
     if args.build_cast:
         out_dir = ROOT / "media" / "assets3d" / "characters"
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -2316,6 +2684,7 @@ def main(argv: list[str] | None = None) -> int:
                 "color": args.hair_color,
                 "beard": bool(args.beard),
             },
+            "ps2_profile": bool(args.ps2_profile),
             "outfit": {
                 "style": args.outfit_style,
                 "jacket_color": args.jacket_color,
@@ -2327,6 +2696,8 @@ def main(argv: list[str] | None = None) -> int:
                 "shirt_color": args.shirt_color,
             },
         }
+    if args.ps2_profile:
+        recipe["ps2_profile"] = True
     rep = build_humanoid_rig(recipe, args.output)
     print(json.dumps(rep, indent=2))
     return 0

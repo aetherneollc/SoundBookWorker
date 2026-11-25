@@ -17,9 +17,11 @@ the beat.
 """
 from __future__ import annotations
 
+import argparse
 import json
 import math
 import struct
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -276,6 +278,17 @@ def default_library_paths() -> tuple[Path, Path]:
     return base / "UAL1_Standard.glb", base / "UAL1_Standard_RM.glb"
 
 
+def extra_library_paths() -> dict[str, Path]:
+    """Optional real-clip libraries. Missing files are skipped, not invented."""
+    root = Path(__file__).resolve().parents[1]
+    ual2 = root / "media" / "assets3d" / "cc0" / "quaternius_universal_animation_library_2"
+    return {
+        "ps2_dramatic_pack": root / "media" / "assets3d" / "animations" / "ps2_dramatic_pack.glb",
+        "ual2": ual2 / "UAL2_Standard.glb",
+        "ual2_root_motion": ual2 / "UAL2_Standard_RM.glb",
+    }
+
+
 @dataclass(frozen=True)
 class ClipRecord:
     """One animation clip measured from the glTF JSON and the root bone track."""
@@ -286,6 +299,7 @@ class ClipRecord:
     root_travel_m: float
     in_standard: bool
     in_root_motion_library: bool
+    source: str = "ual1"
 
 
 @dataclass(frozen=True)
@@ -306,6 +320,8 @@ class ActionEntry:
     priority: int = 0
     root_motion: bool = False
     family: str = "gesture"
+    dedicated_clip: str = ""
+    clip_source: str = "ual1"
 
     def to_dict(self) -> dict[str, Any]:
         """JSON-ready description, including the four-phase envelope."""
@@ -321,6 +337,8 @@ class ActionEntry:
             "duration_s": self.duration_s,
             "root_motion": self.root_motion,
             "category": self.category,
+            "clip_source": self.clip_source,
+            "dedicated_clip": self.dedicated_clip,
             "phases": self.phases,
         }
 
@@ -411,32 +429,101 @@ def _measure_animations(path: Path) -> dict[str, tuple[float, float]]:
 
 
 def load_clip_index(standard: Path | None = None, root_motion: Path | None = None) -> dict[str, ClipRecord]:
-    """Parse both UAL libraries and cache the clip index for the process."""
+    """Parse UAL1 plus any on-disk UAL2 and dramatic-pack libraries.
+
+    UAL1 standard and UAL1 root-motion are the same performances. They count
+    once. A name that also exists in UAL2 stays on the UAL1 record and is
+    listed in ``provenance['shared_names']`` instead of being counted twice.
+    """
     global _CLIP_CACHE
     std_path, rm_path = default_library_paths()
     standard = Path(standard) if standard is not None else std_path
     root_motion = Path(root_motion) if root_motion is not None else rm_path
     if not standard.is_file() or not root_motion.is_file():
         raise FileNotFoundError(f"UAL libraries missing: {standard} / {root_motion}")
-    key = (str(standard.resolve()), str(root_motion.resolve()), standard.stat().st_mtime_ns, root_motion.stat().st_mtime_ns)
+    extras = extra_library_paths()
+    stamp = [str(standard.resolve()), str(root_motion.resolve()), standard.stat().st_mtime_ns, root_motion.stat().st_mtime_ns]
+    for label in ("ps2_dramatic_pack", "ual2", "ual2_root_motion"):
+        path = extras[label]
+        stamp.append(str(path))
+        stamp.append(path.stat().st_mtime_ns if path.is_file() else 0)
+    key = tuple(stamp)
     if _CLIP_CACHE is not None and _CLIP_CACHE[0] == key:
         return _CLIP_CACHE[1]
     standard_map = _measure_animations(standard)
     motion_map = _measure_animations(root_motion)
     records: dict[str, ClipRecord] = {}
-    for name in sorted(set(standard_map) | set(motion_map)):
-        std = standard_map.get(name)
-        mot = motion_map.get(name)
-        duration = (std or mot)[0]
-        travel = mot[1] if mot is not None else 0.0
+    provenance: dict[str, Any] = {"shared_names": []}
+
+    def _add(name: str, duration: float, travel: float, in_standard: bool, in_rm: bool, source: str, overwrite: bool) -> None:
+        if name in records and not overwrite:
+            if name not in provenance["shared_names"]:
+                provenance["shared_names"].append(name)
+            return
         records[name] = ClipRecord(
             name=name,
             duration_s=duration,
             root_motion=travel > ROOT_MOTION_MIN_M,
             root_travel_m=travel,
-            in_standard=std is not None,
-            in_root_motion_library=mot is not None,
+            in_standard=in_standard,
+            in_root_motion_library=in_rm,
+            source=source,
         )
+
+    ual1_names = sorted(set(standard_map) | set(motion_map))
+    for name in ual1_names:
+        std = standard_map.get(name)
+        mot = motion_map.get(name)
+        duration = (std or mot)[0]
+        travel = mot[1] if mot is not None else 0.0
+        _add(name, duration, travel, std is not None, mot is not None, "ual1", True)
+    provenance["ual1"] = {
+        "count": len(ual1_names),
+        "names": ual1_names,
+        "root_motion": sorted(name for name in ual1_names if (motion_map.get(name) or (0.0, 0.0))[1] > ROOT_MOTION_MIN_M),
+    }
+
+    dramatic_path = extras["ps2_dramatic_pack"]
+    if dramatic_path.is_file():
+        dramatic_map = _measure_animations(dramatic_path)
+        dramatic_names = sorted(dramatic_map)
+        for name in dramatic_names:
+            duration, travel = dramatic_map[name]
+            _add(name, duration, travel, True, False, "ps2_dramatic_pack", False)
+        provenance["ps2_dramatic_pack"] = {
+            "count": len(dramatic_names),
+            "names": dramatic_names,
+            "root_motion": sorted(name for name, pair in dramatic_map.items() if pair[1] > ROOT_MOTION_MIN_M),
+            "path": dramatic_path.as_posix(),
+        }
+    else:
+        provenance["ps2_dramatic_pack"] = {"count": 0, "names": [], "root_motion": [], "path": ""}
+
+    ual2_path = extras["ual2"]
+    ual2_rm_path = extras["ual2_root_motion"]
+    if ual2_path.is_file():
+        ual2_map = _measure_animations(ual2_path)
+        ual2_rm_map = _measure_animations(ual2_rm_path) if ual2_rm_path.is_file() else {}
+        ual2_names = sorted(set(ual2_map) | set(ual2_rm_map))
+        for name in ual2_names:
+            std = ual2_map.get(name)
+            mot = ual2_rm_map.get(name)
+            duration = (std or mot)[0]
+            travel = mot[1] if mot is not None else 0.0
+            _add(name, duration, travel, std is not None, mot is not None, "ual2", False)
+        provenance["ual2"] = {
+            "count": len(ual2_names),
+            "names": ual2_names,
+            "root_motion": sorted(
+                name for name in ual2_names
+                if (ual2_rm_map.get(name) or (0.0, 0.0))[1] > ROOT_MOTION_MIN_M
+            ),
+            "path": ual2_path.as_posix(),
+        }
+    else:
+        provenance["ual2"] = {"count": 0, "names": [], "root_motion": [], "path": ""}
+    provenance["independent_names"] = sorted(records)
+    load_clip_index.provenance = provenance
     _CLIP_CACHE = (key, records)
     return records
 
@@ -519,17 +606,108 @@ def build_phases(
     return phases
 
 
+# Dedicated performances. slam_table stays on Punch_Cross because the cinematic
+# contract checks that base clip; Slam_Table_Right is still recorded as the
+# dedicated asset and audit_library() says so.
+PINNED_BASE_CLIPS = {"slam_table"}
+DRAMATIC_BINDINGS = {
+    "rush_enter": "Sprint_Urgent_Upright",
+    "sprint_burst": "Sprint_Urgent_Upright",
+    "sprint_escape": "Sprint_Urgent_Upright",
+    "sprint_intercept": "Sprint_Urgent_Upright",
+    "abrupt_halt": "Abrupt_Halt_Skid",
+    "confront_halt": "Abrupt_Halt_Skid",
+    "stop_at_threshold": "Abrupt_Halt_Skid",
+    "slam_table": "Slam_Table_Right",
+    "argue_push": "Slam_Table_Both",
+    "accuse_point": "Accuse_Point_Hard",
+    "accuse_step": "Accuse_Point_Hard",
+    "confront_step": "Confront_Lean_In",
+    "refuse_wave": "Refuse_Wave_Off",
+    "interrupt_raise": "Interrupt_Hand_Stop",
+    "interrupt_step": "Interrupt_Hand_Stop",
+    "argue_lean": "Argue_Emphatic_Both",
+    "idle_talk_heated": "Argue_Emphatic_Both",
+    "shrug_open": "Shrug_Frustrated",
+    "arms_crossed": "Arms_Crossed_Stern",
+    "hands_on_hips": "Hands_On_Hips_Command",
+    "pace_tense": "Pace_Anxious_Turn",
+    "snap_look_back": "Snap_Look_Back",
+    "double_take": "Snap_Look_Back",
+    "startle_recoil": "Startle_Recoil_Back",
+    "step_back_shock": "Startle_Recoil_Back",
+    "flinch_dodge": "Flinch_Explosion_Flash",
+    "flinch_head": "Flinch_Explosion_Flash",
+    "flinch_body": "Flinch_Explosion_Flash",
+    "turn_walk_away": "Turn_Walk_Away_Dismiss",
+    "lean_table": "Lean_Console_Inspect",
+    "idle_console_watch": "Lean_Console_Inspect",
+    "operate_console": "Console_Operate_Urgent",
+    "press_button": "Button_Press_Hard",
+    "open_panel": "Panel_Open_Pull",
+    "detach_module": "Module_Detach_Pull",
+    "install_module": "Module_Install_Lock",
+    "mount_sensor": "Module_Install_Lock",
+    "repair_stand": "Repair_Bend_Work",
+    "pass_prop": "Handoff_Offer_Firm",
+    "pass_tool": "Handoff_Offer_Firm",
+    "pass_sensor": "Handoff_Offer_Firm",
+    "offer_hand": "Handoff_Offer_Firm",
+    "receive_prop": "Handoff_Grab_Pull",
+    "receive_tool": "Handoff_Grab_Pull",
+    "receive_sensor": "Handoff_Grab_Pull",
+    "device_scan": "Inspect_Prop_Close",
+    "take_document": "Inspect_Prop_Close",
+    "check_storm_window": "Check_Window_Urgent",
+    "exhale_relax": "Exhale_Relief_Slump",
+    "relieved_drop": "Exhale_Relief_Slump",
+    "firm_nod": "Nod_Firm_Confirm",
+    "nod_to_partner": "Nod_Firm_Confirm",
+    "victory_nod": "Nod_Firm_Confirm",
+    "catch_breath": "Catch_Breath_Brace",
+    "pant_hands_knees": "Catch_Breath_Brace",
+    "catch_breath_stand": "Catch_Breath_Brace",
+    "look_up_array": "Look_Up_Array_Track",
+}
+UAL2_BINDINGS = {
+    "head_shake_no": "Idle_No_Loop",
+    "shake_head_hard": "Idle_No_Loop",
+    "stagger_back": "Hit_Knockback",
+}
+_LOOK_UP_ROW = (
+    "look_up_array", "Look_Up_Array_Track", "gesture", 1, 0.90,
+    "alert", "look_up,array,track", "focused,tense", 0.30, 0.80,
+    "observation_bay,storm", "window", "reaction",
+    (-12, 6, 0, 0.05, 0.12, 0.08, 0.10, 0.05, -18, 8),
+)
+
+
+def resolve_base_clip(action_id: str, original: str, clips: dict[str, ClipRecord]) -> tuple[str, str]:
+    """Return the clip the entry plays, and the dedicated asset name if one exists."""
+    dramatic = DRAMATIC_BINDINGS.get(action_id, "")
+    if action_id in PINNED_BASE_CLIPS:
+        dedicated = dramatic if dramatic in clips else ""
+        return original, dedicated
+    if dramatic and dramatic in clips:
+        return dramatic, dramatic
+    ual2 = UAL2_BINDINGS.get(action_id, "")
+    if ual2 and ual2 in clips:
+        return ual2, ual2
+    return original, ""
+
+
 def _row_to_entry(row: tuple[Any, ...], clips: dict[str, ClipRecord]) -> ActionEntry:
     action_id, clip_name, family, priority, gain, personality, intents, emotions, lo, hi, scenes, targets, category, impact = row
-    if clip_name not in clips:
-        raise KeyError(f"action {action_id} references unknown clip {clip_name}")
-    clip = clips[clip_name]
+    playback, dedicated = resolve_base_clip(str(action_id), str(clip_name), clips)
+    if playback not in clips:
+        raise KeyError(f"action {action_id} references unknown clip {playback}")
+    clip = clips[playback]
     lo_f, hi_f = float(lo), float(hi)
     midpoint = (lo_f + hi_f) * 0.5
     phases = build_phases(tuple(impact), str(family), float(gain), midpoint, (lo_f, hi_f))
     return ActionEntry(
         action_id=str(action_id),
-        base_clip=str(clip_name),
+        base_clip=playback,
         personality_tags=_split_tags(personality),
         intent_tags=_split_tags(intents),
         emotions=_split_tags(emotions),
@@ -542,6 +720,8 @@ def _row_to_entry(row: tuple[Any, ...], clips: dict[str, ClipRecord]) -> ActionE
         priority=int(priority),
         root_motion=clip.root_motion,
         family=str(family),
+        dedicated_clip=dedicated,
+        clip_source=clip.source,
     )
 
 
@@ -567,7 +747,11 @@ class SemanticAnimationLibrary:
         self.clips: dict[str, ClipRecord] = clips if clips is not None else load_clip_index(
             self.standard_path, self.root_motion_path
         )
-        self.entries: list[ActionEntry] = [_row_to_entry(row, self.clips) for row in _ROWS]
+        self.provenance: dict[str, Any] = {} if clips is not None else dict(getattr(load_clip_index, "provenance", {}) or {})
+        rows = list(_ROWS)
+        if "Look_Up_Array_Track" in self.clips and not any(row[0] == "look_up_array" for row in rows):
+            rows.append(_LOOK_UP_ROW)
+        self.entries: list[ActionEntry] = [_row_to_entry(row, self.clips) for row in rows]
         self.by_id: dict[str, ActionEntry] = {}
         for entry in self.entries:
             if entry.action_id in self.by_id:
@@ -579,7 +763,7 @@ class SemanticAnimationLibrary:
         if len(self.entries) < 100:
             raise RuntimeError(f"catalog has {len(self.entries)} actions; need at least 100")
         self._impacts: dict[str, tuple[Any, ...]] = {}
-        for row in _ROWS:
+        for row in rows:
             self._impacts[str(row[0])] = row
 
     def root_motion_clip_names(self) -> list[str]:
@@ -587,19 +771,30 @@ class SemanticAnimationLibrary:
         return sorted(name for name, clip in self.clips.items() if clip.root_motion)
 
     def catalog_summary(self) -> dict[str, Any]:
-        """Counts, clip durations, and which clips carry root motion."""
+        """Counts, clip durations, and which clips carry root motion.
+
+        ``clip_count`` and ``root_motion_clips`` stay on the UAL1 library so
+        existing callers keep a stable contract. ``source_counts`` and
+        ``independent_source_clips`` are the uninflated multi-library totals.
+        """
         categories: dict[str, int] = {}
         for entry in self.entries:
             categories[entry.category] = categories.get(entry.category, 0) + 1
+        ual1 = {name: clip for name, clip in self.clips.items() if clip.source == "ual1"}
+        source_counts: dict[str, int] = {}
+        for clip in self.clips.values():
+            source_counts[clip.source] = source_counts.get(clip.source, 0) + 1
         return {
             "libraries": {
                 "standard": self.standard_path.as_posix(),
                 "root_motion": self.root_motion_path.as_posix(),
             },
-            "clip_count": len(self.clips),
+            "clip_count": len(ual1),
+            "independent_source_clips": len(self.clips),
+            "source_counts": source_counts,
             "action_count": len(self.entries),
-            "root_motion_clips": self.root_motion_clip_names(),
-            "inplace_clips": sorted(name for name, clip in self.clips.items() if not clip.root_motion),
+            "root_motion_clips": sorted(name for name, clip in ual1.items() if clip.root_motion),
+            "inplace_clips": sorted(name for name, clip in ual1.items() if not clip.root_motion),
             "categories": categories,
             "required_actions_present": all(action_id in self.by_id for action_id in REQUIRED_ACTION_IDS),
             "clips": {
@@ -609,6 +804,7 @@ class SemanticAnimationLibrary:
                     "root_travel_m": clip.root_travel_m,
                     "in_standard": clip.in_standard,
                     "in_root_motion_library": clip.in_root_motion_library,
+                    "source": clip.source,
                 }
                 for name, clip in self.clips.items()
             },
@@ -692,9 +888,196 @@ class SemanticAnimationLibrary:
         return {
             "action_id": entry.action_id,
             "base_clip": entry.base_clip,
+            "dedicated_clip": entry.dedicated_clip,
+            "clip_source": entry.clip_source,
             "intensity": round(float(intensity), 3),
             "target": str(target or ""),
             "root_motion": entry.root_motion,
             "duration_s": entry.duration_s,
             "phases": phases,
         }
+
+    def audit_library(self, stage: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Honest clip census. Aliases and phase envelopes are not extra assets."""
+        provenance = self.provenance or {}
+        by_source: dict[str, int] = {}
+        root_by_source: dict[str, list[str]] = {}
+        for name, clip in self.clips.items():
+            by_source[clip.source] = by_source.get(clip.source, 0) + 1
+            if clip.root_motion:
+                root_by_source.setdefault(clip.source, []).append(name)
+        for names in root_by_source.values():
+            names.sort()
+        file_counts = {
+            "ual1": int((provenance.get("ual1") or {}).get("count") or by_source.get("ual1", 0)),
+            "ual2": int((provenance.get("ual2") or {}).get("count") or 0),
+            "ps2_dramatic_pack": int((provenance.get("ps2_dramatic_pack") or {}).get("count") or by_source.get("ps2_dramatic_pack", 0)),
+        }
+        usage: dict[str, list[str]] = {}
+        envelopes: dict[str, list[tuple[str, str, float, tuple]]] = {}
+        for entry in self.entries:
+            usage.setdefault(entry.base_clip, []).append(entry.action_id)
+            row = self._impacts.get(entry.action_id)
+            if row is not None:
+                envelopes.setdefault(entry.base_clip, []).append(
+                    (entry.action_id, str(row[2]), float(row[4]), tuple(row[13]))
+                )
+        alias_extra = 0
+        procedural = 0
+        collapsed = []
+        near_duplicates = []
+        for clip_name, action_ids in sorted(usage.items()):
+            if len(action_ids) < 2:
+                continue
+            alias_extra += len(action_ids) - 1
+            collapsed.append({"base_clip": clip_name, "source": self.clips[clip_name].source, "action_ids": action_ids})
+            rows = envelopes.get(clip_name) or []
+            first = rows[0] if rows else None
+            for other in rows[1:]:
+                same_envelope = first is not None and other[1] == first[1] and other[2] == first[2] and other[3] == first[3]
+                if not same_envelope:
+                    procedural += 1
+            for index, left in enumerate(rows):
+                for right in rows[index + 1:]:
+                    sim = _impact_cosine(left[3], right[3])
+                    if sim >= 0.96:
+                        near_duplicates.append({
+                            "base_clip": clip_name,
+                            "actions": [left[0], right[0]],
+                            "impact_cosine": round(sim, 3),
+                        })
+        pinned = []
+        for entry in self.entries:
+            if entry.action_id in PINNED_BASE_CLIPS and entry.dedicated_clip and entry.dedicated_clip != entry.base_clip:
+                pinned.append({
+                    "action_id": entry.action_id,
+                    "playback_base_clip": entry.base_clip,
+                    "dedicated_clip": entry.dedicated_clip,
+                    "note": "Playback base_clip is pinned; the dedicated clip is indexed but not substituted.",
+                })
+        source_of_entries: dict[str, int] = {}
+        dedicated_playback = 0
+        generic_playback = 0
+        for entry in self.entries:
+            source_of_entries[entry.clip_source] = source_of_entries.get(entry.clip_source, 0) + 1
+            if entry.base_clip in {"Idle_Talking_Loop", "Interact"}:
+                generic_playback += 1
+            if entry.clip_source in {"ps2_dramatic_pack", "ual2"} or (
+                entry.dedicated_clip and entry.base_clip == entry.dedicated_clip
+            ):
+                dedicated_playback += 1
+        report = {
+            "independent_source_clips": len(self.clips),
+            "file_clip_counts": file_counts,
+            "indexed_by_source": by_source,
+            "shared_names_not_double_counted": list(provenance.get("shared_names") or []),
+            "semantic_entries": len(self.entries),
+            "unique_base_clips_used": len(usage),
+            "semantic_alias_count": alias_extra,
+            "procedural_variant_count": procedural,
+            "real_independent_clip_count": len(self.clips),
+            "root_motion_clip_count": sum(len(names) for names in root_by_source.values()),
+            "root_motion_by_source": root_by_source,
+            "catalog_playback_by_source": source_of_entries,
+            "catalog_on_dedicated_clip": dedicated_playback,
+            "catalog_on_generic_idle_or_interact": generic_playback,
+            "usage_frequency": {name: len(ids) for name, ids in sorted(usage.items(), key=lambda item: (-len(item[1]), item[0]))},
+            "collapsed_onto_same_base_clip": collapsed,
+            "near_duplicate_envelopes": near_duplicates,
+            "pinned_playback": pinned,
+            "stage_usage": _stage_clip_usage(stage) if stage else {},
+            "note": "Semantic aliases and phase/speed envelopes are not independent animation assets.",
+        }
+        return report
+
+
+def _impact_cosine(left: tuple, right: tuple) -> float:
+    if not left or not right:
+        return 0.0
+    size = min(len(left), len(right))
+    da = math.sqrt(sum(float(left[i]) ** 2 for i in range(size))) or 1.0
+    db = math.sqrt(sum(float(right[i]) ** 2 for i in range(size))) or 1.0
+    return sum(float(left[i]) * float(right[i]) for i in range(size)) / (da * db)
+
+
+def _stage_clip_usage(stage: dict[str, Any]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+
+    def bump(name: Any) -> None:
+        text = str(name or "").strip()
+        if not text:
+            return
+        counts[text] = counts.get(text, 0) + 1
+
+    actors = stage.get("actors") or {}
+    if isinstance(actors, dict):
+        for actor in actors.values():
+            if not isinstance(actor, dict):
+                continue
+            for entry in actor.get("dramatic_actions") or []:
+                if isinstance(entry, dict):
+                    bump(entry.get("base_clip") or entry.get("dedicated_clip"))
+            for clip in actor.get("clips") or []:
+                if isinstance(clip, dict):
+                    bump(clip.get("clip") or clip.get("name") or clip.get("base_clip"))
+                elif isinstance(clip, str):
+                    bump(clip)
+    for beat in stage.get("performance_beats") or stage.get("beats") or []:
+        if isinstance(beat, dict):
+            bump(beat.get("base_clip"))
+    return counts
+
+
+def _print_audit(report: dict[str, Any]) -> None:
+    print("independent source clips", report["independent_source_clips"])
+    print("file counts", json.dumps(report["file_clip_counts"], sort_keys=True))
+    print("indexed by source", json.dumps(report["indexed_by_source"], sort_keys=True))
+    print("shared names", ", ".join(report["shared_names_not_double_counted"]) or "(none)")
+    print("semantic entries", report["semantic_entries"])
+    print("unique base clips used", report["unique_base_clips_used"])
+    print("semantic alias count", report["semantic_alias_count"])
+    print("procedural variant count", report["procedural_variant_count"])
+    print("real independent clip count", report["real_independent_clip_count"])
+    print("root motion clip count", report["root_motion_clip_count"])
+    for source, names in sorted(report["root_motion_by_source"].items()):
+        print(f"  root motion {source} ({len(names)}): {', '.join(names)}")
+    print("catalog playback by source", json.dumps(report["catalog_playback_by_source"], sort_keys=True))
+    print("catalog on dedicated clip", report["catalog_on_dedicated_clip"])
+    print("catalog on Idle_Talking_Loop or Interact", report["catalog_on_generic_idle_or_interact"])
+    print("top clip usage:")
+    for name, count in list(report["usage_frequency"].items())[:12]:
+        print(f"  {count:3d}  {name}")
+    print("collapsed base clips", len(report["collapsed_onto_same_base_clip"]))
+    print("near-duplicate envelopes", len(report["near_duplicate_envelopes"]))
+    for pin in report["pinned_playback"]:
+        print(
+            f"pinned {pin['action_id']}: plays {pin['playback_base_clip']}, "
+            f"dedicated asset {pin['dedicated_clip']}"
+        )
+    if report["stage_usage"]:
+        print("stage clip usage", json.dumps(report["stage_usage"], sort_keys=True))
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Audit the semantic animation library.")
+    parser.add_argument("--audit", action="store_true", help="print honest clip statistics")
+    parser.add_argument("--stage", type=Path, default=None, help="optional stage3d.json for clip usage")
+    parser.add_argument("--json", type=Path, default=None, help="write the audit report")
+    args = parser.parse_args(argv)
+    if not args.audit and args.stage is None and args.json is None:
+        parser.print_help()
+        return 2
+    library = SemanticAnimationLibrary()
+    stage = None
+    if args.stage is not None:
+        stage = json.loads(args.stage.read_text(encoding="utf-8"))
+    report = library.audit_library(stage)
+    _print_audit(report)
+    if args.json is not None:
+        args.json.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        print(f"wrote {args.json}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -119,17 +119,17 @@ const PRESETS: Dictionary = {
 			"adjustment_saturation": 1.06,
 		},
 		"palette": {
-			"wall": Color("#5c6454"),
-			"wall_seam": Color("#2c332c"),
-			"wall_grime": Color("#1a1c16"),
-			"floor": Color("#4a4e48"),
-			"floor_stain": Color("#14120e"),
-			"metal": Color("#8a9188"),
-			"metal_dark": Color("#2e3530"),
-			"rivet": Color("#c5c8be"),
-			"hazard": Color("#d86a12"),
-			"conduit": Color("#232824"),
-			"oxidized": Color("#6e4a32"),
+			"wall": Color("#6e7680"),
+			"wall_seam": Color("#3a424c"),
+			"wall_grime": Color("#2a3036"),
+			"floor": Color("#6a655e"),
+			"floor_stain": Color("#2e2c28"),
+			"metal": Color("#8b8f92"),
+			"metal_dark": Color("#3a3e42"),
+			"rivet": Color("#b7b3aa"),
+			"hazard": Color("#c46a22"),
+			"conduit": Color("#2c3136"),
+			"oxidized": Color("#7a5340"),
 		},
 	},
 	"retro_horror": {
@@ -253,6 +253,9 @@ static func resolve(raw: Variant) -> Dictionary:
 	resolved["environment_dressing"] = _dressing_enabled(src)
 	var dressing_raw: Variant = src.get("environment_dressing", {})
 	resolved["environment_dressing_spec"] = (dressing_raw as Dictionary).duplicate(true) if dressing_raw is Dictionary else {}
+	# Only an explicit flag wins. Omitting it leaves the worn-panel fallback intact.
+	if src.has("modular_scene_assets"):
+		resolved["modular_scene_assets"] = bool(src["modular_scene_assets"])
 	resolved["post_fx"] = _post_fx_enabled(src)
 	return resolved
 
@@ -283,7 +286,13 @@ static func make_material(kind: String, profile: Dictionary, roughness: float = 
 	mat.metallic_specular = 0.16 if metallic > 0.25 else 0.08
 	mat.uv1_triplanar = true
 	mat.uv1_world_triplanar = true
-	mat.uv1_scale = Vector3(0.72, 0.72, 0.72)
+	if kind == "wall_plate":
+		# One tall tile covers most of a bay wall so plates do not checkerboard every 0.4 m.
+		mat.uv1_scale = Vector3(0.20, 0.28, 0.20)
+	elif kind == "floor_plate":
+		mat.uv1_scale = Vector3(0.15, 0.15, 0.15)
+	else:
+		mat.uv1_scale = Vector3(0.72, 0.72, 0.72)
 	mat.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS_ANISOTROPIC
 	return mat
 
@@ -325,6 +334,7 @@ static func _neutral() -> Dictionary:
 		"crt_scanlines": false,
 		"texture_jitter": false,
 		"environment_dressing": false,
+		"modular_scene_assets": false,
 		"post_fx": false,
 		"grade_contrast": 1.0,
 		"grade_vignette": 0.0,
@@ -463,9 +473,14 @@ static func _consume_lighting(resolved: Dictionary, src: Dictionary) -> void:
 	if spec.has("fog_density") and float(spec["fog_density"]) >= 0.03:
 		light["fog_enabled"] = true
 	if str(resolved.get("preset", "")) == "retro_industrial_scifi":
-		light["ambient_energy"] = maxf(float(light.get("ambient_energy", 0.55)), 0.58)
-		light["exposure"] = maxf(float(light.get("exposure", 1.16)), 1.18)
-		light["sun_energy"] = maxf(float(light.get("sun_energy", 1.15)), 1.2)
+		# Open the shadow floor and cap exposure so dark kit reads and faces stay unblown.
+		light["ambient_energy"] = maxf(float(light.get("ambient_energy", 0.55)), 0.66)
+		var amb := Color(str(light.get("ambient_color", "#3e463f")))
+		var mixed := amb.lerp(Color("#7f97a2"), 0.42)
+		light["ambient_color"] = "#" + mixed.to_html(false)
+		light["exposure"] = clampf(float(light.get("exposure", 1.02)), 0.96, 1.08)
+		light["sun_energy"] = clampf(float(light.get("sun_energy", 1.05)), 0.82, 1.12)
+		light["rim_energy"] = maxf(float(light.get("rim_energy", 0.7)), 0.72)
 	resolved["lighting"] = light
 
 
@@ -535,24 +550,22 @@ static func _texel(kind: String, x: int, y: int, seed: int, palette: Dictionary)
 	var grain := _n2(x, y, seed + 3) - 0.5
 	match kind:
 		"floor_plate":
-			var base := floor_c.lerp(metal_dark, 0.18)
-			base = base.lightened(grain * 0.04)
-			var seam_on := false
-			if x % 96 <= 1 and _n2(int(x / 96), 8, seed) > 0.32:
-				seam_on = true
-			if y % 112 <= 1 and _n2(5, int(y / 112), seed + 2) > 0.38:
-				seam_on = true
-			if seam_on:
-				base = base.lerp(seam, 0.85)
-			var oil := _n2(int(x / 9), int(y / 9), seed + 19)
-			if oil > 0.82:
-				base = base.lerp(stain, clampf((oil - 0.82) * 3.2, 0.0, 0.75))
-			var scratch := int(18 + (x * 5 + seed) % 70)
-			if absi(y - scratch) <= 1 and _n2(x, 4, seed) > 0.55:
-				base = base.lightened(0.08)
-			var wear := _n2(int(x / 24), int(y / 24), seed + 7)
-			if wear > 0.72:
-				base = base.lerp(metal, (wear - 0.72) * 0.6)
+			var base := floor_c.lerp(metal, 0.22)
+			base = base.lightened(grain * 0.035)
+			if _plate_gutter(x, seed, 0) or _plate_gutter(y, seed + 5, 1):
+				base = base.lerp(seam, 0.88)
+			# Worn walkway track: a broad scuffed lane, not a repeating square grid.
+			var lane := smoothstep(78.0, 96.0, float(x)) * (1.0 - smoothstep(158.0, 176.0, float(x)))
+			if lane > 0.2:
+				base = base.lerp(metal_dark, 0.18 * lane + 0.08 * _n2(int(x / 6), int(y / 14), seed + 17))
+			var oil := _n2(int(x / 11), int(y / 9), seed + 19)
+			if oil > 0.84:
+				base = base.lerp(stain, clampf((oil - 0.84) * 3.0, 0.0, 0.7))
+			if _n2(int(x / 7), int(y / 3), seed + 4) > 0.93:
+				base = base.lightened(0.07)
+			var wear := _n2(int(x / 28), int(y / 22), seed + 7)
+			if wear > 0.74:
+				base = base.lerp(metal, (wear - 0.74) * 0.55)
 			return base
 		"hazard":
 			var stripe := int((x + y * 2) / 18) % 2
@@ -593,18 +606,37 @@ static func _texel(kind: String, x: int, y: int, seed: int, palette: Dictionary)
 				plate = Color(0.9, 0.9, 0.82)
 			return plate
 		_:
-			var panel := wall.lightened(grain * 0.045)
-			var edge := x % 64 <= 2 or y % 64 <= 2 or x % 64 >= 62 or y % 64 >= 62
-			if edge:
-				panel = seam
-			if _rivet(x, y, 64):
-				panel = rivet.lerp(seam, 0.25)
-			var streak := _n2(int(x / 2), 2, seed + 6)
-			if streak > 0.8:
-				panel = panel.lerp(grime, clampf((streak - 0.8) * float(y) / 255.0 * 2.4, 0.0, 0.72))
-			if _n2(int(x / 14), int(y / 18), seed + 11) > 0.86:
-				panel = panel.lerp(oxidized, 0.42)
+			var panel := wall.lightened(grain * 0.03)
+			if _plate_gutter(x, seed, 0) or _plate_gutter(y, seed + 4, 1):
+				panel = seam.lerp(panel, 0.12)
+			elif _rivet(x, y, 118) and _n2(int(x / 20), int(y / 20), seed) > 0.4:
+				panel = rivet.lerp(seam, 0.35)
+			var streak := _n2(int(x / 3), 11, seed + 6)
+			if streak > 0.76:
+				panel = panel.lerp(grime, clampf((streak - 0.76) * 2.8 * float(y) / 255.0, 0.0, 0.58))
+			# Baseboard rust sits in the low-V band. Wall UV scale maps that band to the floor line.
+			if y < 30:
+				var rust_u := (1.0 - float(y) / 30.0) * (0.28 + 0.72 * _n2(x, 2, seed + 8))
+				panel = panel.lerp(oxidized, clampf(rust_u, 0.0, 0.62))
+			if _n2(int(x / 17), int(y / 23), seed + 11) > 0.91:
+				panel = panel.lerp(oxidized, 0.28)
 			return panel
+
+
+static func _plate_gutter(coord: int, seed: int, axis: int) -> bool:
+	var cursor := 0
+	var guard := 0
+	while cursor < 256 and guard < 16:
+		var width := 78 + int(_n2(cursor + axis * 19, axis + 3, seed) * 92.0)
+		var end := mini(cursor + width, 256)
+		if coord >= cursor and coord < end:
+			var on_edge := coord - cursor <= 2 or end - 1 - coord <= 1
+			if on_edge and _n2(cursor, axis + 9, seed + 2) > 0.18:
+				return true
+			return false
+		cursor = end
+		guard += 1
+	return false
 
 
 static func _rivet(x: int, y: int, spacing: int) -> bool:

@@ -332,6 +332,20 @@ var _dramatic_clip := ""
 var _dramatic_from := 0
 var _dramatic_intensity := 1.0
 var _dramatic_pose: Dictionary = {}
+var _dramatic_faithful := false
+var _dramatic_u := 0.0
+var _dramatic_phase_u := 0.0
+var _dramatic_dedicated := ""
+var _faithful_clips: Dictionary = {}
+var _faithful_lookup: Dictionary = {}
+var _halt_hold := false
+var _halt_u := 0.0
+var _halt_blend_left := 0.0
+var _sprint_carry_u := 0.0
+var _contact_point := Vector3.INF
+var _contact_enabled := false
+var _hand_contact_dist := -1.0
+var _active_clip_name := ""
 var _retro_applied := false
 var _retro_roughness_min := 1.0
 var _retro_specular_max := 0.0
@@ -861,9 +875,109 @@ static func _load_library(path: String) -> Dictionary:
 	var info := {}
 	if scene != null:
 		info = _extract_rig(scene)
+		if info.is_empty():
+			info = _extract_node_rig(scene)
 		scene.free()
 	_library_cache[path] = info
 	return info
+
+
+## Animation-only glTF (no skin) imports as a Node3D hierarchy plus an
+## AnimationPlayer. Build the same rig dictionary the skeleton baker expects.
+static func _extract_node_rig(scene: Node) -> Dictionary:
+	var player := _find_named(scene, "AnimationPlayer") as AnimationPlayer
+	if player == null or not scene is Node3D:
+		return {}
+	var root_bone := _find_named(scene, "root") as Node3D
+	if root_bone == null:
+		root_bone = _find_named(scene, "pelvis") as Node3D
+	if root_bone == null:
+		return {}
+	var nodes: Array[Node3D] = []
+	var stack: Array[Node] = [root_bone]
+	while not stack.is_empty():
+		var node: Node = stack.pop_back()
+		if node is Node3D and str(node.name) != "Mannequin":
+			nodes.append(node as Node3D)
+		for child: Node in node.get_children():
+			stack.append(child)
+	if nodes.size() < 8:
+		return {}
+	var names := PackedStringArray()
+	var parents := PackedInt32Array()
+	var rests: Array[Transform3D] = []
+	var index_of := {}
+	for node: Node3D in nodes:
+		index_of[node.get_instance_id()] = names.size()
+		names.append(str(node.name))
+		rests.append(node.transform)
+		parents.append(-1)
+	for i in nodes.size():
+		var parent := nodes[i].get_parent()
+		if parent != null and index_of.has(parent.get_instance_id()):
+			parents[i] = int(index_of[parent.get_instance_id()])
+	var skel_xform := Transform3D.IDENTITY
+	var current: Node = root_bone.get_parent()
+	while current != null and current != scene:
+		if current is Node3D:
+			skel_xform = (current as Node3D).transform * skel_xform
+		current = current.get_parent()
+	var order: Array[int] = _bone_order(parents)
+	var globals: Array[Transform3D] = []
+	globals.resize(names.size())
+	for b: int in order:
+		var p: int = parents[b]
+		globals[b] = rests[b] if p < 0 else globals[p] * rests[b]
+	var anims := {}
+	var tracks := {}
+	for anim_name: StringName in player.get_animation_list():
+		var anim: Animation = player.get_animation(anim_name)
+		anims[str(anim_name)] = anim
+		var map := {}
+		for t in anim.get_track_count():
+			var track_path := anim.track_get_path(t)
+			var bone_name := ""
+			if track_path.get_name_count() > 0:
+				bone_name = str(track_path.get_name(track_path.get_name_count() - 1))
+			var bone: int = names.find(bone_name)
+			if bone < 0:
+				continue
+			var entry: Dictionary = map.get(bone, {})
+			match anim.track_get_type(t):
+				Animation.TYPE_ROTATION_3D:
+					entry["rot"] = t
+				Animation.TYPE_POSITION_3D:
+					entry["pos"] = t
+			map[bone] = entry
+		tracks[str(anim_name)] = map
+	var human: Dictionary = humanoid_map(names, parents)
+	var hips: int = int(human.get("hips", -1))
+	var hips_height: float = 1.0
+	if hips >= 0:
+		hips_height = maxf((skel_xform * globals[hips]).origin.y, 0.05)
+	return {
+		"names": names,
+		"parents": parents,
+		"rests": rests,
+		"globals": globals,
+		"order": order,
+		"skel_xform": skel_xform,
+		"anims": anims,
+		"tracks": tracks,
+		"human": human,
+		"hips_height": hips_height,
+	}
+
+
+static func _find_named(root: Node, wanted: String) -> Node:
+	var stack: Array[Node] = [root]
+	while not stack.is_empty():
+		var node: Node = stack.pop_back()
+		if str(node.name) == wanted:
+			return node
+		for child: Node in node.get_children():
+			stack.append(child)
+	return null
 
 
 static func _posed_globals(rig: Dictionary, anim: Animation, time: float) -> Array[Transform3D]:
@@ -995,7 +1109,96 @@ func _build_animation_player(config: Dictionary, own_rig: Dictionary) -> void:
 		clip_report[clip] = "%s%s:%s" % ["direct:" if use_direct else "", chosen_source, chosen_name]
 		if clip == "walk":
 			natural_walk_speed = _walk_speed(chosen_rig, chosen_name, rm_library)
+	_register_extra_libraries(anim_cfg, anim_lib, skeleton_path)
 	_player.add_animation_library("", anim_lib)
+
+
+func _collect_extra_library_paths(anim_cfg: Dictionary) -> Array[String]:
+	var paths: Array[String] = []
+	var seen := {}
+	var configured: Variant = anim_cfg.get("extra_libraries", [])
+	var raw: Array = []
+	if configured is Array:
+		raw = configured as Array
+	elif configured is Dictionary:
+		for key_v: Variant in (configured as Dictionary).keys():
+			raw.append((configured as Dictionary)[key_v])
+	for item: Variant in raw:
+		var path := ""
+		if item is Dictionary:
+			path = str((item as Dictionary).get("path", (item as Dictionary).get("library", ""))).strip_edges()
+		else:
+			path = str(item).strip_edges()
+		if path == "" or seen.has(path):
+			continue
+		seen[path] = true
+		paths.append(path)
+	if not paths.is_empty():
+		return paths
+	var repo := ProjectSettings.globalize_path("res://").simplify_path().get_base_dir()
+	var defaults: Array[String] = [
+		repo.path_join("media/assets3d/animations/ps2_dramatic_pack.glb"),
+		repo.path_join("media/assets3d/cc0/quaternius_universal_animation_library_2/UAL2_Standard.glb"),
+	]
+	for path: String in defaults:
+		if FileAccess.file_exists(path):
+			paths.append(path)
+	return paths
+
+
+func _register_extra_libraries(anim_cfg: Dictionary, anim_lib: AnimationLibrary, skeleton_path: String) -> void:
+	var added := 0
+	for path: String in _collect_extra_library_paths(anim_cfg):
+		var rig: Dictionary = _load_library(path)
+		if rig.is_empty() or not (rig.get("anims", {}) is Dictionary):
+			continue
+		var anims: Dictionary = rig.anims
+		for clip_name_v: Variant in anims.keys():
+			var clip_name := str(clip_name_v).strip_edges()
+			if clip_name == "" or _clip_names.has(clip_name) or anim_lib.has_animation(StringName(clip_name)):
+				continue
+			var anim: Animation = anims[clip_name]
+			if anim == null:
+				continue
+			var exact_pairs: Dictionary = _exact_name_pairs(rig, _target)
+			var use_direct: bool = exact_pairs.size() >= 45 and exact_pairs.size() >= int(float((_target.names as PackedStringArray).size()) * 0.75)
+			var pairs: Dictionary = exact_pairs if use_direct else _bone_pairs(rig.human, _target.human)
+			if pairs.is_empty():
+				continue
+			var loop := clip_name.to_lower().contains("loop") or clip_name == "Sprint_Urgent_Upright"
+			var baked: Animation
+			if use_direct:
+				direct_rig_match = true
+				baked = _bake_direct(rig, anim, exact_pairs, loop, skeleton_path)
+			else:
+				baked = _bake(rig, anim, pairs, loop, skeleton_path, false, false)
+			anim_lib.add_animation(StringName(clip_name), baked)
+			_clip_names[clip_name] = clip_name
+			_clip_lengths[clip_name] = baked.length
+			_faithful_clips[clip_name] = true
+			_faithful_lookup[clip_name.to_lower()] = clip_name
+			clip_report[clip_name] = "extra:%s" % path.get_file()
+			added += 1
+	if added > 0:
+		print("Character3D %s registered %d extra clips" % [actor_id, added])
+
+
+func _exact_faithful_name(requested: String) -> String:
+	var trimmed := requested.strip_edges()
+	if trimmed == "":
+		return ""
+	if _faithful_clips.has(trimmed):
+		return trimmed
+	var lowered := trimmed.to_lower().replace(" ", "_")
+	if _faithful_lookup.has(lowered):
+		return str(_faithful_lookup[lowered])
+	return ""
+
+
+func _suppress_procedural_body() -> bool:
+	if _halt_hold or _current_clip == "Abrupt_Halt_Skid" or _current_clip == "Sprint_Urgent_Upright":
+		return true
+	return _dramatic_faithful and _dramatic_active and not _is_moving
 
 
 ## Direct 1:1 skeleton bake for matching rigs (Quaternius 65-bone + UAL1_Standard):
@@ -1501,12 +1704,16 @@ func _walk_speed(rig: Dictionary, clip_name: String, rm_library: Dictionary) -> 
 
 func _calibrate_all_strides() -> void:
 	_clip_stride_speeds.clear()
-	for clip_name: String in ["walk", "walk_formal", "crouch_walk", "jog", "sprint", "push"]:
+	for clip_name: String in ["walk", "walk_formal", "crouch_walk", "jog", "sprint", "push", "Sprint_Urgent_Upright"]:
 		if not _clip_names.has(clip_name):
 			continue
 		var s: float = _measure_stride_speed(clip_name)
 		if s > 0.2:
 			_clip_stride_speeds[clip_name] = s
+		elif clip_name == "Sprint_Urgent_Upright":
+			# Root-stripped upright sprint still needs a real cadence so the path
+			# does not outrun the feet. 4.2 m/s matches the authored 3.05 m / 0.72 s.
+			_clip_stride_speeds[clip_name] = 4.2
 			if clip_name == "walk":
 				stride_report["fallback_speed"] = snappedf(natural_walk_speed, 0.001)
 				natural_walk_speed = s
@@ -1539,6 +1746,10 @@ func get_gait_profile() -> String:
 
 func resolve_locomotion_clip(gait: String = "") -> String:
 	var g: String = gait.strip_edges().to_lower() if gait != "" else current_gait
+	# Urgent and sprint stay upright. The dedicated clip keeps the spine tall
+	# and the arms in a running pump instead of a hunched box-carry.
+	if g in ["urgent", "sprint"] and _clip_names.has("Sprint_Urgent_Upright"):
+		return "Sprint_Urgent_Upright"
 	var prof: Dictionary = GAIT_PROFILES.get(g, GAIT_PROFILES["casual"])
 	var wanted: String = str(prof.get("clip", "walk"))
 	if _clip_names.has(wanted):
@@ -1552,6 +1763,53 @@ func stride_speed_for(clip: String) -> float:
 	if _clip_stride_speeds.has(clip):
 		return maxf(float(_clip_stride_speeds[clip]), 0.25)
 	return maxf(natural_walk_speed, 0.85)
+
+
+func set_contact_target(world_point: Vector3, enabled: bool) -> void:
+	_contact_point = world_point
+	_contact_enabled = enabled
+	if not enabled:
+		_hand_contact_dist = -1.0
+
+
+func _contact_action(action_id: String) -> bool:
+	return action_id in [
+		"slam_table", "install_module", "mount_sensor", "press_button",
+		"operate_console", "button_press", "console_operate", "module_install",
+		"detach_module", "lean_table",
+	]
+
+
+func _apply_contact_align() -> void:
+	_hand_contact_dist = -1.0
+	if not _contact_enabled or _contact_point == Vector3.INF:
+		return
+	if not _dramatic_active or _dramatic_phase not in ["execute", "follow_through"] or not _contact_action(_dramatic_id):
+		return
+	var side := "r"
+	var hand_world: Vector3 = _hand_socket.global_position if _hand_socket != null else bone_world_position("r_hand")
+	if _dramatic_id.contains("left"):
+		side = "l"
+		hand_world = _left_hand_socket.global_position if _left_hand_socket != null else bone_world_position("l_hand")
+	var dist: float = hand_world.distance_to(_contact_point)
+	_hand_contact_dist = dist
+	if dist > 1.1:
+		return
+	var weight: float = clampf(0.62 + (1.0 - dist / 1.1) * 0.28, 0.5, 0.9)
+	if _dramatic_phase == "execute":
+		weight *= clampf(0.2 + _dramatic_phase_u * 1.6, 0.2, 1.0)
+	elif _dramatic_phase == "follow_through":
+		weight *= 1.0 - clampf(_dramatic_phase_u, 0.0, 1.0)
+	else:
+		return
+	if weight < 0.04:
+		return
+	_reach_arm(side, _skeleton.global_transform.affine_inverse() * _contact_point, weight)
+	if side == "l":
+		hand_world = _left_hand_socket.global_position if _left_hand_socket != null else bone_world_position("l_hand")
+	else:
+		hand_world = _hand_socket.global_position if _hand_socket != null else bone_world_position("r_hand")
+	_hand_contact_dist = hand_world.distance_to(_contact_point)
 
 
 func set_hand_holding(side: String, is_holding: bool) -> void:
@@ -1631,13 +1889,38 @@ func update_locomotion_state(
 	var eff_speed: float = anim_speed
 	var eff_blend: float = blend
 
-	var is_fast_clip: bool = clip in ["jog", "sprint"]
+	var upright_sprint := clip == "Sprint_Urgent_Upright" or (
+		_clip_names.has("Sprint_Urgent_Upright") and current_gait in ["sprint", "urgent"] and clip in ["jog", "sprint"]
+	)
+	var is_fast_clip: bool = upright_sprint or clip in ["jog", "sprint"]
+	var halt_ready: bool = _clip_names.has("Abrupt_Halt_Skid")
 	if moving_flag:
 		_stop_settle_timer = 0.0
-		if is_fast_clip or move_speed_mps >= 1.45:
+		var accelerating: bool = move_speed_mps > _last_speed_mps + 0.05
+		if accelerating and loco_state in ["idle", "stop", "halt"]:
+			_peak_move_speed_mps = move_speed_mps
+			_halt_hold = false
+			_halt_u = 0.0
+		var falling: bool = move_speed_mps < _last_speed_mps - 0.08
+		var braking: bool = halt_ready and upright_sprint and _peak_move_speed_mps >= 2.0 and falling and move_speed_mps < _peak_move_speed_mps * 0.78
+		if braking:
+			if loco_state != "halt":
+				_halt_u = 0.0
+				_halt_blend_left = 0.32
+			else:
+				var halt_len: float = maxf(clip_length("Abrupt_Halt_Skid"), 0.2)
+				_halt_u = minf(1.0, _halt_u + dt / halt_len)
+			loco_state = "halt"
+			_halt_hold = true
+			eff_clip = "Abrupt_Halt_Skid"
+			eff_key = "halt"
+			eff_speed = 1.0
+			eff_blend = 0.16
+		elif is_fast_clip or move_speed_mps >= 1.45:
 			_peak_move_speed_mps = maxf(_peak_move_speed_mps, move_speed_mps)
-			# When decelerating near the end of a run, step down through walk matching real speed.
-			if _peak_move_speed_mps >= 1.55 and move_speed_mps < 1.32:
+			# Upright sprint stays on its own clip until the skid. Other runs
+			# still step down through a walk so the feet do not skate.
+			if not upright_sprint and _peak_move_speed_mps >= 1.55 and move_speed_mps < 1.32:
 				loco_state = "decelerate"
 				eff_clip = clip
 				eff_key = "decel:%s" % clip_key
@@ -1646,6 +1929,9 @@ func update_locomotion_state(
 				eff_blend = 0.16
 			else:
 				loco_state = "run"
+				if upright_sprint:
+					eff_clip = "Sprint_Urgent_Upright"
+					eff_key = "sprint:upright"
 				eff_blend = 0.14
 		else:
 			if loco_state == "run" and move_speed_mps < 1.32:
@@ -1656,24 +1942,43 @@ func update_locomotion_state(
 				loco_state = "walk"
 			_peak_move_speed_mps = maxf(_peak_move_speed_mps * 0.92, move_speed_mps)
 	else:
-		# Transitioning out of motion: never loop walk in place (prevents foot slide).
-		# Instead blend cleanly through a weighty 'stop' recovery phase into idle.
-		if loco_state in ["run", "decelerate"]:
-			loco_state = "stop"
-			_stop_settle_timer = 0.34
-			_peak_move_speed_mps = 0.0
-		elif loco_state == "walk":
-			loco_state = "stop"
-			_stop_settle_timer = 0.24
-			_peak_move_speed_mps = 0.0
-
-		if loco_state == "stop":
-			_stop_settle_timer = maxf(_stop_settle_timer - dt, 0.0)
-			eff_blend = 0.34
-			if _stop_settle_timer <= 0.0:
-				loco_state = "idle"
+		var halt_passthrough := clip in ["idle", "jog", "sprint", "walk", "walk_formal", "Sprint_Urgent_Upright", "Abrupt_Halt_Skid", ""]
+		if halt_ready and (loco_state in ["run", "halt"] or _halt_hold) and _peak_move_speed_mps >= 2.0 and halt_passthrough:
+			if loco_state != "halt":
+				_halt_u = 0.0
+				_halt_blend_left = 0.32
+			else:
+				var halt_len_hold: float = maxf(clip_length("Abrupt_Halt_Skid"), 0.2)
+				_halt_u = minf(1.0, _halt_u + dt / halt_len_hold)
+			loco_state = "halt"
+			_halt_hold = true
+			eff_clip = "Abrupt_Halt_Skid"
+			eff_key = "halt-hold"
+			eff_speed = 1.0
+			eff_blend = 0.12
 		else:
-			loco_state = "idle"
+			if not halt_passthrough:
+				_halt_hold = false
+				_halt_u = 0.0
+				_peak_move_speed_mps = 0.0
+			# Transitioning out of motion: never loop walk in place (prevents foot slide).
+			# Instead blend cleanly through a weighty 'stop' recovery phase into idle.
+			if loco_state in ["run", "decelerate"]:
+				loco_state = "stop"
+				_stop_settle_timer = 0.34
+				_peak_move_speed_mps = 0.0
+			elif loco_state == "walk":
+				loco_state = "stop"
+				_stop_settle_timer = 0.24
+				_peak_move_speed_mps = 0.0
+
+			if loco_state == "stop":
+				_stop_settle_timer = maxf(_stop_settle_timer - dt, 0.0)
+				eff_blend = 0.34
+				if _stop_settle_timer <= 0.0:
+					loco_state = "idle"
+			elif loco_state != "halt":
+				loco_state = "idle"
 
 	_last_speed_mps = move_speed_mps
 	update_animation(eff_clip, eff_key, eff_speed, dt, eff_blend)
@@ -1694,11 +1999,35 @@ func update_animation(clip: String, clip_key: String, speed: float, delta: float
 	else:
 		_last_clip_status = "missing"
 		return
+	var scrub := -1.0
+	if resolved == "Abrupt_Halt_Skid":
+		scrub = clampf(_halt_u, 0.0, 1.0) * maxf(float(_clip_lengths.get(resolved, 0.05)) - 0.001, 0.0)
+	elif _dramatic_faithful and _dramatic_active and resolved == _dramatic_clip and not _halt_hold and resolved != "Sprint_Urgent_Upright":
+		scrub = clampf(_dramatic_u, 0.0, 1.0) * maxf(float(_clip_lengths.get(resolved, 0.05)) - 0.001, 0.0)
+	if scrub >= 0.0:
+		var entering_scrub: bool = resolved != _current_clip or clip_key != _current_key
+		if entering_scrub:
+			var scrub_blend: float = 0.32 if resolved == "Abrupt_Halt_Skid" and _current_clip != "" else (0.1 if _current_clip != "" else 0.0)
+			_player.play(StringName(resolved), scrub_blend)
+			_current_clip = resolved
+			_current_key = clip_key
+		_player.speed_scale = 1.0
+		if resolved == "Abrupt_Halt_Skid" and _halt_blend_left > 0.0:
+			# seek() would cancel the crossfade and pop the carried prop.
+			_player.advance(delta)
+			_halt_blend_left = maxf(0.0, _halt_blend_left - delta)
+			var halt_len: float = maxf(float(_clip_lengths.get(resolved, 0.05)), 0.05)
+			_halt_u = clampf(_player.current_animation_position / halt_len, 0.0, 1.0)
+		else:
+			_player.seek(scrub, true)
+		_is_moving = false
+		_active_clip_name = resolved
+		return
 	if clip_key != _current_key:
-		var entering_loco: bool = LOCOMOTION_CLIPS.has(resolved) and not LOCOMOTION_CLIPS.has(_current_clip)
-		var restart: bool = resolved == _current_clip and not LOOPING_CLIPS.has(resolved)
+		var entering_loco: bool = (LOCOMOTION_CLIPS.has(resolved) or resolved == "Sprint_Urgent_Upright") and not LOCOMOTION_CLIPS.has(_current_clip) and _current_clip != "Sprint_Urgent_Upright"
+		var restart: bool = resolved == _current_clip and not LOOPING_CLIPS.has(resolved) and not _faithful_clips.has(resolved)
 		if resolved != _current_clip or restart:
-			var eff_blend: float = 0.04 if entering_loco else (blend if _current_clip != "" else 0.0)
+			var eff_blend: float = 0.18 if resolved == "Sprint_Urgent_Upright" else (0.04 if entering_loco else (blend if _current_clip != "" else 0.0))
 			_player.play(StringName(resolved), eff_blend)
 			if restart:
 				_player.seek(0.0, true)
@@ -1709,7 +2038,8 @@ func update_animation(clip: String, clip_key: String, speed: float, delta: float
 	var clamped_speed: float = clampf(speed, 0.05, 3.0)
 	_player.speed_scale = clamped_speed
 	_player.advance(delta)
-	_is_moving = LOCOMOTION_CLIPS.has(resolved)
+	_is_moving = LOCOMOTION_CLIPS.has(resolved) or resolved == "Sprint_Urgent_Upright"
+	_active_clip_name = resolved
 	if _is_moving:
 		var prof: Dictionary = GAIT_PROFILES.get(current_gait, GAIT_PROFILES["casual"])
 		_loco_phase += delta * float(prof.get("stride_freq", 1.8)) * clamped_speed * TAU
@@ -1744,6 +2074,10 @@ func has_face_atlas() -> bool:
 func apply_look_at(world_target: Vector3, weight: float, dt: float = 1.0 / 24.0) -> void:
 	if _skeleton == null or _head_bone < 0:
 		return
+	# Dedicated clips already key the head. A second gaze twist fights Snap_Look,
+	# the upright sprint, and the skid halt.
+	if _suppress_procedural_body():
+		return
 	if _facial != null:
 		_facial.call("set_gaze_target", world_target, weight)
 		_facial.call("apply_head_gaze", eye_world_position(), _animated_bones, dt)
@@ -1762,10 +2096,36 @@ func apply_overlays(
 	if _skeleton == null:
 		return
 
+	# Real GLB clips own the body. Do not stack idle reaches, gait hunch, or a
+	# two-arm box carry on top of Sprint_Urgent_Upright / Abrupt_Halt_Skid /
+	# a dedicated dramatic clip. Contact IK and grounding still run.
+	if _suppress_procedural_body():
+		_apply_contact_align()
+		if _dramatic_active and _dramatic_id in ["pass_prop", "receive_prop", "pass_sensor", "receive_sensor", "pass_tool", "receive_tool", "offer_hand"] and reach_weight > 0.08:
+			var side_prefix: String = "l" if reach_side == "left" else "r"
+			_reach_arm(side_prefix, _skeleton.global_transform.affine_inverse() * reach_target, minf(reach_weight, 0.9))
+		# One arm carries the handheld forward. The other arm keeps the sprint pump.
+		if _current_clip == "Sprint_Urgent_Upright" and (holding or holding_left):
+			_sprint_carry_u = minf(1.0, _sprint_carry_u + 0.12)
+			var carry_side := "r" if holding else "l"
+			var carry_local := Vector3(-0.16 if carry_side == "r" else 0.16, height_m * 0.58, 0.36)
+			_reach_arm(carry_side, _skeleton.global_transform.affine_inverse() * (global_transform * carry_local), 0.9 * _sprint_carry_u)
+		else:
+			_sprint_carry_u = 0.0
+		# Grip only the hand that holds the prop. The sprint clip keeps the free arm pumping.
+		if holding:
+			_apply_hand_fingers("r", true)
+		if holding_left and _current_clip != "Sprint_Urgent_Upright":
+			_apply_hand_fingers("l", true)
+		_ground_feet()
+		return
+
 	# Dramatic beats own the upper body once the actor has planted. A locomotion
 	# clip keeps its own stride; locking the pose on top of a run slides the feet.
 	if _dramatic_active and not _is_moving:
-		_apply_dramatic_pose()
+		if not _dramatic_faithful:
+			_apply_dramatic_pose()
+		_apply_contact_align()
 		_apply_hand_fingers("r", holding)
 		_apply_hand_fingers("l", holding_left)
 		_ground_feet()
@@ -1788,7 +2148,8 @@ func apply_overlays(
 
 	# 2. Upper-body carry layering: when walking while holding a prop, subtly
 	# steady the carrying forearm so the prop stays naturally in front of hip.
-	if _is_moving and reach_weight <= 0.05:
+	# Skip this on the upright sprint so both arms are not curled into a box.
+	if _is_moving and _current_clip != "Sprint_Urgent_Upright" and reach_weight <= 0.05:
 		if holding:
 			_apply_carry_arm_bias("r")
 		if holding_left:
@@ -1831,7 +2192,8 @@ func _apply_breathing_and_gait() -> void:
 		_pitch_bone(chest_bone, breath_rad)
 
 	# Gait-specific torso posture & rhythmic shoulder counter-roll during locomotion.
-	if _is_moving:
+	# The upright sprint clip already has an athletic spine; do not hunch it.
+	if _is_moving and _current_clip != "Sprint_Urgent_Upright":
 		var lean_deg: float = float(prof.get("spine_pitch_deg", 0.0))
 		var roll_deg: float = float(prof.get("shoulder_roll_deg", 2.0))
 		if absf(lean_deg) > 0.05 and mid_spine >= 0:
@@ -2238,6 +2600,9 @@ func get_qc_snapshot() -> Dictionary:
 		"holding_right": holding,
 		"holding_left": holding_left,
 		"facial": face_snap,
+		"active_clip_name": _active_clip_name if _active_clip_name != "" else _current_clip,
+		"hand_contact_dist_m": snappedf(_hand_contact_dist, 0.001) if _hand_contact_dist >= 0.0 else -1.0,
+		"dramatic_phase": _dramatic_phase,
 	}
 
 
@@ -2247,6 +2612,9 @@ func set_dramatic_actions(value: Variant) -> void:
 	_dramatic_id = ""
 	_dramatic_phase = ""
 	_dramatic_clip = ""
+	_dramatic_faithful = false
+	_dramatic_u = 0.0
+	_dramatic_dedicated = ""
 	_dramatic_pose = {}
 	if not value is Array:
 		return
@@ -2278,6 +2646,7 @@ func set_dramatic_actions(value: Variant) -> void:
 			"to": f1,
 			"action_id": action_id,
 			"base_clip": str(source.get("base_clip", "")).strip_edges(),
+			"dedicated_clip": str(source.get("dedicated_clip", "")).strip_edges(),
 			"intensity": clampf(float(source.get("intensity", 1.0)), 0.0, 1.5),
 			"target": str(source.get("target", "")),
 			"phases": phases,
@@ -2288,6 +2657,10 @@ func update_dramatic_action(frame_index: int, fps: int) -> void:
 	_dramatic_active = false
 	_dramatic_phase = ""
 	_dramatic_clip = ""
+	_dramatic_faithful = false
+	_dramatic_u = 0.0
+	_dramatic_phase_u = 0.0
+	_dramatic_dedicated = ""
 	_dramatic_pose = {}
 	var chosen: Dictionary = {}
 	var chosen_from := -1
@@ -2306,9 +2679,12 @@ func update_dramatic_action(frame_index: int, fps: int) -> void:
 	_dramatic_from = int(chosen["from"])
 	_dramatic_intensity = float(chosen["intensity"])
 	_dramatic_clip = _resolve_dramatic_clip(chosen)
+	_dramatic_dedicated = str(chosen.get("dedicated_clip", ""))
+	_dramatic_faithful = _exact_faithful_name(_dramatic_clip) != ""
 	var portions := _dramatic_portions(chosen)
 	var span: int = maxi(int(chosen["to"]) - int(chosen["from"]), 1)
 	var u: float = clampf(float(frame_index - int(chosen["from"])) / float(span), 0.0, 1.0)
+	_dramatic_u = u
 	var acc := 0.0
 	var phase_index := 3
 	var local_u := 1.0
@@ -2320,6 +2696,7 @@ func update_dramatic_action(frame_index: int, fps: int) -> void:
 			break
 		acc = nxt
 	_dramatic_phase = DRAMATIC_PHASES[phase_index]
+	_dramatic_phase_u = local_u
 	var eased: float = local_u * local_u * (3.0 - 2.0 * local_u)
 	var from_pose: Dictionary = _dramatic_phase_pose(chosen, phase_index - 1)
 	var to_pose: Dictionary = _dramatic_phase_pose(chosen, phase_index)
@@ -2440,11 +2817,20 @@ func get_retro_finish_report() -> Dictionary:
 
 
 func _resolve_dramatic_clip(action: Dictionary) -> String:
+	var dedicated := _exact_faithful_name(str(action.get("dedicated_clip", "")))
+	if dedicated != "":
+		return dedicated
 	var requested := str(action.get("base_clip", "")).strip_edges()
 	if requested == "":
 		requested = str(DRAMATIC_DEFAULT_CLIP.get(str(action.get("action_id", "")), "idle"))
 	var key := requested.to_lower().replace(" ", "_")
-	if LOCOMOTION_CLIPS.has(key) or key in ["jump_land", "jump_start", "jump"]:
+	# Baked aliases such as hit_chest stay procedural. Exact pack names do not.
+	var alias_owns := _clip_names.has(key) and not _faithful_clips.has(key)
+	if not alias_owns:
+		var faithful := _exact_faithful_name(requested)
+		if faithful != "":
+			return faithful
+	if LOCOMOTION_CLIPS.has(key) or key in ["jump_land", "jump_start", "jump", "sprint_urgent_upright", "abrupt_halt_skid"]:
 		return ""
 	if _clip_names.has(key):
 		return key

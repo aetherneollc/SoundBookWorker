@@ -332,6 +332,8 @@ class RetroArtProfile:
                 profile["post_fx"][key] = False
         if "id" not in profile:
             profile["id"] = str(spec.get("id") or spec.get("profile") or "retro_industrial_scifi")
+        if "modular_scene_assets" in spec:
+            profile["modular_scene_assets"] = bool(spec["modular_scene_assets"])
         return profile
 
     def _canonical(self, profile_id: str) -> str:

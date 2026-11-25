@@ -60,6 +60,24 @@ PACKS = [
         'flatten': True,
     },
     {
+        'id': 'quaternius_universal_animation_library_2',
+        'title': 'Universal Animation Library 2 [Standard]',
+        'author': 'Quaternius',
+        'source_page': 'https://quaternius.com/packs/universalanimationlibrary2.html',
+        'itch_page': 'https://quaternius.itch.io/universal-animation-library-2',
+        'flow': 'itch',
+        'itch_upload_name': 'Universal Animation Library 2[Standard].zip',
+        'archive': 'Universal_Animation_Library_2_Standard.zip',
+        # Top-level README only. The female-mannequin folder has a second README
+        # that must not flatten onto the same filename.
+        'extract': [
+            r'/Unreal-Godot/[^/]+\.glb$',
+            r'(?i)\[Standard\]/License\.txt$',
+            r'(?i)\[Standard\]/README\.txt$',
+        ],
+        'flatten': True,
+    },
+    {
         'id': 'quaternius_universal_base_characters',
         'title': 'Universal Base Characters [Standard]',
         'author': 'Quaternius',

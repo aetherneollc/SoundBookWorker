@@ -235,7 +235,11 @@ def mux(video: Path, stage_json: Path, output: Path, ffmpeg: str | None = None) 
     if not isinstance(stage, dict):
         raise ValueError('stage.json root must be an object')
     binary = ffmpeg or ffmpeg_executable()
-    duration = probe_video_duration(binary, video, _stage_fallback_seconds(stage))
+    stage_seconds = _stage_fallback_seconds(stage)
+    duration = probe_video_duration(binary, video, stage_seconds)
+    # Godot's AVI header sometimes runs long past the rendered frame count.
+    if stage_seconds > 0 and stage_seconds + 0.2 < duration < stage_seconds + 3.0:
+        duration = stage_seconds
     prepared: list[dict] = []
     for track in stage.get('audio') or []:
         if not isinstance(track, dict):

@@ -609,6 +609,7 @@ func _apply_actor_overlays(
 				meet = (actor.position + (_actors[partner] as Node3D).position) * 0.5
 			reach_target = Vector3(meet.x, float(reach.get("height", 1.05)), meet.z)
 
+	_apply_contact_target(actor_id, actor)
 	actor.call("apply_overlays", nod_phase, nod_weight, reach_target, reach_weight, reach_side)
 
 
@@ -1155,6 +1156,7 @@ func _capture_telemetry_frame(frame_index: int, shot: Dictionary) -> Dictionary:
 		"shot_type": str(shot.get("type", shot.get("shot_type", ""))),
 		"subtitle_active": _caption_text_at(frame_index) != "",
 		"events": _last_event_state.get("active_events", []),
+		"event_visible_entities": _event_visible_entities(),
 		"actors": actors_row,
 		"props": props_row,
 		"camera": {
@@ -1327,9 +1329,73 @@ func _camera_wall_clearance(cam_pos: Vector3) -> float:
 	return 0.0
 
 
+func _apply_contact_target(actor_id: String, actor: Node3D) -> void:
+	if _bay == null or not _bay.has_method("get_event_focus_point") or not bool(actor.call("is_dramatic_action_active")):
+		actor.call("set_contact_target", Vector3.ZERO, false)
+		return
+	var action_id := str(actor.call("dramatic_action_id"))
+	var event_name := ""
+	if action_id in ["slam_table", "lean_table"]:
+		event_name = "table_impact"
+	elif action_id in ["install_module", "mount_sensor", "press_button", "operate_console", "detach_module"]:
+		event_name = "module_install"
+	if event_name == "":
+		actor.call("set_contact_target", Vector3.ZERO, false)
+		return
+	var focus: Dictionary = _bay.call("get_event_focus_point", event_name)
+	var point: Vector3 = focus.get("position", Vector3.ZERO) as Vector3
+	actor.call("set_contact_target", point, true)
+
+
+func _event_visible_entities() -> Array:
+	var out: Array = []
+	if _bay == null or not _bay.has_method("get_event_focus_point"):
+		return out
+	var events: Array = _last_event_state.get("active_events", []) as Array
+	var seen := {}
+	for ev_v: Variant in events:
+		var ev := str(ev_v)
+		if ev == "" or seen.has(ev):
+			continue
+		seen[ev] = true
+		var focus: Dictionary = _bay.call("get_event_focus_point", ev)
+		var pos: Vector3 = focus.get("position", Vector3.ZERO) as Vector3
+		var ndc: Vector3 = _project_world_ndc(pos)
+		var in_frame := ndc.z > 0.05 and absf(ndc.x) <= 1.05 and absf(ndc.y) <= 1.05
+		out.append({
+			"type": ev,
+			"id": ev,
+			"position": [snappedf(pos.x, 0.001), snappedf(pos.y, 0.001), snappedf(pos.z, 0.001)],
+			"ndc": [snappedf(ndc.x, 0.001), snappedf(ndc.y, 0.001)],
+			"in_frame": in_frame,
+		})
+	return out
+
+
 func _subject_projection(shot: Dictionary, cam_pos: Vector3) -> Dictionary:
 	var subj_id: String = str(shot.get("primary_subject", shot.get("subject", shot.get("actor", ""))))
 	var world_pt := Vector3.INF
+	var event_subject: Variant = shot.get("event_subject", null)
+	if event_subject is Dictionary and (event_subject as Dictionary).has("position"):
+		var pos_v: Variant = (event_subject as Dictionary).get("position")
+		if pos_v is Array and (pos_v as Array).size() >= 3:
+			var arr: Array = pos_v as Array
+			world_pt = Vector3(float(arr[0]), float(arr[1]), float(arr[2]))
+			subj_id = str((event_subject as Dictionary).get("id", subj_id))
+			var local_ev: Vector3 = _camera.global_transform.affine_inverse() * world_pt
+			var ev_x := 2.0
+			var ev_y := 2.0
+			if local_ev.z < -0.05:
+				var half_h_ev: float = tan(deg_to_rad(_camera.fov * 0.5)) * (-local_ev.z)
+				var half_w_ev: float = half_h_ev * (VIEW_SIZE.x / VIEW_SIZE.y)
+				ev_x = local_ev.x / maxf(half_w_ev, 0.0001)
+				ev_y = local_ev.y / maxf(half_h_ev, 0.0001)
+			return {
+				"id": subj_id,
+				"ndc_x": snappedf(ev_x, 0.001),
+				"ndc_y": snappedf(ev_y, 0.001),
+				"occluded": false,
+			}
 	if subj_id != "" and _actors.has(subj_id):
 		var act: Node3D = _actors[subj_id]
 		if bool(act.call("is_first_person_hidden")):

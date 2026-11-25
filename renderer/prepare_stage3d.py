@@ -51,6 +51,8 @@ ROOT = Path(__file__).resolve().parents[1]
 CC0 = ROOT / 'media' / 'assets3d' / 'cc0'
 KENNEY = CC0 / 'kenney_space_kit'
 UAL = CC0 / 'quaternius_universal_animation_library'
+UAL2 = CC0 / 'quaternius_universal_animation_library_2' / 'UAL2_Standard.glb'
+DRAMATIC_PACK = ROOT / 'media' / 'assets3d' / 'animations' / 'ps2_dramatic_pack.glb'
 UBC = CC0 / 'quaternius_universal_base_characters'
 LOC2 = ROOT / 'public' / 'media' / 'loc2-plate.png'
 TEXTURES = ROOT / 'media' / 'assets3d' / 'textures'
@@ -654,6 +656,9 @@ def _cast_entry(actor_id: str, cast_doc: dict, manifest_dir: Path) -> dict:
         'root_motion_library': Path(ANIMATION['root_motion_library']).as_posix(),
         'sources': list(entry.get('animation_sources') or ANIMATION['sources']),
     }
+    extra_libraries = _extra_animation_libraries(entry)
+    if extra_libraries:
+        animation['extra_libraries'] = extra_libraries
     # A rig's own walk (Meshy basic_animations) was authored on that mesh, so it beats a retarget.
     walk = entry.get('walk_clip') if generated is not None and isinstance(entry.get('walk_clip'), dict) else None
     walk_library = _resolve_file(walk.get('library'), manifest_dir) if walk else None
@@ -675,6 +680,35 @@ def _cast_entry(actor_id: str, cast_doc: dict, manifest_dir: Path) -> dict:
     if caps:
         out['capabilities'] = caps
     return out
+
+
+def _extra_animation_libraries(entry: dict | None = None) -> list[str]:
+    """Real clip packs Godot registers by exact name. Missing files are skipped."""
+    paths: list[str] = []
+    if isinstance(entry, dict):
+        raw = entry.get('extra_libraries') or entry.get('animation_extra_libraries') or []
+        if isinstance(raw, str):
+            raw = [raw]
+        if isinstance(raw, dict):
+            raw = list(raw.values())
+        for item in raw:
+            if isinstance(item, dict):
+                item = item.get('path') or item.get('library') or ''
+            text = str(item or '').strip()
+            if text:
+                paths.append(Path(text).as_posix())
+    if not paths:
+        for candidate in (DRAMATIC_PACK, UAL2):
+            if candidate.is_file():
+                paths.append(candidate.as_posix())
+    seen: set[str] = set()
+    unique: list[str] = []
+    for path in paths:
+        if path in seen:
+            continue
+        seen.add(path)
+        unique.append(path)
+    return unique
 
 
 def sensor_grip_point(model: Path) -> list[float]:
@@ -1180,6 +1214,54 @@ def _apply_retro_layer(
         if planned is not None:
             extra.extend(synth.entries_for_performance(planned, fps))
         stage['audio'].extend(extra)
+    _append_chained_actions(stage, doc, planner)
+
+
+def _append_chained_actions(stage: dict, doc: dict, planner) -> None:
+    """Split a beat so a second real clip plays in the latter portion.
+
+    ``chain_action`` is optional. Manifests that omit it are unchanged.
+    """
+    if planner is None:
+        return
+    beats = [b for b in (doc.get('beats') or doc.get('shots') or []) if isinstance(b, dict)]
+    shots = [s for s in (stage.get('shots') or []) if isinstance(s, dict)]
+    if len(beats) != len(shots):
+        return
+    library = getattr(planner, 'library', None)
+    by_id = getattr(library, 'by_id', {}) if library is not None else {}
+    for beat, shot in zip(beats, shots):
+        chain = str(beat.get('chain_action') or '').strip()
+        if not chain or chain not in by_id:
+            continue
+        actor = str(beat.get('speaker') or beat.get('actor') or '')
+        actors = stage.get('actors') or {}
+        if actor not in actors:
+            continue
+        entries = actors[actor].setdefault('dramatic_actions', [])
+        start = int(shot.get('from') or 0)
+        end = start + max(1, int(shot.get('frames') or 1))
+        portion = min(0.8, max(0.2, float(beat.get('chain_at', 0.55))))
+        split = start + int(round((end - start) * portion))
+        split = max(start + 6, min(end - 6, split))
+        primary = str(beat.get('action') or '')
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            if str(entry.get('action_id') or '') != primary:
+                continue
+            entry_from = int(entry.get('from', -1))
+            entry_to = int(entry.get('to', -1))
+            if entry_from >= start - 1 and entry_to > split and entry_from < end:
+                entry['to'] = split
+        entries.append(planner._stage_action(
+            chain,
+            split,
+            end,
+            float(beat.get('intensity') or 0.8),
+            str(beat.get('target') or ''),
+        ))
+        entries.sort(key=lambda item: (int(item.get('from', 0)), str(item.get('action_id') or '')))
 
 
 def prepare_generic(doc: dict, manifest_path: Path, output_path: Path, check_files: bool = True) -> dict:
@@ -1394,6 +1476,9 @@ def prepare_generic(doc: dict, manifest_path: Path, output_path: Path, check_fil
             'actor_facings': facings,
             'actor_heights': actor_heights,
             'description': str(b.get('description') or ''),
+            'event_focus': b.get('event_focus') or None,
+            'environment_event': b.get('environment_event') or '',
+            'hold': bool(b.get('hold') or False),
         })
         talkish = str(b.get('action') or 'talk').strip().lower() in ('talk', 'hold', 'listen', 'speak', 'dialogue', '')
         perf_rows.append({

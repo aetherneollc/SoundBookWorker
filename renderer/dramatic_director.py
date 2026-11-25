@@ -119,9 +119,17 @@ EVENT_INTENT = {
     "table_impact": "climax_push",
     "door_open": "entrance_exit",
     "door_close": "entrance_exit",
-    "array_restore": "prop_mech_closeup",
+    "array_restore": "environment_insert",
     "robot_speaking": "reaction",
 }
+# Mechanical beats aim at the physical thing, not at the backs of the cast.
+FOCUS_EVENTS = frozenset({
+    "array_restore",
+    "module_install",
+    "table_impact",
+    "door_open",
+    "storm_approaching",
+})
 PUNCH_KIND = {
     "impact": "impact",
     "alarm": "alarm",
@@ -463,6 +471,25 @@ class DramaticDirector(CinematicDirector):
         cameras = shot.get("cameras") or []
         if not cameras or cameras[0].get("mode") == "pov" or "pos" not in cameras[0]:
             return
+        focus = self._focus_proposal(source)
+        if focus is not None:
+            self._write_camera(shot, focus)
+            event = _event_type(source.get("environment_event"))
+            authored = source.get("event_focus") if isinstance(source.get("event_focus"), dict) else {}
+            look = focus["look_at"]
+            shot["event_subject"] = {
+                "id": str(authored.get("id") or event or "event"),
+                "position": [round(float(look[0]), 3), round(float(look[1]), 3), round(float(look[2]), 3)],
+            }
+            meta = shot.setdefault("director_meta", {})
+            meta["event_focus"] = shot["event_subject"]["id"]
+            meta.setdefault("wall_clearance_m", 0.5)
+            meta.setdefault("doorframe_clearance_m", 0.5)
+            meta["dynamic_occluded"] = False
+            meta["occluded"] = False
+            meta["crosses_180_axis"] = False
+            meta["camera_inside_actor"] = False
+            return
         camera = cameras[0]
         original = {
             "pos": list(camera["pos"]),
@@ -608,6 +635,74 @@ class DramaticDirector(CinematicDirector):
         keyframes[1]["pos"] = list(camera["pos_to"])
         keyframes[1]["look_at"] = list(camera["look_to"])
         keyframes[1]["fov"] = camera["fov_to"]
+
+    def _focus_proposal(self, source: dict[str, Any]) -> dict[str, Any] | None:
+        event = _event_type(source.get("environment_event"))
+        authored = source.get("event_focus") if isinstance(source.get("event_focus"), dict) else None
+        if isinstance(authored, dict) and "pos" in authored and "look_at" in authored:
+            proposal = {
+                "pos": [float(v) for v in authored["pos"]],
+                "pos_to": [float(v) for v in (authored.get("pos_to") or authored["pos"])],
+                "look_at": [float(v) for v in authored["look_at"]],
+                "look_to": [float(v) for v in (authored.get("look_to") or authored["look_at"])],
+                "fov": float(authored.get("fov") or 40.0),
+                "fov_to": float(authored.get("fov_to") or authored.get("fov") or 36.0),
+            }
+        elif event in FOCUS_EVENTS:
+            proposal = self._derived_focus(source, event)
+        else:
+            return None
+        if proposal is None:
+            return None
+        return self._clamp_focus(source, proposal)
+
+    def _derived_focus(self, source: dict[str, Any], event: str) -> dict[str, Any] | None:
+        room = source.get("room_bounds") or source.get("room") or {}
+        room_min = [float(v) for v in (room.get("min") or [-7.0, 0.0, -4.5])]
+        room_max = [float(v) for v in (room.get("max") or [7.0, 3.4, 4.0])]
+        width = room_max[0] - room_min[0]
+        cx = (room_min[0] + room_max[0]) * 0.5
+        if event == "array_restore":
+            dish = [cx, 2.42, room_min[2] - 3.35]
+            pos = [cx, 1.58, room_min[2] + 2.45]
+            pos_to = [cx, 1.52, room_min[2] + 2.15]
+            return {"pos": pos, "pos_to": pos_to, "look_at": dish, "look_to": dish, "fov": 38.0, "fov_to": 34.0}
+        if event in ("module_install", "table_impact"):
+            slot = [room_min[0] + width * 0.26 + 0.20, 1.00, room_min[2] + 0.88]
+            pos = [slot[0] + 1.35, 0.92, slot[2] + 1.15]
+            pos_to = [slot[0] + 1.05, 0.98, slot[2] + 0.85]
+            look = [slot[0], 1.12, slot[2]]
+            return {"pos": pos, "pos_to": pos_to, "look_at": look, "look_to": look, "fov": 34.0, "fov_to": 30.0}
+        if event == "door_open":
+            door = [0.0, 1.40, room_max[2] - 0.18]
+            pos = [1.55, 1.55, room_max[2] - 2.55]
+            pos_to = [1.15, 1.48, room_max[2] - 2.15]
+            return {"pos": pos, "pos_to": pos_to, "look_at": door, "look_to": [door[0] - 0.2, 1.25, door[2] - 1.4], "fov": 42.0, "fov_to": 36.0}
+        if event == "storm_approaching":
+            vista = [cx, 1.75, room_min[2] - 1.5]
+            pos = [cx + 0.35, 1.62, room_min[2] + 2.6]
+            pos_to = [cx + 0.1, 1.58, room_min[2] + 2.25]
+            return {"pos": pos, "pos_to": pos_to, "look_at": vista, "look_to": vista, "fov": 46.0, "fov_to": 40.0}
+        return None
+
+    def _clamp_focus(self, source: dict[str, Any], proposal: dict[str, Any]) -> dict[str, Any]:
+        room = source.get("room_bounds") or source.get("room") or {}
+        room_min = [float(v) for v in (room.get("min") or [-7.0, 0.0, -4.5])]
+        room_max = [float(v) for v in (room.get("max") or [7.0, 3.4, 4.0])]
+        margin = 0.55
+
+        def _clamp_point(point: list[float]) -> list[float]:
+            return [
+                min(room_max[0] - margin, max(room_min[0] + margin, point[0])),
+                min(room_max[1] - 0.45, max(0.55, point[1])),
+                min(room_max[2] - margin, max(room_min[2] + margin, point[2])),
+            ]
+
+        proposal["pos"] = _clamp_point(proposal["pos"])
+        proposal["pos_to"] = _clamp_point(proposal["pos_to"])
+        proposal["fov"] = min(64.0, max(24.0, float(proposal["fov"])))
+        proposal["fov_to"] = min(64.0, max(22.0, float(proposal["fov_to"])))
+        return proposal
 
     def _with_layout_bounds(self, source: dict[str, Any], layout: Any | None) -> dict[str, Any]:
         """Copy solved room, doors, and obstacles onto a beat that did not carry them."""
