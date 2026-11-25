@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from tools.normalize_glb import BLENDER_DECIMATE_SCRIPT, read_glb, write_glb
+from tools.normalize_glb import BLENDER_DECIMATE_SCRIPT, _read_accessor, read_glb, write_glb
 
 SCRIPT = ROOT / 'tools' / 'normalize_glb.py'
 
@@ -162,6 +162,124 @@ class NormalizeGlbTests(unittest.TestCase):
 
     def test_blender_decimate_script_is_valid_python(self):
         compile(BLENDER_DECIMATE_SCRIPT, 'blender_decimate.py', 'exec')
+
+    def test_smooth_normals_weld_seams_and_keep_texture(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / 'seam.glb'
+            smoothed = root / 'seam-smooth.glb'
+            faceted = root / 'seam-flat.glb'
+            original_uv = _faceted_seam(source)
+
+            report, stderr = _run_normalize(source, smoothed, '--smooth-normals')
+            self.assertEqual(stderr.strip(), '')
+            self.assertTrue(report['smooth_normals'])
+            self.assertTrue(report['has_textures'])
+            self.assertEqual(report['output_tris'], 4)
+            self.assertEqual(report['input_tris'], 4)
+
+            positions, normals = _read_pos_nrm(smoothed)
+            self.assertEqual(len(positions), 8)
+            self.assertEqual(len(normals), 8)
+            groups = _position_groups(positions)
+            seams = [indexes for indexes in groups.values() if len(indexes) >= 2]
+            singles = [indexes[0] for indexes in groups.values() if len(indexes) == 1]
+            self.assertGreaterEqual(len(seams), 2)
+            self.assertGreaterEqual(len(singles), 2)
+            for indexes in seams:
+                block = normals[indexes]
+                self.assertTrue(np.allclose(block, block[0], atol=1e-4))
+                self.assertGreater(abs(float(block[0, 1])), 0.95)
+                self.assertLess(abs(float(block[0, 2])), 0.05)
+            self.assertTrue(any(abs(float(normals[index, 2])) > 0.4 for index in singles))
+
+            flat_report, _flat_stderr = _run_normalize(source, faceted)
+            self.assertFalse(flat_report['smooth_normals'])
+            flat_scene = trimesh.load_scene(faceted, process=False)
+            flat_mesh = next(iter(flat_scene.geometry.values()))
+            flat_groups = _position_groups(np.asarray(flat_mesh.vertices))
+            flat_normals = np.asarray(flat_mesh.vertex_normals, dtype=np.float64)
+            flat_seams = [indexes for indexes in flat_groups.values() if len(indexes) >= 2]
+            self.assertTrue(any(
+                abs(float(np.dot(flat_normals[indexes[0]], flat_normals[indexes[1]]))) < 0.2
+                for indexes in flat_seams
+            ))
+
+            scene = trimesh.load_scene(smoothed, process=False)
+            loaded = next(iter(scene.geometry.values()))
+            self.assertEqual(loaded.visual.kind, 'texture')
+            self.assertEqual(len(loaded.vertices), 8)
+            self.assertEqual(len(loaded.visual.uv), 8)
+            np.testing.assert_allclose(_sorted_rows(loaded.visual.uv), _sorted_rows(original_uv), atol=1e-5)
+            image = loaded.visual.material.baseColorTexture
+            self.assertEqual(tuple(image.getpixel((0, 0)))[:3], (12, 34, 56))
+            self.assertEqual(tuple(image.getpixel((3, 2)))[:3], (200, 10, 20))
+
+
+def _faceted_seam(path: Path) -> np.ndarray:
+    """Two panels sharing a ridge, with the ridge split so a UV seam stays faceted."""
+    vertices = np.array([
+        [0.0, 0.0, 0.0],
+        [2.0, 0.0, 0.0],
+        [2.0, 1.0, -1.0],
+        [0.0, 1.0, -1.0],
+        [0.0, 0.0, 0.0],
+        [2.0, 0.0, 0.0],
+        [2.0, 1.0, 1.0],
+        [0.0, 1.0, 1.0],
+    ], dtype=np.float64)
+    faces = np.array([
+        [0, 1, 2],
+        [0, 2, 3],
+        [4, 6, 5],
+        [4, 7, 6],
+    ], dtype=np.int64)
+    uv = np.array([
+        [0.00, 0.00],
+        [0.49, 0.00],
+        [0.49, 1.00],
+        [0.00, 1.00],
+        [0.51, 0.00],
+        [1.00, 0.00],
+        [1.00, 1.00],
+        [0.51, 1.00],
+    ], dtype=np.float64)
+    image = Image.new('RGBA', (8, 8), (12, 34, 56, 255))
+    image.putpixel((3, 2), (200, 10, 20, 255))
+    material = trimesh.visual.material.PBRMaterial(
+        baseColorTexture=image,
+        metallicFactor=0.0,
+        roughnessFactor=1.0,
+    )
+    mesh = trimesh.Trimesh(vertices=vertices, faces=faces, process=False)
+    mesh.visual = trimesh.visual.texture.TextureVisuals(uv=uv, material=material)
+    mesh.export(path)
+    return uv
+
+
+def _read_pos_nrm(path: Path):
+    document, blob = read_glb(path)
+    primitive = document['meshes'][0]['primitives'][0]
+    attributes = primitive['attributes']
+    if 'NORMAL' not in attributes:
+        raise AssertionError('exported GLB is missing NORMAL')
+    positions = _read_accessor(document, blob, attributes['POSITION'])
+    normals = _read_accessor(document, blob, attributes['NORMAL'])
+    return positions, normals
+
+
+def _sorted_rows(values: np.ndarray) -> np.ndarray:
+    rows = np.asarray(values, dtype=np.float64)
+    order = np.lexsort((np.round(rows[:, 1], 5), np.round(rows[:, 0], 5)))
+    return rows[order]
+
+
+def _position_groups(positions: np.ndarray) -> dict:
+    keys = np.rint(np.asarray(positions, dtype=np.float64) * 1e4).astype(np.int64)
+    groups: dict = {}
+    for index, key in enumerate(map(tuple, keys)):
+        groups.setdefault(key, []).append(index)
+    return groups
 
 
 if __name__ == '__main__':

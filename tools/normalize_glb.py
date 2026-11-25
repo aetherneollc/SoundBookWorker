@@ -9,6 +9,10 @@ otherwise with trimesh + fast_simplification while keeping materials and UVs.
 
 Positive ``--rotate-y-deg`` is a right-handed rotation about +Y. A mesh whose
 front points along +X needs ``--rotate-y-deg -90`` to face +Z.
+
+``--smooth-normals`` welds area-weighted vertex normals across coincident
+positions, including UV seams, without changing vertex count, UVs, or skin
+weights. Pass it when a mesh should shade smooth instead of faceted.
 """
 from __future__ import annotations
 
@@ -93,6 +97,7 @@ def normalize_glb(
     target_height: float | None = None,
     rotate_y_deg: float = 0.0,
     max_tris: int = 10000,
+    smooth_normals: bool = False,
 ) -> dict:
     """Write a normalized GLB and return the JSON report fields."""
     source = Path(input_path)
@@ -112,6 +117,8 @@ def normalize_glb(
     skipped = None
 
     if skinned:
+        if smooth_normals:
+            blob = _smooth_glb_normals(document, blob)
         new_doc, new_blob, bounds_min, bounds_max, height = _normalize_skinned(
             document, blob, target_height, rotate_y_deg,
         )
@@ -141,8 +148,11 @@ def normalize_glb(
             _apply_matrix(meshes, _scale_translate_matrix(bounds_min, bounds_max, target_height))
             bounds_min, bounds_max = _bounds_of(meshes)
             height = float(bounds_max[1] - bounds_min[1])
+            if smooth_normals:
+                for mesh in meshes:
+                    compute_smooth_normals_by_position(mesh)
             destination.parent.mkdir(parents=True, exist_ok=True)
-            _export_meshes(meshes, destination)
+            _export_meshes(meshes, destination, include_normals=True if smooth_normals else None)
         finally:
             if blender_file is not None:
                 blender_file.unlink(missing_ok=True)
@@ -162,6 +172,7 @@ def normalize_glb(
         'has_textures': bool(has_textures),
         'decimation_skipped': skipped,
         'decimation_backend': backend,
+        'smooth_normals': bool(smooth_normals),
     }
 
 
@@ -573,14 +584,156 @@ def _planar_uv(vertices: np.ndarray) -> np.ndarray:
     return uv
 
 
-def _export_meshes(meshes: list[trimesh.Trimesh], path: Path) -> None:
+def compute_smooth_normals_by_position(mesh, decimals: int = 5) -> np.ndarray:
+    """Area-weighted smooth normals, welded by rounded position.
+
+    Vertices that share a position (UV seams included) receive the same unit
+    normal: the normalized sum of incident face cross-products. Vertex count,
+    UVs, and skin weights are left unchanged. The result is stored on
+    ``mesh.vertex_normals`` so glTF export keeps it instead of recomputing
+    split normals.
+    """
+    vertices = np.asarray(mesh.vertices, dtype=np.float64)
+    faces = np.asarray(mesh.faces, dtype=np.int64)
+    normals = np.zeros((len(vertices), 3), dtype=np.float64)
+    if len(vertices) == 0 or len(faces) == 0:
+        if len(vertices):
+            normals[:, 1] = 1.0
+        _assign_vertex_normals(mesh, normals)
+        return normals.copy()
+    if faces.ndim != 2 or faces.shape[1] != 3:
+        raise ValueError('smooth normals expect triangle faces')
+
+    triangles = vertices[faces]
+    crossed = np.cross(triangles[:, 1] - triangles[:, 0], triangles[:, 2] - triangles[:, 0])
+    scale = 10.0 ** int(decimals)
+    keys = np.rint(vertices * scale).astype(np.int64)
+    keys = np.ascontiguousarray(keys)
+    packed = keys.view(np.dtype((np.void, keys.dtype.itemsize * 3))).ravel()
+    _unique, inverse = np.unique(packed, return_inverse=True)
+    accum = np.zeros((int(inverse.max()) + 1, 3), dtype=np.float64)
+    groups = inverse[faces]
+    g0, g1, g2 = groups[:, 0], groups[:, 1], groups[:, 2]
+    np.add.at(accum, g0, crossed)
+    differ_1 = g1 != g0
+    np.add.at(accum, g1[differ_1], crossed[differ_1])
+    differ_2 = (g2 != g0) & (g2 != g1)
+    np.add.at(accum, g2[differ_2], crossed[differ_2])
+
+    lengths = np.linalg.norm(accum, axis=1)
+    valid = lengths > 1e-12
+    accum[valid] /= lengths[valid, None]
+    accum[~valid] = (0.0, 1.0, 0.0)
+    normals = np.ascontiguousarray(accum[inverse], dtype=np.float64)
+    _assign_vertex_normals(mesh, normals)
+    return normals.copy()
+
+
+def _assign_vertex_normals(mesh, normals: np.ndarray) -> None:
+    if normals.shape != np.asarray(mesh.vertices).shape:
+        raise ValueError('smooth normals do not match the vertex count')
+    mesh.vertex_normals = normals
+    cached = getattr(mesh, '_cache', None)
+    store = getattr(cached, 'cache', None)
+    if isinstance(store, dict) and 'vertex_normals' not in store:
+        store['vertex_normals'] = np.ascontiguousarray(normals, dtype=np.float64)
+
+
+def _smooth_glb_normals(document: dict, blob: bytes) -> bytes:
+    """Rewrite NORMAL accessors in a skinned GLB. Other attributes stay put."""
+    buffers = document.get('buffers') or []
+    if not buffers:
+        return bytes(blob)
+    declared = int(buffers[0].get('byteLength') or len(blob))
+    raw = bytearray(blob[:declared])
+    for mesh in document.get('meshes') or []:
+        if not isinstance(mesh, dict):
+            continue
+        for primitive in mesh.get('primitives') or []:
+            if not isinstance(primitive, dict) or int(primitive.get('mode', 4)) != 4:
+                continue
+            attributes = primitive.get('attributes') or {}
+            if 'POSITION' not in attributes:
+                continue
+            positions = _read_accessor(document, bytes(raw), attributes['POSITION'])
+            if 'indices' in primitive:
+                indices = np.asarray(_read_accessor(document, bytes(raw), primitive['indices'])).reshape(-1)
+            else:
+                indices = np.arange(len(positions), dtype=np.int64)
+            if len(indices) < 3 or len(positions) == 0:
+                continue
+            usable = len(indices) - (len(indices) % 3)
+            faces = indices[:usable].astype(np.int64).reshape((-1, 3))
+            tri = trimesh.Trimesh(vertices=positions, faces=faces, process=False)
+            normals = compute_smooth_normals_by_position(tri)
+            if 'NORMAL' in attributes:
+                _overwrite_vec3(document, raw, int(attributes['NORMAL']), normals)
+            else:
+                _append_vec3_normal(document, raw, primitive, normals)
+    buffers[0]['byteLength'] = len(raw)
+    return bytes(raw)
+
+
+def _overwrite_vec3(document: dict, raw: bytearray, accessor_index: int, values: np.ndarray) -> None:
+    accessor = document['accessors'][accessor_index]
+    if int(accessor.get('componentType') or 0) != 5126 or accessor.get('type') != 'VEC3':
+        raise ValueError('NORMAL accessor is not float32 VEC3')
+    view = document['bufferViews'][accessor['bufferView']]
+    if int(view.get('buffer') or 0) != 0:
+        raise ValueError('external NORMAL buffers are not supported')
+    count = int(accessor['count'])
+    if count != len(values):
+        raise ValueError('NORMAL count does not match the vertex count')
+    stride = int(view.get('byteStride') or 12)
+    start = int(view.get('byteOffset') or 0) + int(accessor.get('byteOffset') or 0)
+    packed = np.ascontiguousarray(values, dtype=np.float32)
+    if stride == 12 and start % 4 == 0:
+        target = np.ndarray((count, 3), dtype='<f4', buffer=raw, offset=start)
+        target[:] = packed
+    else:
+        for index in range(count):
+            offset = start + index * stride
+            raw[offset:offset + 12] = packed[index].tobytes()
+    if 'min' in accessor or 'max' in accessor:
+        accessor['min'] = [float(channel) for channel in packed.min(axis=0)]
+        accessor['max'] = [float(channel) for channel in packed.max(axis=0)]
+
+
+def _append_vec3_normal(document: dict, raw: bytearray, primitive: dict, values: np.ndarray) -> None:
+    packed = np.ascontiguousarray(values, dtype=np.float32)
+    while len(raw) % 4:
+        raw.append(0)
+    offset = len(raw)
+    raw.extend(packed.tobytes())
+    views = document.setdefault('bufferViews', [])
+    accessors = document.setdefault('accessors', [])
+    views.append({
+        'buffer': 0,
+        'byteOffset': offset,
+        'byteLength': int(packed.nbytes),
+        'target': 34962,
+    })
+    accessors.append({
+        'bufferView': len(views) - 1,
+        'byteOffset': 0,
+        'componentType': 5126,
+        'count': int(len(packed)),
+        'type': 'VEC3',
+    })
+    primitive.setdefault('attributes', {})['NORMAL'] = len(accessors) - 1
+
+
+def _export_meshes(meshes: list[trimesh.Trimesh], path: Path, include_normals: bool | None = None) -> None:
+    kwargs = {}
+    if include_normals is not None:
+        kwargs['include_normals'] = include_normals
     if len(meshes) == 1:
-        meshes[0].export(path)
+        meshes[0].export(path, **kwargs)
         return
     scene = trimesh.Scene()
     for index, mesh in enumerate(meshes):
         scene.add_geometry(mesh, geom_name='geom_%d' % index, node_name='node_%d' % index)
-    scene.export(path)
+    scene.export(path, **kwargs)
 
 
 def _try_blender_decimate(source: Path, max_tris: int, had_textures: bool) -> Path | None:
@@ -647,6 +800,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--target-height', type=float, default=None, help='uniform scale to this height in meters')
     parser.add_argument('--rotate-y-deg', type=float, default=0.0, help='right-handed degrees about +Y; -90 turns +X front to +Z')
     parser.add_argument('--max-tris', type=int, default=10000, help='decimate static meshes above this triangle count')
+    parser.add_argument(
+        '--smooth-normals',
+        action='store_true',
+        help='weld area-weighted vertex normals across coincident positions and UV seams',
+    )
     return parser
 
 
@@ -659,6 +817,7 @@ def main(argv: list[str] | None = None) -> int:
             target_height=args.target_height,
             rotate_y_deg=args.rotate_y_deg,
             max_tris=args.max_tris,
+            smooth_normals=args.smooth_normals,
         )
     except (OSError, ValueError, RuntimeError) as exc:
         print(str(exc), file=sys.stderr)

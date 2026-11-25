@@ -7,12 +7,22 @@ extends SceneTree
 ##       faces +Z shows its face in the first panel.
 ##   godot --path godot3d --script res://tools/preview_model.gd -- clips config.json out.png
 ##       Loads an actor through player/character3d.gd (same retarget path as
-##       the stage) and poses it: idle, walk at 25% and 75%, reach. Front and
-##       side rows.
+##       the stage) and poses it: idle, four walk phases, talk, reach. Front
+##       and side rows; prints the posture angles of every pose.
+##   godot --path godot3d --script res://tools/preview_model.gd -- face config.json out.png
+##       Head close-ups of an actor in idle through the stage's face
+##       material: front neutral / blink / talk_open, then three-quarter,
+##       side and the other three-quarter.
 ##
 ## Prints the model's size, triangle count, bones and animations.
 
 const PANEL := Vector2i(480, 640)
+const CLIP_PANEL := Vector2i(360, 560)
+const FACE_PANEL := Vector2i(400, 440)
+const FACE_VIEWS := [[0.0, "neutral"], [0.0, "blink"], [0.0, "talk_open"], [35.0, "neutral"], [90.0, "talk_mid"], [-30.0, "neutral"]]
+const CLIP_POSES := [["idle", 0.6, 0.0], ["walk", 0.2, 0.0], ["walk", 0.45, 0.0], ["walk", 0.7, 0.0], ["walk", 0.95, 0.0], ["talk", 1.0, 0.0], ["idle", 1.0, 1.0]]
+
+var _panel := PANEL
 
 var _mode := ""
 var _source := ""
@@ -38,8 +48,9 @@ func _initialize() -> void:
 	_mode = args[0]
 	_source = args[1]
 	_out = args[2]
+	_panel = CLIP_PANEL if _mode == "clips" else (FACE_PANEL if _mode == "face" else PANEL)
 	_viewport = SubViewport.new()
-	_viewport.size = PANEL
+	_viewport.size = _panel
 	_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
 	_viewport.own_world_3d = true
 	root.add_child(_viewport)
@@ -52,7 +63,7 @@ func _initialize() -> void:
 	_camera.far = 100.0
 	_viewport.add_child(_camera)
 	_camera.current = true
-	if _mode == "clips":
+	if _mode in ["clips", "face", "hands"]:
 		if not _setup_actor():
 			quit(1)
 			return
@@ -60,8 +71,8 @@ func _initialize() -> void:
 		quit(1)
 		return
 	var rows: int = 2 if _mode == "clips" else 1
-	var cols: int = 4
-	_sheet = Image.create(PANEL.x * cols, PANEL.y * rows, false, Image.FORMAT_RGBA8)
+	var cols: int = CLIP_POSES.size() if _mode == "clips" else (FACE_VIEWS.size() if _mode == "face" else 4)
+	_sheet = Image.create(_panel.x * cols, _panel.y * rows, false, Image.FORMAT_RGBA8)
 	_waiting = 3
 
 
@@ -76,7 +87,7 @@ func _process(_delta: float) -> bool:
 	var image: Image = _viewport.get_texture().get_image()
 	image.convert(Image.FORMAT_RGBA8)
 	var view: Dictionary = _views[_index]
-	_sheet.blit_rect(image, Rect2i(Vector2i.ZERO, PANEL), Vector2i(int(view.col) * PANEL.x, int(view.row) * PANEL.y))
+	_sheet.blit_rect(image, Rect2i(Vector2i.ZERO, _panel), Vector2i(int(view.col) * _panel.x, int(view.row) * _panel.y))
 	_index += 1
 	_waiting = 3
 	if _index >= _views.size():
@@ -171,28 +182,52 @@ func _setup_actor() -> bool:
 	_root.add_child(_actor)
 	if not bool(_actor.call("setup", config)):
 		return false
-	print("CLIPS %s walk_speed=%.3f source=%s" % [_actor.get("clip_report"), float(_actor.get("natural_walk_speed")), _actor.get("source_kind")])
+	print("CLIPS %s walk_speed=%.3f stride=%s source=%s face_atlas=%s" % [_actor.get("clip_report"), float(_actor.get("natural_walk_speed")),
+		_actor.get("stride_report"), _actor.get("source_kind"), _actor.call("has_face_atlas")])
+	_actor.set("ground_smoothing", 1.0)
 	var height: float = float(_actor.get("height_m"))
+	if _mode == "face":
+		_center = Vector3(0, height * 0.9, 0.02)
+		_radius = height * 0.085
+		for col in FACE_VIEWS.size():
+			var fv: Array = FACE_VIEWS[col]
+			_views.append({"row": 0, "col": col, "angle": fv[0], "clip": "idle", "time": 0.6, "reach": 0.0, "elev": 0.02, "face": fv[1]})
+		return true
+	if _mode == "hands":
+		var hand_views := [["l_hand", 90.0, "idle", 0.6], ["l_hand", 0.0, "idle", 0.6], ["r_hand", -90.0, "walk", 0.3], ["r_hand", 0.0, "walk", 0.3]]
+		for col in 4:
+			var hv: Array = hand_views[col]
+			_views.append({"row": 0, "col": col, "angle": hv[1], "clip": hv[2], "time": hv[3], "reach": 0.0, "elev": 0.1, "focus": hv[0]})
+		_radius = 0.16
+		return true
 	_center = Vector3(0, height * 0.5, 0)
 	_radius = height * 0.62
-	var poses := [["idle", 0.6, 0.0], ["walk", 0.33, 0.0], ["walk", 1.0, 0.0], ["idle", 1.0, 1.0]]
 	for row in 2:
-		for col in 4:
-			var pose: Array = poses[col]
+		for col in CLIP_POSES.size():
+			var pose: Array = CLIP_POSES[col]
 			_views.append({"row": row, "col": col, "angle": 0.0 if row == 0 else 90.0, "clip": pose[0], "time": pose[1], "reach": pose[2]})
 	return true
 
 
 func _apply_view(view: Dictionary) -> void:
 	if _actor != null and view.has("clip"):
-		_actor.call("update_animation", str(view.clip), "qc_%d" % _index, 1.0, 0.0, 0.0)
-		_actor.call("update_animation", str(view.clip), "qc_%d" % _index, 1.0, float(view.time), 0.0)
+		var clip: String = str(view.clip)
+		var time: float = float(view.time)
+		if clip == "walk":
+			time *= float(_actor.call("clip_length", "walk"))
+		_actor.call("pose_clip", clip, time)
 		var target := Vector3(0.0, 1.05, 0.55)
 		_actor.set("holding", float(view.reach) > 0.5)
 		_actor.call("apply_overlays", 0.0, 0.0, target, float(view.reach))
+		if int(view.row) == 0:
+			print("POSE %s@%.2f %s" % [clip, time, _actor.call("posture_report")])
+		if view.has("face"):
+			_actor.call("show_face", str(view.face))
+		if view.has("focus"):
+			_center = _actor.call("bone_world_position", str(view.focus))
 	var angle: float = deg_to_rad(float(view.angle))
 	var distance: float = _radius / tan(deg_to_rad(_camera.fov * 0.5)) * 1.1
-	var offset := Vector3(sin(angle), 0.15, cos(angle)).normalized() * distance
+	var offset := Vector3(sin(angle), float(view.get("elev", 0.15)), cos(angle)).normalized() * distance
 	_camera.look_at_from_position(_center + offset, _center, Vector3.UP)
 
 
