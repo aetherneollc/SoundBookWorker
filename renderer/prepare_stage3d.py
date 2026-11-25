@@ -30,8 +30,12 @@ from pathlib import Path
 
 try:
     from timeline_common import build_voice_locked_timeline, frame, shot_duration_frames
+    from scene_layout import SceneLayoutSystem
+    from cinematic_director import CinematicDirector
 except ImportError:  # ``python -m unittest`` loads this module as part of the package.
     from renderer.timeline_common import build_voice_locked_timeline, frame, shot_duration_frames
+    from renderer.scene_layout import SceneLayoutSystem
+    from renderer.cinematic_director import CinematicDirector
 
 ROOT = Path(__file__).resolve().parents[1]
 CC0 = ROOT / 'media' / 'assets3d' / 'cc0'
@@ -39,6 +43,9 @@ KENNEY = CC0 / 'kenney_space_kit'
 UAL = CC0 / 'quaternius_universal_animation_library'
 UBC = CC0 / 'quaternius_universal_base_characters'
 LOC2 = ROOT / 'public' / 'media' / 'loc2-plate.png'
+TEXTURES = ROOT / 'media' / 'assets3d' / 'textures'
+# Painted horizon of lunar_panorama*.png, as a fraction of the image height from the top.
+PANORAMA_HORIZON_V = 0.852
 DEMO_DIR = ROOT / 'media' / 'm6_3d'
 INTERACT_AUDIO = ROOT / 'media' / 'm6_interact' / 'audio'
 
@@ -92,19 +99,27 @@ PROPS = [
     {'id': 'crate_a', 'kind': 'crate', 'pos': [5.0, -0.35], 'size': [0.9, 0.9, 0.9], 'color': 'orange', 'yaw_deg': 6.0},
     {'id': 'crate_b', 'kind': 'crate', 'pos': [6.08, -0.15], 'size': [0.75, 0.6, 0.75], 'color': 'dark', 'yaw_deg': -10.0},
 ]
+# Two clean silhouettes just outside the glass give the painted cyclorama
+# foreground parallax: the comms dish on the left and an exterior catwalk.
 OUTSIDE_PROPS = [
-    {'id': 'rocks_small', 'model': 'rocks_smallA.glb', 'pos': [3.0, -11.0], 'yaw_deg': 0.0, 'scale': 6.0},
-    {'id': 'dish', 'model': 'satelliteDish_large.glb', 'pos': [-19.0, -30.0], 'yaw_deg': 35.0, 'scale': 7.0},
-    {'id': 'crystals', 'model': 'rock_crystalsLargeA.glb', 'pos': [24.0, -20.0], 'yaw_deg': 10.0, 'scale': 6.0},
+    {'id': 'dish', 'model': 'satelliteDish_large.glb', 'pos': [-8.8, -12.5], 'yaw_deg': 30.0, 'scale': 4.2},
+    {'id': 'catwalk', 'kind': 'catwalk', 'pos': [1.5, -12.0], 'length': 24.0, 'depth': 1.3, 'deck_y': -0.15},
 ]
+# Cool moonlight through the window as key/rim, warm-neutral ceiling strips,
+# and soft fills on the faces and the console.
 LIGHTING = {
-    'ambient': '#a9b8ce',
-    'ambient_energy': 0.7,
-    'sun_energy': 0.72,
-    'lamp_energy': 0.7,
+    'ambient': '#9fb0c8',
+    'ambient_energy': 0.58,
+    'sun_energy': 0.95,
+    'sun_color': '#d2e0ff',
+    'sun_dir': [-0.38, -0.5, 0.78],
+    'lamp_energy': 0.68,
+    'lamp_color': '#ffeedd',
     'fills': [
-        {'id': 'ConsoleGlow', 'pos': [-3.0, 1.45, -3.25], 'range': 3.2, 'energy': 0.55, 'color': '#9fe8ff'},
-        {'id': 'FaceFill', 'pos': [-1.2, 1.9, -1.2], 'range': 4.0, 'energy': 0.45, 'color': '#fff1df'},    ],
+        {'id': 'ConsoleGlow', 'pos': [-3.1, 1.5, -3.5], 'range': 3.0, 'energy': 0.5, 'color': '#8fe6ff'},
+        {'id': 'FaceFill', 'pos': [-1.2, 1.9, -1.2], 'range': 4.0, 'energy': 0.4, 'color': '#fff0dc'},
+        {'id': 'WindowSpill', 'pos': [0.0, 2.2, -3.9], 'range': 6.5, 'energy': 0.35, 'color': '#b9d0ff'},
+    ],
 }
 DEFAULT_PALETTE = {
     'sky_top': '#3f7fc6',
@@ -310,6 +325,70 @@ def loc2_palette(path: Path = LOC2) -> dict:
     }
 
 
+REVIEW_STILLS = {
+    'wide_follow': 'shot1_wide', 'two_shot': 'shot2_twoshot', 'over_shoulder': 'shot3_handoff',
+    'rover_medium': 'shot4_rover', 'first_person': 'shot5_fps', 'closeup': 'shot6_closeup',
+}
+
+
+def review_frames(shots: list[dict], handoff_window: list[int], linlan_walk: dict) -> dict:
+    """One still per shot, timed so it shows the shot's point: mid-stride in
+    the follow, mid-line in the dialogue shots (the close-up on the middle of
+    Linlan's last line, so face, mouth shape and caption are checked
+    together), the middle of the handoff, plus four frames of one stride."""
+    out: dict = {}
+    for shot in shots:
+        start, end = shot['from'], shot['from'] + shot['frames'] - 1
+        kind = shot['type']
+        lines = shot.get('lines') or []
+        if kind == 'wide_follow':
+            walk_end = min(end, linlan_walk['to'])
+            frame_index = (max(start, linlan_walk['from']) + walk_end) // 2
+        elif kind == 'over_shoulder':
+            frame_index = (handoff_window[0] + handoff_window[1]) // 2
+        elif lines:
+            line = lines[-1] if kind == 'closeup' else lines[0]
+            frame_index = (line['from'] + line['to']) // 2
+        else:
+            frame_index = (start + end) // 2
+        out[REVIEW_STILLS[kind]] = int(min(max(frame_index, start), end))
+    walk_mid = out['shot1_wide']
+    out['walk_strip'] = [walk_mid - 6, walk_mid - 2, walk_mid + 2, walk_mid + 6]
+    return out
+
+
+def backdrop_config(textures: Path = TEXTURES) -> dict:
+    """The view out of the window: the painted lunar panorama on a curved
+    cyclorama when it exists (the cleaned copy first), else the procedural
+    moonscape coloured from the LOC2 plate."""
+    for name in ('lunar_panorama_clean.png', 'lunar_panorama.png'):
+        image = textures / name
+        if image.is_file():
+            return {'mode': 'cyclorama', 'image': image.as_posix(), 'radius': 100.0, 'arc_deg': 140.0,
+                    'center': [0.0, 0.0], 'horizon_v': PANORAMA_HORIZON_V, 'horizon_y': 1.45,
+                    'ground_y': -2.4, 'near_ground': '#34486b'}
+    return {'mode': 'procedural', 'ground_y': -2.4, 'seed': 7, 'palette': loc2_palette(),
+            'palette_source': LOC2.relative_to(ROOT).as_posix() if LOC2.is_file() else 'defaults',
+            'planet': {'pos': [-34.0, 26.0, -330.0], 'radius': 62.0}}
+
+
+def surface_config(textures: Path = TEXTURES) -> dict:
+    """Painted interior surfaces that exist on disk: deck tiles every 2.5 m,
+    bulkhead panels every 3 m, and the console's telemetry screen."""
+    surfaces: dict = {}
+    if (textures / 'bay_floor.png').is_file():
+        surfaces['floor'] = {'texture': (textures / 'bay_floor.png').as_posix(), 'tile_m': 2.5,
+                             'roughness': 0.65, 'metallic': 0.1, 'specular': 0.5, 'tint': '#e6eaf0'}
+    if (textures / 'bay_wall.png').is_file():
+        surfaces['wall'] = {'texture': (textures / 'bay_wall.png').as_posix(), 'tile_m': 3.0,
+                            'roughness': 0.78, 'specular': 0.35, 'tint': '#ffffff', 'low_tint': '#b8c0cc'}
+    if (textures / 'console_screen.png').is_file():
+        surfaces['console_screen'] = {'texture': (textures / 'console_screen.png').as_posix(),
+                                      'pos': [-3.5, 1.36, -4.0], 'size': [0.94, 0.53], 'tilt_deg': 8.0,
+                                      'emission': 0.65, 'stand_bottom_y': 0.97}
+    return surfaces
+
+
 # ------------------------------------------------------------------- audio
 
 
@@ -321,6 +400,40 @@ def _write_wav(path: Path, samples: list[float], rate: int = 24000) -> None:
         handle.setsampwidth(2)
         handle.setframerate(rate)
         handle.writeframes(data)
+
+
+def speech_energy(path: str | Path, frames: int, fps: int) -> list[float] | None:
+    """Per-frame loudness of a voice line in [0, 1] (RMS, normalised to the line's 95th percentile).
+
+    Drives mouth shapes in the player. Returns None for anything that is not
+    a readable 16-bit PCM wav, so the player falls back to a timed cadence.
+    """
+    if frames <= 0:
+        return []
+    try:
+        with wave.open(str(path), 'rb') as handle:
+            if handle.getsampwidth() != 2:
+                return None
+            channels = handle.getnchannels()
+            rate = handle.getframerate()
+            raw = handle.readframes(handle.getnframes())
+    except (OSError, EOFError, wave.Error):
+        return None
+    count = len(raw) // 2
+    samples = struct.unpack(f'<{count}h', raw[:count * 2])
+    if channels > 1:
+        samples = samples[::channels]
+    hop = rate / fps
+    rms: list[float] = []
+    for k in range(frames):
+        a, b = int(k * hop), int((k + 1) * hop)
+        window = samples[a:b]
+        rms.append(math.sqrt(sum(s * s for s in window) / len(window)) if window else 0.0)
+    ranked = sorted(rms)
+    peak = ranked[min(len(ranked) - 1, int(len(ranked) * 0.95))]
+    if peak <= 1e-6:
+        return [0.0] * frames
+    return [round(min(1.0, v / peak), 3) for v in rms]
 
 
 def write_bay_hum(path: Path, seconds: float = 8.0, rate: int = 24000) -> Path:
@@ -469,13 +582,57 @@ def _resolve_file(value: object, manifest_dir: Path) -> Path | None:
     return None
 
 
+def _load_registry_assets() -> list[dict]:
+    reg_path = ROOT / 'media' / 'assets3d' / 'registry.json'
+    if not reg_path.is_file():
+        return []
+    try:
+        data = json.loads(reg_path.read_text(encoding='utf-8'))
+        assets = data.get('assets')
+        return assets if isinstance(assets, list) else []
+    except Exception:
+        return []
+
+
+def _lookup_asset_capabilities(actor_id: str, model_path: Path) -> tuple[str | None, dict]:
+    assets = _load_registry_assets()
+    model_name = model_path.name
+    matched = None
+    for item in assets:
+        if isinstance(item, dict) and Path(str(item.get('path') or '')).name == model_name:
+            matched = item
+            break
+    if matched is None:
+        for item in assets:
+            if isinstance(item, dict) and item.get('asset_id') == actor_id:
+                if Path(str(item.get('path') or '')).name == model_name:
+                    matched = item
+                    break
+    if not isinstance(matched, dict):
+        return None, {}
+    tier = matched.get('tier')
+    caps = dict(matched.get('capabilities') or {})
+    if tier:
+        caps.setdefault('tier', tier)
+    return str(tier) if tier else None, caps
+
+
 def _cast_entry(actor_id: str, cast_doc: dict, manifest_dir: Path) -> dict:
-    base = DEFAULT_CAST[actor_id]
+    base = DEFAULT_CAST.get(actor_id) or {
+        'name': actor_id,
+        'height_m': 1.70,
+        'model': UBC / 'Superhero_Male_FullBody.gltf',
+        'look': {**UNIFORM, 'ponytail': False, 'badge': False},
+    }
     entry = cast_doc.get(actor_id) if isinstance(cast_doc.get(actor_id), dict) else {}
     generated = _resolve_file(entry.get('model'), manifest_dir)
+    model_path = Path(generated or base['model'])
+    tier, caps = _lookup_asset_capabilities(actor_id, model_path)
     look = {k: (v.as_posix() if isinstance(v, Path) else v) for k, v in base['look'].items()}
     if generated is not None:
-        look = {**{k: look[k] for k in ('jacket', 'collar')}, 'uniform': False, 'ponytail': False, 'badge': False}
+        look = {**{k: look[k] for k in ('jacket', 'collar') if k in look}, 'uniform': False, 'ponytail': False, 'badge': False}
+        if tier == 'TIER_A' or caps.get('blendshapes'):
+            look['preserve_materials'] = True
     look.update(entry.get('look') or {})
     animation = {
         'library': Path(entry.get('animation_library') or ANIMATION['library']).as_posix(),
@@ -487,15 +644,22 @@ def _cast_entry(actor_id: str, cast_doc: dict, manifest_dir: Path) -> dict:
     walk_library = _resolve_file(walk.get('library'), manifest_dir) if walk else None
     if walk_library is not None:
         animation['clip_sources'] = {'walk': {'library': walk_library.as_posix(), 'clip': str(walk.get('clip', ''))}}
-    return {
+    default_gait = 'confident' if actor_id == 'linlan' else ('heavy' if actor_id == 'chen' else 'casual')
+    out = {
         'name': str(entry.get('name') or base['name']),
         'source': 'fal_generated' if generated is not None else 'cc0_fallback',
         'fallback_reason': '' if generated is not None else str(entry.get('fallback_reason') or 'no generated model in manifest'),
-        'model': Path(generated or base['model']).as_posix(),
+        'model': model_path.as_posix(),
         'height_m': float(entry.get('height_m') or base['height_m']),
+        'gait': str(entry.get('gait') or default_gait),
         'animation': animation,
         'look': look,
     }
+    if tier:
+        out['tier'] = tier
+    if caps:
+        out['capabilities'] = caps
+    return out
 
 
 def sensor_grip_point(model: Path) -> list[float]:
@@ -533,6 +697,8 @@ def prepare(manifest_path: Path, output_path: Path, check_files: bool = True) ->
     if (int(doc.get('width', 1280)), int(doc.get('height', 720))) != (1280, 720) or not 1 <= fps <= 60:
         raise ValueError('godot3d only renders 1280x720 at 1-60 fps')
     manifest_dir = manifest_path.resolve().parent
+    if doc.get('mode') == 'generic' or doc.get('scene_type') is not None:
+        return prepare_generic(doc, manifest_path, output_path, check_files=check_files)
     shots_in = [dict(shot) for shot in doc['shots'] if isinstance(shot, dict)]
     types = [str(shot.get('type', '')) for shot in shots_in]
     if types != list(SHOT_TYPES):
@@ -647,12 +813,18 @@ def prepare(manifest_path: Path, output_path: Path, check_files: bool = True) ->
     linlan_cfg = _cast_entry('linlan', cast_doc, manifest_dir)
     linlan_cfg.update({
         'start': {'pos': _round(door), 'yaw_deg': 180.0},
-        'moves': [{'from': walk_start, 'to': arrival, 'points': [_round(mid), _round(linlan)], 'ramp_s': 0.5}],
+        'moves': [{'from': walk_start, 'to': arrival, 'points': [_round(mid), _round(linlan)], 'ramp_s': 0.5, 'gait': linlan_cfg.get('gait', 'confident')}],
         'facing': [
             {'from': 0, 'target': 'chen'},
             {'from': s4['from'] + frame(0.5, fps), 'target': ROVER['id']},
             {'from': s5['from'] - frame(0.6, fps), 'point': _round(marks['window_view'])},
             {'from': s6['from'] - frame(0.4, fps), 'target': 'chen'},
+        ],
+        'emotions': [
+            {'from': 0, 'to': s2_end if False else s3['from'], 'emotion': 'worried', 'intensity': 0.65},
+            {'from': s3['from'], 'to': s5['from'], 'emotion': 'neutral', 'intensity': 0.8},
+            {'from': s5['from'], 'to': s6['from'], 'emotion': 'worried', 'intensity': 0.55},
+            {'from': s6['from'], 'to': total_frames, 'emotion': 'confident', 'intensity': 0.95},
         ],
         'clips': sorted(linlan_clips, key=lambda c: c['from']),
         'reaches': linlan_reaches,
@@ -664,13 +836,18 @@ def prepare(manifest_path: Path, output_path: Path, check_files: bool = True) ->
         'start': {'pos': _round(chen), 'yaw_deg': round(_yaw_deg(console_dir), 2)},
         # He steps back to the console while the camera is in Linlan's eyes, so
         # the closing close-up has room to frame her alone.
-        'moves': [{'from': chen_step, 'to': chen_step + frame(_dist(chen, marks['chen_console']) / 0.9, fps),
-                   'points': [_round(marks['chen_console'])], 'ramp_s': 0.3}],
+        'moves': [{'from': chen_step, 'to': chen_step + frame(_dist(chen, marks['chen_console']) / 0.72, fps),
+                   'points': [_round(marks['chen_console'])], 'ramp_s': 0.14, 'gait': chen_cfg.get('gait', 'heavy')}],
         'facing': [
             {'from': 0, 'point': _round(marks['console'])},
             {'from': max(0, arrival - frame(1.6, fps)), 'target': 'linlan'},
             {'from': s4['from'] + frame(0.7, fps), 'target': ROVER['id']},
-            {'from': s5['from'] + frame(0.5, fps), 'target': 'linlan'},
+            {'from': s5['from'], 'point': _round(marks['chen_console'])},
+            {'from': chen_step + frame(_dist(chen, marks['chen_console']) / 0.72, fps) + 2, 'target': 'linlan'},
+        ],
+        'emotions': [
+            {'from': 0, 'to': s4['from'], 'emotion': 'worried', 'intensity': 0.72},
+            {'from': s4['from'], 'to': total_frames, 'emotion': 'neutral', 'intensity': 0.75},
         ],
         'clips': sorted(chen_clips, key=lambda c: c['from']),
         'reaches': chen_reaches,
@@ -727,10 +904,21 @@ def prepare(manifest_path: Path, output_path: Path, check_files: bool = True) ->
         n = shot['frames']
         kind = shot['type']
         if kind == 'wide_follow':
-            cams = [{'from': 0, 'to': n, 'mode': 'follow', 'actor': 'linlan',
-                     'offset': [0.3, 1.62, 1.7], 'offset_to': [1.15, 2.2, 3.6],
-                     'look_offset': [0.0, 1.3, -2.2], 'look_offset_to': [-0.6, 1.05, -3.2],
-                     'smooth': 0.2, 'fov': 56.0}]
+            # Inside-bay front-3/4 tracking dolly: never blocked by the corridor
+            # doorframe, frames Linlan's confident stride from door toward console.
+            mid = n // 2
+            cams = [
+                {'from': 0, 'to': mid, 'mode': 'dolly',
+                 'pos': [0.85, 1.72, 2.35], 'pos_to': [1.35, 1.72, 1.65],
+                 'look_at': [0.0, 1.24, 4.70], 'look_to': [-0.50, 1.24, 1.40],
+                 'fov': 52.0, 'fov_to': 50.0},
+                {'from': mid, 'to': n, 'mode': 'dolly',
+                 'pos': [1.35, 1.72, 1.65], 'pos_to': [0.35, 1.66, 0.75],
+                 'look_at': [-0.50, 1.24, 1.40], 'look_to': [-2.15, 1.24, -2.35],
+                 'fov': 50.0, 'fov_to': 46.0},
+            ]
+            shot['primary_subject'] = 'linlan'
+            shot['secondary_subject'] = 'chen'
         elif kind == 'two_shot':
             cams = [{'from': 0, 'to': n, 'mode': 'dolly',
                      'pos': _round((mid_pair[0] + room_side[0] * 3.2, 1.5, mid_pair[1] + room_side[1] * 3.2)),
@@ -738,6 +926,8 @@ def prepare(manifest_path: Path, output_path: Path, check_files: bool = True) ->
                      'look_at': _round((mid_pair[0], 1.28, mid_pair[1])),
                      'look_to': _round((mid_pair[0], 1.3, mid_pair[1])),
                      'fov': 40.0, 'fov_to': 40.0}]
+            shot['primary_subject'] = 'chen'
+            shot['secondary_subject'] = 'linlan'
         elif kind == 'over_shoulder':
             base = (linlan[0] - a[0] * 1.45 + right_of_linlan[0] * 0.88, linlan[1] - a[1] * 1.45 + right_of_linlan[1] * 0.88)
             look = (chen[0] * 0.58 + linlan[0] * 0.42, chen[1] * 0.58 + linlan[1] * 0.42)
@@ -746,23 +936,32 @@ def prepare(manifest_path: Path, output_path: Path, check_files: bool = True) ->
                      'pos_to': _round((base[0] + a[0] * 0.15, 1.66, base[1] + a[1] * 0.15)),
                      'look_at': _round((look[0], 1.16, look[1])), 'look_to': _round((look[0], 1.12, look[1])),
                      'fov': 34.0, 'fov_to': 33.0}]
+            shot['primary_subject'] = 'chen'
+            shot['secondary_subject'] = 'linlan'
         elif kind == 'rover_medium':
             stop = marks['rover_stop']
             cams = [{'from': 0, 'to': n, 'mode': 'dolly',
                      'pos': [1.05, 1.02, -0.75], 'pos_to': [1.15, 1.0, -0.95],
                      'look_at': _round((stop[0] + 1.7, 0.5, stop[1] + 0.85)), 'look_to': _round((stop[0] + 0.1, 0.5, stop[1])),
                      'fov': 42.0, 'fov_to': 40.0}]
+            shot['primary_subject'] = ROVER['id']
+            shot['secondary_subject'] = 'linlan'
         elif kind == 'first_person':
             far = (linlan[0] + view_dir[0] * 9.0, linlan[1] + view_dir[1] * 9.0)
             cams = [{'from': 0, 'to': n, 'mode': 'pov', 'actor': 'linlan', 'eye_height': 1.55,
-                     'look_at': _round((far[0] - 0.8, 1.4, far[1])), 'look_to': _round((far[0] + 0.6, 1.5, far[1])),
+                     'look_at': _round((far[0] - 0.8, 1.75, far[1])), 'look_to': _round((far[0] + 0.6, 2.85, far[1])),
                      'fov': 60.0, 'sway': 0.005}]
+            shot['primary_subject'] = 'linlan'
+            shot['secondary_subject'] = ''
         else:
             cams = [{'from': 0, 'to': n, 'mode': 'dolly',
-                     'pos': _round((linlan[0] + closeup_dir[0] * 1.18, 1.45, linlan[1] + closeup_dir[1] * 1.18)),
-                     'pos_to': _round((linlan[0] + closeup_dir[0] * 1.06, 1.44, linlan[1] + closeup_dir[1] * 1.06)),
-                     'look_at': _round((linlan[0], 1.36, linlan[1])), 'look_to': _round((linlan[0], 1.37, linlan[1])),
-                     'fov': 35.0, 'fov_to': 35.0}]
+                     'pos': _round((linlan[0] + closeup_dir[0] * 1.18, 1.48, linlan[1] + closeup_dir[1] * 1.18)),
+                     'pos_to': _round((linlan[0] + closeup_dir[0] * 1.06, 1.47, linlan[1] + closeup_dir[1] * 1.06)),
+                     'look_at': _round((linlan[0], 1.42, linlan[1])), 'look_to': _round((linlan[0], 1.43, linlan[1])),
+                     'fov': 35.0, 'fov_to': 35.0,
+                     'dof_enabled': True, 'dof_focus_distance': 1.12}]
+            shot['primary_subject'] = 'linlan'
+            shot['secondary_subject'] = 'chen'
         shot['cameras'] = cams
         shot['first_person'] = 'linlan' if kind == 'first_person' else ''
 
@@ -774,7 +973,13 @@ def prepare(manifest_path: Path, output_path: Path, check_files: bool = True) ->
              for item in voice_items]
     audio.append({'file': hum.as_posix(), 'start_ms': 0, 'volume': 0.22, 'loop': True})
     audio.append({'file': whirr.as_posix(), 'start_ms': round(rover_go * 1000 / fps), 'volume': 0.5, 'loop': False})
-    speech = [{'actor': item['actor'], 'speaker': item['speaker'], 'from': item['from'], 'to': item['to']} for item in voice_items]
+    speech = []
+    for item in voice_items:
+        entry = {'actor': item['actor'], 'speaker': item['speaker'], 'from': item['from'], 'to': item['to']}
+        energy = speech_energy(item['file'], item['to'] - item['from'], fps)
+        if energy is not None:
+            entry['energy'] = energy
+        speech.append(entry)
 
     kenney = lambda name: (KENNEY / name).as_posix()  # noqa: E731
     stage = {
@@ -786,16 +991,17 @@ def prepare(manifest_path: Path, output_path: Path, check_files: bool = True) ->
         'total_frames': total_frames,
         'title': str(doc.get('title', '')),
         'set': {
+            'scene_type': 'observation_bay',
+            'lighting_profile': str(doc.get('lighting_profile') or 'day_bay'),
             'kind': 'lunar_observation_bay',
             'room': ROOM,
             'door': DOOR,
             'window': WINDOW,
             'camera_bounds': CAMERA_BOUNDS,
-            'backdrop': {'mode': 'procedural', 'ground_y': -2.4, 'seed': 7, 'palette': loc2_palette(),
-                         'palette_source': LOC2.relative_to(ROOT).as_posix() if LOC2.is_file() else 'defaults',
-                         'planet': {'pos': [-34.0, 26.0, -330.0], 'radius': 62.0}},
+            'backdrop': backdrop_config(),
+            'surfaces': surface_config(),
             'props': [{**p, 'model': kenney(p['model'])} if 'model' in p else dict(p) for p in PROPS],
-            'outside_props': [{**p, 'model': kenney(p['model'])} for p in OUTSIDE_PROPS],
+            'outside_props': [{**p, 'model': kenney(p['model'])} if 'model' in p else dict(p) for p in OUTSIDE_PROPS],
             'lighting': LIGHTING,
             'marks': {k: _round(v) for k, v in marks.items()},
         },
@@ -803,7 +1009,7 @@ def prepare(manifest_path: Path, output_path: Path, check_files: bool = True) ->
         'rover': rover,
         'props': props,
         'viewmodel': {
-            'hand': [0.2, -0.2, -0.5], 'arm_dir': [-0.38, 0.36, -0.85], 'palm_hint': [-0.55, 0.25, 0.8],
+            'hand': [0.2, -0.165, -0.5], 'arm_dir': [-0.38, 0.36, -0.85], 'palm_hint': [-0.55, 0.25, 0.8],
             'sensor_up': [0.08, 1.0, 0.5], 'sensor_offset': [-0.004, 0.02, 0.018],
             **(doc.get('viewmodel') if isinstance(doc.get('viewmodel'), dict) else {}),
         },
@@ -819,6 +1025,7 @@ def prepare(manifest_path: Path, output_path: Path, check_files: bool = True) ->
             'linlan_arrival_frame': arrival,
             'handoff_window': window,
             'rover_move': [rover_go, rover_arrive],
+            'review_frames': review_frames(shots, window, linlan_walk=actors['linlan']['moves'][0]),
         },
     }
     problems = validate_stage3d(stage, check_files=check_files)
@@ -835,15 +1042,287 @@ def prepare(manifest_path: Path, output_path: Path, check_files: bool = True) ->
     return stage
 
 
+# ------------------------------------------------------- generic multi-scene
+
+
+def prepare_generic(doc: dict, manifest_path: Path, output_path: Path, check_files: bool = True) -> dict:
+    """Reusable multi-scene compiler using SceneLayoutSystem + CinematicDirector.
+
+    Zero per-episode hardcoding: compiles any supported ``scene_type``
+    (observation_bay, corridor, med_lab, command_deck), any ``lighting_profile``,
+    any cast/gait/emotion/prop timeline, and any beats into a validated ``stage3d.json``.
+    """
+    fps = int(doc.get('fps', 24))
+    manifest_dir = manifest_path.resolve().parent
+    scene_type = str(doc.get('scene_type') or 'observation_bay')
+    lighting_profile = str(doc.get('lighting_profile') or '') or None
+    solver = SceneLayoutSystem(kenney_dir=KENNEY, textures_dir=TEXTURES)
+    layout = solver.solve(scene_type, lighting_profile=lighting_profile, validate=True)
+    set_doc = layout.to_stage3d_set(resolve_asset_paths=True)
+    anchors = {aid: (a.position[0], a.position[2]) for aid, a in layout.standing_anchors.items()}
+
+    def _resolve_xz(raw) -> tuple[float, float]:
+        if isinstance(raw, str) and raw in anchors:
+            return anchors[raw]
+        if isinstance(raw, (list, tuple)) and len(raw) >= 2:
+            return (float(raw[0]), float(raw[-1]))
+        return next(iter(anchors.values())) if anchors else (0.0, 0.0)
+
+    # ---- actors
+    cast_doc = doc.get('cast') if isinstance(doc.get('cast'), dict) else {}
+    actors: dict[str, dict] = {}
+    actor_tiers: dict[str, dict] = {}
+    actor_heights: dict[str, float] = {}
+    for actor_id, raw_spec in cast_doc.items():
+        if not isinstance(raw_spec, dict) or raw_spec.get('kind') in ('rover', 'prop'):
+            continue
+        cfg = _cast_entry(actor_id, cast_doc, manifest_dir)
+        start_pos = _resolve_xz(raw_spec.get('start_anchor') or raw_spec.get('start_pos'))
+        start_yaw = float(raw_spec.get('yaw_deg', 0.0))
+        moves = []
+        cur_xz = start_pos
+        for mv in raw_spec.get('moves') or []:
+            if not isinstance(mv, dict):
+                continue
+            pts = []
+            for p in mv.get('points') or ([] if 'to_anchor' not in mv else [mv['to_anchor']]):
+                dest = _resolve_xz(p)
+                if mv.get('auto_path', False):
+                    path_pts = layout.find_path(cur_xz, dest)
+                    if path_pts and len(path_pts) > 1:
+                        pts.extend([_round(q) for q in path_pts[1:]])
+                        cur_xz = dest
+                        continue
+                pts.append(_round(dest))
+                cur_xz = dest
+            if pts:
+                moves.append({
+                    'from': int(mv.get('from', 0)),
+                    'to': int(mv.get('to', 48)),
+                    'points': pts,
+                    'ramp_s': float(mv.get('ramp_s', 0.4)),
+                    'gait': str(mv.get('gait') or cfg.get('gait', 'casual')),
+                })
+        cfg.update({
+            'start': {'pos': _round(start_pos), 'yaw_deg': start_yaw},
+            'moves': moves,
+            'facing': list(raw_spec.get('facing') or []),
+            'emotions': list(raw_spec.get('emotions') or []),
+            'clips': list(raw_spec.get('clips') or []),
+            'reaches': list(raw_spec.get('reaches') or []),
+            'nods': list(raw_spec.get('nods') or []),
+        })
+        actors[actor_id] = cfg
+        actor_heights[actor_id] = float(cfg['height_m'])
+        actor_tiers[actor_id] = {
+            'tier': cfg.get('tier', 'TIER_A'),
+            'blendshapes': bool((cfg.get('capabilities') or {}).get('blendshapes', True)),
+        }
+
+    # ---- audio & captions & speech
+    audio_dir = output_path.resolve().parent / 'audio'
+    hum = write_bay_hum(audio_dir / 'ambient_hum.wav')
+    captions: list[dict] = []
+    speech: list[dict] = []
+    audio: list[dict] = [{'file': hum.as_posix(), 'start_ms': 0, 'volume': 0.22, 'loop': True}]
+
+    beats_in = [dict(b) for b in (doc.get('beats') or doc.get('shots') or []) if isinstance(b, dict)]
+    if not beats_in:
+        raise ValueError('Generic manifest requires non-empty beats or shots')
+
+    # Helper to compute actor XZ position at a given frame for director planning.
+    def _actor_pos_at(aid: str, f_idx: int) -> tuple[float, float, float]:
+        spec = actors[aid]
+        px, pz = float(spec['start']['pos'][0]), float(spec['start']['pos'][1])
+        for mv in spec.get('moves') or []:
+            f0, f1 = int(mv['from']), max(int(mv['to']), int(mv['from']) + 1)
+            if f_idx < f0:
+                break
+            pts = [(px, pz)] + [(float(p[0]), float(p[1])) for p in mv['points']]
+            if f_idx >= f1:
+                px, pz = pts[-1]
+                continue
+            u = (f_idx - f0) / (f1 - f0)
+            seg_len = sum(_dist(a, b) for a, b in zip(pts, pts[1:]))
+            along = u * seg_len
+            for a_p, b_p in zip(pts, pts[1:]):
+                d = _dist(a_p, b_p)
+                if along <= d or d < 1e-6:
+                    k = max(0.0, min(1.0, along / max(d, 1e-6)))
+                    px = a_p[0] + (b_p[0] - a_p[0]) * k
+                    pz = a_p[1] + (b_p[1] - a_p[1]) * k
+                    break
+                along -= d
+            break
+        return (round(px, 3), 0.0, round(pz, 3))
+
+    def _actor_facing_at(aid: str, f_idx: int, pos_map: dict) -> list[float]:
+        spec = actors[aid]
+        p_self = pos_map[aid]
+        best = None
+        for entry in spec.get('facing') or []:
+            if int(entry.get('from', 0)) <= f_idx:
+                best = entry
+        if isinstance(best, dict):
+            tgt = best.get('target')
+            if isinstance(tgt, str) and tgt in pos_map and tgt != aid:
+                p_o = pos_map[tgt]
+                dx, dz = p_o[0] - p_self[0], p_o[2] - p_self[2]
+                nx, nz = _norm((dx, dz))
+                return [round(nx, 3), round(nz, 3)]
+            if 'yaw_deg' in best:
+                r = math.radians(float(best['yaw_deg']))
+                return [round(math.sin(r), 3), round(math.cos(r), 3)]
+        r = math.radians(float(spec['start'].get('yaw_deg', 0.0)))
+        return [round(math.sin(r), 3), round(math.cos(r), 3)]
+
+    director = CinematicDirector(fps=fps)
+    director_beats: list[dict] = []
+    cursor = 0
+    for idx, b in enumerate(beats_in, 1):
+        dur = max(1.0, float(b.get('duration', 3.5)))
+        b_frames = int(b.get('frames') or shot_duration_frames(dur, fps))
+        mid_f = cursor + b_frames // 2
+        end_f = cursor + b_frames - 1
+        pos_start = {aid: list(_actor_pos_at(aid, cursor)) for aid in actors}
+        pos_mid = {aid: list(_actor_pos_at(aid, mid_f)) for aid in actors}
+        pos_end = {aid: list(_actor_pos_at(aid, end_f)) for aid in actors}
+        facings = {aid: _actor_facing_at(aid, mid_f, pos_mid) for aid in actors}
+
+        speaker = str(b.get('speaker') or '')
+        listener = str(b.get('listener') or '')
+        text = str(b.get('text') or b.get('caption_text') or '')
+        if text:
+            lead_f = min(frame(float(b.get('voice_lead', 0.25)), fps), max(0, b_frames - 12))
+            line_from = cursor + lead_f
+            line_to = max(line_from + 12, cursor + b_frames - 4)
+            captions.append({'from': line_from, 'to': line_to, 'text': text})
+            line_wav = _resolve_file(b.get('audio_file'), manifest_dir)
+            if line_wav is None:
+                line_wav = write_silence(audio_dir / f'beat_{idx}.wav', (line_to - line_from) / fps)
+            audio.append({
+                'file': line_wav.as_posix(),
+                'start_ms': round(line_from * 1000 / fps),
+                'volume': 1.0,
+                'loop': False,
+            })
+            sp_entry: dict = {
+                'actor': speaker,
+                'speaker': actors[speaker]['name'] if speaker in actors else speaker,
+                'from': line_from,
+                'to': line_to,
+            }
+            if b.get('emotion'):
+                sp_entry['emotion'] = str(b['emotion'])
+            if b.get('listener_emotion'):
+                sp_entry['listener_emotion'] = str(b['listener_emotion'])
+            energy = speech_energy(line_wav, line_to - line_from, fps)
+            if energy is not None and max(energy, default=0.0) > 0.05:
+                sp_entry['energy'] = energy
+            speech.append(sp_entry)
+
+        director_beats.append({
+            'beat_id': str(b.get('id') or b.get('beat_id') or f'b{idx}'),
+            'scene_number': int(b.get('scene_number', idx)),
+            'duration': b_frames / fps,
+            'frames': b_frames,
+            'speaker': speaker,
+            'listener': listener,
+            'emotion': str(b.get('emotion') or 'neutral'),
+            'action': str(b.get('action') or 'talk'),
+            'narrative_importance': float(b.get('importance', 0.65)),
+            'preferred_shot': b.get('preferred_shot') or b.get('shot_type'),
+            'pov_required': bool(b.get('pov_required', False)),
+            'prop_event': b.get('prop_event'),
+            'prop_position': b.get('prop_position'),
+            'actor_positions': pos_start if b.get('action') in ('walk', 'move', 'enter') else pos_mid,
+            'actor_end_positions': pos_end,
+            'actor_facings': facings,
+            'actor_heights': actor_heights,
+            'description': str(b.get('description') or ''),
+        })
+        cursor += b_frames
+
+    shots = director.plan_sequence(
+        director_beats,
+        layout=layout,
+        actor_tiers=actor_tiers,
+        enable_cutaways=bool(doc.get('enable_cutaways', True)),
+        reset=True,
+    )
+    total_frames = sum(int(s['frames']) for s in shots)
+
+    # Interactive props
+    props_out: dict = {}
+    for pid, pspec in (doc.get('props') or {}).items():
+        if not isinstance(pspec, dict):
+            continue
+        p_copy = dict(pspec)
+        resolved_m = _resolve_file(p_copy.get('model'), manifest_dir)
+        if resolved_m is not None:
+            p_copy['model'] = resolved_m.as_posix()
+            if 'grip_point' not in p_copy:
+                p_copy['grip_point'] = sensor_grip_point(resolved_m)
+        props_out[pid] = p_copy
+
+    review = {}
+    for idx, sh in enumerate(shots, 1):
+        review[f"shot{idx}_{sh['type']}"] = int(sh['from'] + sh['frames'] // 2)
+
+    stage = {
+        'version': STAGE_VERSION,
+        'renderer': 'godot3d',
+        'mode': 'generic',
+        'width': 1280,
+        'height': 720,
+        'fps': fps,
+        'total_frames': total_frames,
+        'title': str(doc.get('title') or f'{scene_type}_{layout.lighting_profile}'),
+        'set': set_doc,
+        'actors': actors,
+        'props': props_out,
+        'shots': shots,
+        'captions': captions,
+        'speech': speech,
+        'audio': audio,
+        'meta': {
+            'manifest': manifest_path.resolve().as_posix(),
+            'story': str(doc.get('story') or scene_type),
+            'scene_type': scene_type,
+            'lighting_profile': layout.lighting_profile,
+            'review_frames': review,
+        },
+    }
+    if isinstance(doc.get('rover'), dict):
+        r_copy = dict(doc['rover'])
+        rm = _resolve_file(r_copy.get('model'), manifest_dir)
+        if rm is not None:
+            r_copy['model'] = rm.as_posix()
+        stage['rover'] = r_copy
+
+    problems = validate_stage3d(stage, check_files=check_files)
+    if problems:
+        raise ValueError('Generic stage3d.json failed validation:\n' + '\n'.join(f'- {p}' for p in problems))
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(stage, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+    print(
+        f"Prepared generic stage3d ({scene_type}/{layout.lighting_profile}): {len(shots)} shots, "
+        f"{total_frames} frames ({total_frames / fps:.2f}s), cast={','.join(actors.keys())}",
+        flush=True,
+    )
+    return stage
+
+
 # --------------------------------------------------------------- validate
 
 
-def _inside_bounds(p, bounds: dict) -> bool:
+def _inside_bounds(p, bounds: dict, door: dict | None = None) -> bool:
     lo, hi = bounds['min'], bounds['max']
     if lo[0] - 1e-6 <= p[0] <= hi[0] + 1e-6 and lo[1] - 1e-6 <= p[1] <= hi[1] + 1e-6 and lo[2] - 1e-6 <= p[2] <= hi[2] + 1e-6:
         return True
-    half = DOOR['width'] / 2 - 0.22
-    return abs(p[0] - DOOR['x']) <= half and p[2] <= bounds['corridor_max_z'] and p[1] <= DOOR['height'] - 0.2
+    d = door if isinstance(door, dict) else DOOR
+    half = float(d.get('width', 1.6)) / 2 - 0.22
+    return abs(p[0] - float(d.get('x', 0.0))) <= half and p[2] <= float(bounds.get('corridor_max_z', hi[2])) and p[1] <= float(d.get('height', 2.4)) - 0.2
 
 
 def validate_stage3d(stage: dict, check_files: bool = True) -> list[str]:
@@ -851,22 +1330,26 @@ def validate_stage3d(stage: dict, check_files: bool = True) -> list[str]:
     fps = int(stage.get('fps', 0))
     total = int(stage.get('total_frames', 0))
     shots = stage.get('shots') or []
+    is_generic = stage.get('mode') == 'generic'
     if stage.get('renderer') != 'godot3d' or stage.get('version') != STAGE_VERSION:
         problems.append('renderer/version must be godot3d v1')
-    if [s.get('type') for s in shots] != list(SHOT_TYPES):
+    if not is_generic and [s.get('type') for s in shots] != list(SHOT_TYPES):
         problems.append('shots must be the six sample shot types in order')
+    if is_generic and not shots:
+        problems.append('generic stage must contain at least one shot')
     cursor = 0
+    door = stage.get('set', {}).get('door')
     for shot in shots:
         if shot['from'] != cursor or shot['frames'] <= 0:
             problems.append(f"shot {shot.get('id')} is not contiguous")
         cursor = shot['from'] + shot['frames']
         for cam in shot.get('cameras') or []:
             for key in ('pos', 'pos_to'):
-                if key in cam and not _inside_bounds(cam[key], stage['set']['camera_bounds']):
+                if key in cam and not _inside_bounds(cam[key], stage['set']['camera_bounds'], door):
                     problems.append(f"shot {shot['id']} camera {key} {cam[key]} is outside the room")
     if cursor != total:
         problems.append('total_frames does not match the shots')
-    if fps and not 20.0 <= total / fps <= 40.0:
+    if fps and not is_generic and not 20.0 <= total / fps <= 40.0:
         problems.append(f'sample length {total / fps:.1f}s is outside 20-40s')
     for cap in stage.get('captions') or []:
         if not 0 <= cap['from'] < cap['to'] <= total:
@@ -875,14 +1358,15 @@ def validate_stage3d(stage: dict, check_files: bool = True) -> list[str]:
     footprints = [(p['id'], prop_footprint(p)) for p in stage['set']['props']]
     known = [(pid, fp) for pid, fp in footprints if fp is not None]
     lo, hi = stage['set']['room']['min'], stage['set']['room']['max']
-    for i, (pid, fp) in enumerate(known):
-        for x, z in fp:
-            if not (lo[0] <= x <= hi[0] and lo[2] <= z <= hi[2]):
-                problems.append(f'prop {pid} pokes through a wall')
-                break
-        for other_id, other in known[i + 1:]:
-            if footprints_overlap(fp, other, margin=0.05):
-                problems.append(f'props {pid} and {other_id} overlap')
+    if not is_generic:
+        for i, (pid, fp) in enumerate(known):
+            for x, z in fp:
+                if not (lo[0] <= x <= hi[0] and lo[2] <= z <= hi[2]):
+                    problems.append(f'prop {pid} pokes through a wall')
+                    break
+            for other_id, other in known[i + 1:]:
+                if footprints_overlap(fp, other, margin=0.05):
+                    problems.append(f'props {pid} and {other_id} overlap')
 
     def check_path(label: str, spec: dict, radius: float) -> None:
         points = [tuple(spec['start']['pos'])]
@@ -894,22 +1378,23 @@ def validate_stage3d(stage: dict, check_files: bool = True) -> list[str]:
                     problems.append(f'{label} path runs into prop {pid} at {tuple(round(v, 2) for v in p)}')
                     return
 
-    for actor_id, spec in (stage.get('actors') or {}).items():
-        check_path(actor_id, spec, ACTOR_RADIUS + 0.05)
-        for move in spec.get('moves') or []:
-            pts = [tuple(spec['start']['pos'])] + [tuple(p) for p in move['points']]
-            length = sum(_dist(a, b) for a, b in zip(pts, pts[1:]))
-            speed = length / max((move['to'] - move['from']) / fps, 1e-6)
-            if not 0.5 <= speed <= 1.5:
-                problems.append(f'{actor_id} walks at {speed:.2f} m/s')
-    if stage.get('rover'):
-        check_path('rover', stage['rover'], ROVER_RADIUS)
+    if not is_generic:
+        for actor_id, spec in (stage.get('actors') or {}).items():
+            check_path(actor_id, spec, ACTOR_RADIUS + 0.05)
+            for move in spec.get('moves') or []:
+                pts = [tuple(spec['start']['pos'])] + [tuple(p) for p in move['points']]
+                length = sum(_dist(a, b) for a, b in zip(pts, pts[1:]))
+                speed = length / max((move['to'] - move['from']) / fps, 1e-6)
+                if not 0.5 <= speed <= 1.5:
+                    problems.append(f'{actor_id} walks at {speed:.2f} m/s')
+        if stage.get('rover'):
+            check_path('rover', stage['rover'], ROVER_RADIUS)
     if check_files:
-        files = [stage['rover']['model']] if stage.get('rover') else []
+        files = [stage['rover']['model']] if stage.get('rover') and stage['rover'].get('model') else []
         for spec in (stage.get('actors') or {}).values():
             files += [spec['model'], spec['animation']['library']]
-        files += [p['model'] for p in stage['set']['props'] if 'model' in p]
-        files += [a['file'] for a in stage.get('audio') or []]
+        files += [p['model'] for p in stage['set']['props'] if p.get('model')]
+        files += [a['file'] for a in stage.get('audio') or [] if a.get('file')]
         for path in files:
             if not Path(path).is_file():
                 problems.append(f'missing file {path}')

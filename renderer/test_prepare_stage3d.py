@@ -122,6 +122,67 @@ class PrepareStage3DTests(unittest.TestCase):
         speaking = [s for s in self.stage['speech'] if s['actor'] == 'at1']
         self.assertEqual(len(speaking), 1)
 
+    def test_review_stills_land_on_the_moment_each_shot_is_about(self) -> None:
+        frames = self.stage['meta']['review_frames']
+        closeup = self.shots['closeup']
+        last = closeup['lines'][-1]
+        self.assertEqual(last['actor'], 'linlan')
+        third = (last['to'] - last['from']) // 3
+        self.assertTrue(last['from'] + third <= frames['shot6_closeup'] <= last['to'] - third, 'mid-line')
+        lo, hi = self.stage['meta']['handoff_window']
+        self.assertTrue(lo <= frames['shot3_handoff'] <= hi)
+        for kind, name in p3.REVIEW_STILLS.items():
+            shot = self.shots[kind]
+            self.assertTrue(shot['from'] <= frames[name] < shot['from'] + shot['frames'], name)
+        walk = self.stage['actors']['linlan']['moves'][0]
+        strip = frames['walk_strip']
+        self.assertEqual(len(strip), 4)
+        self.assertEqual(strip, sorted(strip))
+        self.assertTrue(all(walk['from'] <= f <= walk['to'] and f < self.shots['two_shot']['from'] for f in strip))
+
+    def test_painted_set_uses_the_cyclorama_and_textures_when_present(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            textures = Path(tmp)
+            self.assertEqual(p3.backdrop_config(textures)['mode'], 'procedural')
+            self.assertEqual(p3.surface_config(textures), {})
+            for name in ('lunar_panorama.png', 'lunar_panorama_clean.png', 'bay_floor.png', 'bay_wall.png', 'console_screen.png'):
+                (textures / name).write_bytes(b'png')
+            backdrop = p3.backdrop_config(textures)
+            self.assertEqual(backdrop['mode'], 'cyclorama')
+            self.assertTrue(backdrop['image'].endswith('lunar_panorama_clean.png'), 'the cleaned panorama wins')
+            self.assertTrue(90.0 <= backdrop['radius'] <= 110.0)
+            self.assertGreater(backdrop['horizon_y'], self.stage['set']['window']['y_min'])
+            surfaces = p3.surface_config(textures)
+            self.assertEqual(set(surfaces), {'floor', 'wall', 'console_screen'})
+            self.assertEqual(surfaces['floor']['tile_m'], 2.5)
+        outside = {p['id']: p for p in self.stage['set']['outside_props']}
+        self.assertEqual(set(outside), {'dish', 'catwalk'})
+        self.assertEqual(outside['catwalk']['kind'], 'catwalk')
+
+    def test_speech_carries_a_per_frame_energy_envelope(self) -> None:
+        for entry in self.stage['speech']:
+            energy = entry['energy']
+            self.assertEqual(len(energy), entry['to'] - entry['from'])
+            self.assertTrue(all(0.0 <= v <= 1.0 for v in energy))
+            self.assertGreater(max(energy), 0.9)
+
+    def test_speech_energy_follows_loudness_and_tolerates_bad_files(self) -> None:
+        rate, fps = 24000, 30
+        path = self.dir / 'swell.wav'
+        with wave.open(str(path), 'wb') as handle:
+            handle.setnchannels(1)
+            handle.setsampwidth(2)
+            handle.setframerate(rate)
+            handle.writeframes(b''.join(
+                struct.pack('<h', int((0.0 if n < rate // 2 else 0.5) * math.sin(2 * math.pi * 180 * n / rate) * 32767))
+                for n in range(rate)
+            ))
+        energy = p3.speech_energy(path, fps, fps)
+        self.assertEqual(len(energy), fps)
+        self.assertLess(max(energy[:fps // 2 - 1]), 0.05)
+        self.assertGreater(min(energy[fps // 2 + 1:]), 0.9)
+        self.assertIsNone(p3.speech_energy(self.dir / 'missing.wav', 10, fps))
+
     def test_first_person_shot_hides_linlan_behind_a_pov_camera(self) -> None:
         shot = self.shots['first_person']
         self.assertEqual(shot['first_person'], 'linlan')

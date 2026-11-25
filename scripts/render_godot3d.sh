@@ -105,6 +105,7 @@ export LIBGL_ALWAYS_SOFTWARE=1
 export GALLIUM_DRIVER=llvmpipe
 export STAGE_JSON="$STAGE_ABS"
 export STAGE_RESULT_JSON="$OUT_DIR/stage-result.json"
+export STAGE_TELEMETRY_JSON="$OUT_DIR/qc_telemetry.json"
 
 echo "---- software GL ----"
 xvfb-run -a -s "-screen 0 1920x1080x24" glxinfo -B > "$OUT_DIR/glxinfo.txt" 2>&1 || true
