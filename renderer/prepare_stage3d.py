@@ -32,10 +32,20 @@ try:
     from timeline_common import build_voice_locked_timeline, frame, shot_duration_frames
     from scene_layout import SceneLayoutSystem
     from cinematic_director import CinematicDirector
+    from dramatic_director import DramaticDirector
+    from performance_planner import PerformancePlanner
+    from retro_art_profile import RetroArtProfile
+    from semantic_animation_library import SemanticAnimationLibrary
+    from sound_events import SoundEvent
 except ImportError:  # ``python -m unittest`` loads this module as part of the package.
     from renderer.timeline_common import build_voice_locked_timeline, frame, shot_duration_frames
     from renderer.scene_layout import SceneLayoutSystem
     from renderer.cinematic_director import CinematicDirector
+    from renderer.dramatic_director import DramaticDirector
+    from renderer.performance_planner import PerformancePlanner
+    from renderer.retro_art_profile import RetroArtProfile
+    from renderer.semantic_animation_library import SemanticAnimationLibrary
+    from renderer.sound_events import SoundEvent
 
 ROOT = Path(__file__).resolve().parents[1]
 CC0 = ROOT / 'media' / 'assets3d' / 'cc0'
@@ -51,6 +61,11 @@ INTERACT_AUDIO = ROOT / 'media' / 'm6_interact' / 'audio'
 
 STAGE_VERSION = 1
 SHOT_TYPES = ('wide_follow', 'two_shot', 'over_shoulder', 'rover_medium', 'first_person', 'closeup')
+_LOCO_BEAT_ACTIONS = frozenset({
+    'walk', 'move', 'enter', 'exit', 'run', 'jog', 'sprint',
+    'rush_enter', 'door_enter', 'door_exit', 'sprint_burst', 'jog_approach',
+    'jog_urgent', 'walk_urgent', 'pace_tense',
+})
 
 ROOM = {'min': [-7.0, 0.0, -4.5], 'max': [7.0, 3.4, 4.0]}
 DOOR = {'x': 0.0, 'width': 1.6, 'height': 2.4, 'corridor_depth': 3.0}
@@ -1063,6 +1078,110 @@ def prepare(manifest_path: Path, output_path: Path, check_files: bool = True) ->
 # ------------------------------------------------------- generic multi-scene
 
 
+def _passthrough_events(raw_events) -> list[dict]:
+    """Normalize manifest events into the stage3d event contract."""
+    out: list[dict] = []
+    if not isinstance(raw_events, list):
+        return out
+    for item in raw_events:
+        if isinstance(item, str):
+            item = {'type': item}
+        if not isinstance(item, dict):
+            continue
+        kind = str(item.get('type') or item.get('event') or '').strip()
+        if not kind or kind == 'none':
+            continue
+        start = int(item.get('from', 0))
+        end = int(item.get('to', start if item.get('to') is not None else start + 1))
+        if end <= start:
+            end = start + 1
+        out.append({
+            'type': kind,
+            'from': start,
+            'to': end,
+            'intensity': float(item.get('intensity', 0.6)),
+            'target': str(item.get('target') or ''),
+        })
+    return out
+
+
+def _dedupe_events(events: list[dict]) -> list[dict]:
+    seen: set[tuple] = set()
+    out: list[dict] = []
+    for event in events:
+        key = (event.get('type'), int(event.get('from', 0)), str(event.get('target') or ''))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(event)
+    return out
+
+
+def _align_performance_source(source: list, derived: list[dict]) -> list[dict]:
+    rows = [dict(item) for item in source if isinstance(item, dict)]
+    if len(rows) != len(derived):
+        return rows
+    for row, span in zip(rows, derived):
+        if row.get('from') is None and row.get('from_frame') is None:
+            row['from'] = span['from']
+            row['to'] = span['to']
+        row.setdefault('actor', span.get('actor', ''))
+        row.setdefault('partner', span.get('partner', ''))
+        row.setdefault('duration', span.get('duration', 3.0))
+        row.setdefault('emotion', span.get('emotion', 'neutral'))
+        row.setdefault('action', span.get('action', 'talk'))
+    return rows
+
+
+def _apply_retro_layer(
+    stage: dict,
+    doc: dict,
+    planned,
+    planner,
+    audio_dir: Path,
+    fps: int,
+) -> None:
+    """Attach art, events, dramatic actions, and foley without touching unrelated manifests."""
+    if 'art_profile' in doc:
+        stage['art_profile'] = RetroArtProfile().resolve(doc['art_profile'])
+    want_events = 'events' in doc or planned is not None
+    if want_events:
+        merged = _passthrough_events(doc.get('events'))
+        if planned is not None and planner is not None:
+            merged.extend(planner.environment_events(planned))
+        stage['events'] = _dedupe_events(merged)
+    if planned is not None and planner is not None:
+        actions = planner.compile_dramatic_actions(planned, fps)
+        for actor_id, entries in actions.items():
+            if actor_id in stage['actors']:
+                stage['actors'][actor_id]['dramatic_actions'] = entries
+    sound_spec = doc.get('sound_events', None)
+    want_audio = 'sound_events' in doc and sound_spec not in (None, False)
+    if want_audio:
+        synth = SoundEvent(audio_dir)
+        extra: list[dict] = []
+        authored = sound_spec if isinstance(sound_spec, list) else []
+        for index, spec in enumerate(authored):
+            if not isinstance(spec, dict):
+                continue
+            kind = str(spec.get('kind') or spec.get('type') or '').strip()
+            if not kind:
+                continue
+            frame_at = int(spec.get('frame', spec.get('from', 0)))
+            extra.append(synth.timeline_entry(
+                kind,
+                frame=frame_at,
+                fps=fps,
+                volume=spec.get('volume'),
+                loop=bool(spec.get('loop', False)),
+                seed=int(spec.get('seed', 50 + index + frame_at)),
+                duration_s=spec.get('duration_s'),
+            ))
+        if planned is not None:
+            extra.extend(synth.entries_for_performance(planned, fps))
+        stage['audio'].extend(extra)
+
+
 def prepare_generic(doc: dict, manifest_path: Path, output_path: Path, check_files: bool = True) -> dict:
     """Reusable multi-scene compiler using SceneLayoutSystem + CinematicDirector.
 
@@ -1077,6 +1196,9 @@ def prepare_generic(doc: dict, manifest_path: Path, output_path: Path, check_fil
     solver = SceneLayoutSystem(kenney_dir=KENNEY, textures_dir=TEXTURES)
     layout = solver.solve(scene_type, lighting_profile=lighting_profile, validate=True)
     set_doc = layout.to_stage3d_set(resolve_asset_paths=True)
+    door_start = str(doc.get('door_start') or '').strip().lower()
+    if door_start in ('open', 'closed'):
+        set_doc['door_start'] = door_start
     anchors = {aid: (a.position[0], a.position[2]) for aid, a in layout.standing_anchors.items()}
 
     def _resolve_xz(raw) -> tuple[float, float]:
@@ -1194,8 +1316,11 @@ def prepare_generic(doc: dict, manifest_path: Path, output_path: Path, check_fil
         r = math.radians(float(spec['start'].get('yaw_deg', 0.0)))
         return [round(math.sin(r), 3), round(math.cos(r), 3)]
 
-    director = CinematicDirector(fps=fps)
+    use_dramatic = bool(doc.get('dramatic_director'))
+    want_performance = use_dramatic or 'performance_beats' in doc
+    director = DramaticDirector(fps=fps) if use_dramatic else CinematicDirector(fps=fps)
     director_beats: list[dict] = []
+    perf_rows: list[dict] = []
     cursor = 0
     for idx, b in enumerate(beats_in, 1):
         dur = max(1.0, float(b.get('duration', 3.5)))
@@ -1263,14 +1388,61 @@ def prepare_generic(doc: dict, manifest_path: Path, output_path: Path, check_fil
             'pov_required': bool(b.get('pov_required', False)),
             'prop_event': b.get('prop_event'),
             'prop_position': b.get('prop_position'),
-            'actor_positions': pos_start if b.get('action') in ('walk', 'move', 'enter') else pos_mid,
+            'actor_positions': pos_start if str(b.get('action') or '').strip().lower() in _LOCO_BEAT_ACTIONS else pos_mid,
             'actor_end_positions': pos_end,
             'actor_trajectories': actor_trajs,
             'actor_facings': facings,
             'actor_heights': actor_heights,
             'description': str(b.get('description') or ''),
         })
+        talkish = str(b.get('action') or 'talk').strip().lower() in ('talk', 'hold', 'listen', 'speak', 'dialogue', '')
+        perf_rows.append({
+            'beat_id': str(b.get('id') or b.get('beat_id') or f'b{idx}'),
+            'actor': speaker,
+            'partner': listener,
+            'from': cursor,
+            'to': cursor + b_frames,
+            'duration': b_frames / fps,
+            'action': str(b.get('action') or 'talk'),
+            'reaction': b.get('reaction') or '',
+            'emotion': str(b.get('emotion') or 'neutral'),
+            'intensity': float(b.get('intensity', b.get('importance', 0.6)) or 0.6),
+            'objective': str(b.get('objective') or b.get('description') or ''),
+            'conflict': str(b.get('conflict') or ''),
+            'target': str(b.get('target') or listener or ''),
+            'blocking': str(b.get('blocking') or ('face_to_face' if talkish else '')),
+            'environment_event': b.get('environment_event') or '',
+            'camera_intent': str(b.get('camera_intent') or ''),
+            'sound_event': str(b.get('sound_event') or ''),
+            'text': text,
+            'hold': bool(b.get('hold') or False),
+        })
         cursor += b_frames
+
+    planned = None
+    planner = None
+    if want_performance:
+        library = SemanticAnimationLibrary()
+        planner = PerformancePlanner(library)
+        source_rows = doc['performance_beats'] if isinstance(doc.get('performance_beats'), list) else perf_rows
+        planned = planner.plan({
+            'scene_type': scene_type,
+            'fps': fps,
+            'beats': _align_performance_source(source_rows, perf_rows),
+        })
+        if use_dramatic and len(planned) == len(director_beats):
+            for director_beat, performance_beat in zip(director_beats, planned):
+                director_beat['action'] = performance_beat.action
+                director_beat['emotion'] = performance_beat.emotion
+                director_beat['camera_intent'] = performance_beat.camera_intent
+                director_beat['environment_event'] = performance_beat.environment_event
+                director_beat['intensity'] = performance_beat.intensity
+                director_beat['narrative_importance'] = max(
+                    float(director_beat.get('narrative_importance') or 0.0),
+                    performance_beat.intensity,
+                )
+                if performance_beat.hold:
+                    director_beat['hold'] = True
 
     shots = director.plan_sequence(
         director_beats,
@@ -1328,6 +1500,9 @@ def prepare_generic(doc: dict, manifest_path: Path, output_path: Path, check_fil
         if rm is not None:
             r_copy['model'] = rm.as_posix()
         stage['rover'] = r_copy
+
+    if any(key in doc for key in ('art_profile', 'dramatic_director', 'performance_beats', 'events', 'sound_events')):
+        _apply_retro_layer(stage, doc, planned, planner, audio_dir, fps)
 
     problems = validate_stage3d(stage, check_files=check_files)
     if problems:

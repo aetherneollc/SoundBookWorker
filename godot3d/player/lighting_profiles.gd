@@ -363,6 +363,12 @@ static func configure_world_environment(cfg: Dictionary, backdrop_opts: Dictiona
 		env.fog_density = clampf(float(cfg.get("fog_density", 0.015)), 0.0, 0.25)
 		env.fog_sky_affect = clampf(float(cfg.get("fog_sky_affect", 0.35)), 0.0, 1.0)
 
+	if bool(cfg.get("adjustment_enabled", false)):
+		env.adjustment_enabled = true
+		env.adjustment_brightness = clampf(float(cfg.get("adjustment_brightness", 1.0)), 0.4, 2.0)
+		env.adjustment_contrast = clampf(float(cfg.get("adjustment_contrast", 1.0)), 0.5, 2.0)
+		env.adjustment_saturation = clampf(float(cfg.get("adjustment_saturation", 1.0)), 0.0, 2.0)
+
 	var world := WorldEnvironment.new()
 	world.name = "WorldEnvironment"
 	world.environment = env
@@ -382,6 +388,7 @@ static func apply_profile(
 	var rig := Node3D.new()
 	rig.name = "LightingRig"
 	parent.add_child(rig)
+	var tracked: Array = []
 
 	var world: WorldEnvironment = configure_world_environment(cfg, backdrop_opts)
 	rig.add_child(world)
@@ -405,6 +412,7 @@ static func apply_profile(
 	key.directional_shadow_mode = DirectionalLight3D.SHADOW_ORTHOGONAL
 	key.directional_shadow_max_distance = maxf(room_size.length() * 2.0, 26.0)
 	rig.add_child(key)
+	tracked.append({"light": key, "base": key.light_energy, "group": "key"})
 
 	# Clean backlight / rim directional light (shadowless for crisp actor silhouettes).
 	var rim_energy: float = float(cfg.get("rim_energy", 0.35))
@@ -418,6 +426,7 @@ static func apply_profile(
 		rim.sky_mode = DirectionalLight3D.SKY_MODE_LIGHT_ONLY
 		rim.shadow_enabled = false
 		rig.add_child(rim)
+		tracked.append({"light": rim, "base": rim.light_energy, "group": "rim"})
 
 	# Overhead interior lights adapted to room dimensions.
 	var lamp_layout: String = str(cfg.get("lamp_layout", "grid"))
@@ -450,6 +459,7 @@ static func apply_profile(
 			pool.light_color = lamp_color
 			pool.shadow_enabled = false
 			rig.add_child(pool)
+			tracked.append({"light": pool, "base": pool.light_energy, "group": "overhead"})
 	else:
 		var cols: int = 1 if room_size.x < 5.5 else 2
 		var rows: int = clampi(int(round(room_size.z / 3.4)), 2, 4)
@@ -467,6 +477,7 @@ static func apply_profile(
 				lamp.light_color = lamp_color
 				lamp.shadow_enabled = false
 				rig.add_child(lamp)
+				tracked.append({"light": lamp, "base": lamp.light_energy, "group": "overhead"})
 
 	# Profile-specific accent & dynamic lights.
 	var dynamic_lights: Array[Dictionary] = []
@@ -586,14 +597,134 @@ static func apply_profile(
 	event_alert.shadow_enabled = false
 	rig.add_child(event_alert)
 
+	var emergency := OmniLight3D.new()
+	emergency.name = "EventEmergencyWash"
+	emergency.position = Vector3(room_center.x, maxf(room_max.y - 0.28, 2.15), room_center.z)
+	emergency.omni_range = maxf(room_size.x, room_size.z) * 1.25
+	emergency.omni_attenuation = 1.05
+	emergency.light_color = Color("#ff5a18")
+	emergency.light_energy = 0.0
+	emergency.shadow_enabled = false
+	rig.add_child(emergency)
+
+	var lightning := OmniLight3D.new()
+	lightning.name = "EventLightningKick"
+	lightning.position = Vector3(room_center.x, 1.85, room_min.z + minf(1.4, room_size.z * 0.25))
+	lightning.omni_range = maxf(room_size.length(), 8.0)
+	lightning.omni_attenuation = 0.9
+	lightning.light_color = Color("#d7ecff")
+	lightning.light_energy = 0.0
+	lightning.shadow_enabled = false
+	rig.add_child(lightning)
+
+	var array_lock := OmniLight3D.new()
+	array_lock.name = "EventArrayLockSpill"
+	array_lock.position = Vector3(room_center.x, 1.65, room_min.z + minf(1.1, room_size.z * 0.2))
+	array_lock.omni_range = maxf(room_size.z * 0.85, 5.5)
+	array_lock.omni_attenuation = 1.15
+	array_lock.light_color = Color("#39ffc0")
+	array_lock.light_energy = 0.0
+	array_lock.shadow_enabled = false
+	rig.add_child(array_lock)
+
 	rig.set_meta("profile_name", str(cfg.get("profile_name", DEFAULT_PROFILE)))
 	rig.set_meta("world_env", world)
 	rig.set_meta("dynamic_lights", dynamic_lights)
+	rig.set_meta("tracked_lights", tracked)
 	rig.set_meta("char_face_fill", char_face_fill)
 	rig.set_meta("event_alert", event_alert)
+	rig.set_meta("event_emergency", emergency)
+	rig.set_meta("event_lightning", lightning)
+	rig.set_meta("event_array_lock", array_lock)
+	rig.set_meta("room_min", room_min)
+	rig.set_meta("room_max", room_max)
 	rig.set_meta("base_ambient_energy", float(cfg.get("ambient_energy", 0.55)))
 	rig.set_meta("base_exposure", float(cfg.get("exposure", 1.0)))
+	rig.set_meta("array_lock_held", false)
 	return rig
+
+
+## Extra practicals for a resolved RetroArtProfile. Neutral profiles no-op.
+static func apply_art_profile(rig: Node3D, profile: Dictionary) -> void:
+	if rig == null or not bool(profile.get("enabled", false)):
+		return
+	if bool(rig.get_meta("art_decorated", false)):
+		return
+	var preset := str(profile.get("preset", ""))
+	var room_min: Vector3 = rig.get_meta("room_min", Vector3(-7.0, 0.0, -5.0)) as Vector3
+	var room_max: Vector3 = rig.get_meta("room_max", Vector3(7.0, 3.4, 5.0)) as Vector3
+	var center: Vector3 = (room_min + room_max) * 0.5
+	match preset:
+		"ps2_urban":
+			_add_fill(rig, "RetroFillMagenta", Vector3(room_min.x + 1.1, 1.7, center.z), Color("#c45cff"), 0.42, 7.5)
+			_add_fill(rig, "RetroFillTeal", Vector3(room_max.x - 1.1, 1.35, center.z + 0.4), Color("#14b8b0"), 0.48, 7.2)
+		"retro_industrial_scifi":
+			_add_fill(rig, "RetroSodiumFill", Vector3(center.x, 2.05, room_max.z - 1.2), Color("#ffb060"), 0.36, 6.5)
+			_add_fill(rig, "RetroBeacon", Vector3(room_max.x - 0.8, room_max.y - 0.55, room_min.z + 1.3), Color("#ff5a1f"), 0.55, 5.5)
+			_add_fill(rig, "RetroFluorescent", Vector3(room_min.x + 1.4, 1.6, center.z), Color("#c5e8ff"), 0.34, 6.0)
+		"retro_horror":
+			var spot := SpotLight3D.new()
+			spot.name = "RetroHorrorCone"
+			spot.position = Vector3(center.x, room_max.y - 0.18, center.z)
+			spot.rotation_degrees = Vector3(-78.0, 18.0, 0.0)
+			spot.spot_range = maxf(room_max.y + 1.5, 4.5)
+			spot.spot_angle = 24.0
+			spot.spot_angle_attenuation = 0.45
+			spot.light_color = Color("#d5e6f5")
+			spot.light_energy = 2.6
+			spot.shadow_enabled = false
+			rig.add_child(spot)
+		"retro_military":
+			var top := SpotLight3D.new()
+			top.name = "RetroBunkerTop"
+			top.position = Vector3(center.x, room_max.y - 0.16, center.z)
+			top.rotation_degrees = Vector3(-90.0, 0.0, 0.0)
+			top.spot_range = maxf(room_max.y + 0.8, 4.0)
+			top.spot_angle = 42.0
+			top.light_color = Color("#e4e0d2")
+			top.light_energy = 1.35
+			top.shadow_enabled = false
+			rig.add_child(top)
+			_add_fill(rig, "RetroBunkerFill", Vector3(center.x, 1.15, room_max.z - 1.0), Color("#6d7464"), 0.28, 6.0)
+		_:
+			pass
+	rig.set_meta("art_decorated", true)
+	rig.set_meta("art_preset", preset)
+
+
+static func _add_fill(rig: Node3D, node_name: String, pos: Vector3, color: Color, energy: float, range_m: float) -> void:
+	var light := OmniLight3D.new()
+	light.name = node_name
+	light.position = pos
+	light.omni_range = range_m
+	light.omni_attenuation = 1.25
+	light.light_color = color
+	light.light_energy = energy
+	light.shadow_enabled = false
+	rig.add_child(light)
+
+
+## Deterministic storm bolt: one primary flash and a short secondary flicker per 2.4s.
+static func storm_flash_amount(time_sec: float, storm_intensity: float) -> float:
+	if storm_intensity < 0.02:
+		return 0.0
+	var cycle: float = fmod(maxf(time_sec, 0.0), 2.4)
+	var bolt := 0.0
+	if cycle < 0.055:
+		bolt = 1.0 - cycle / 0.055
+	elif cycle > 1.05 and cycle < 1.12:
+		bolt = 0.55 * (1.0 - (cycle - 1.05) / 0.07)
+	return bolt * clampf(storm_intensity, 0.0, 1.0)
+
+
+## Overhead blackout stutter. Returns 1.0 when flicker is off.
+static func power_stutter_mul(time_sec: float, flicker: float) -> float:
+	var amount: float = clampf(flicker, 0.0, 1.0)
+	if amount < 0.01:
+		return 1.0
+	var pattern: Array[float] = [0.06, 0.7, 0.0, 0.42, 0.88, 0.15, 1.0]
+	var idx: int = int(floor(maxf(time_sec, 0.0) * 14.0)) % pattern.size()
+	return lerpf(1.0, pattern[idx], amount)
 
 
 ## Automatically illuminates primary subject's face during close-ups & dark scenes
@@ -631,22 +762,90 @@ static func update_subject_fill(rig: Node3D, cam_pos: Vector3, subject_head: Vec
 		fill.light_energy = 0.0
 
 
-## Modulates scene lighting in response to SceneEventController events (BUG-012).
-static func apply_event_feedback(rig: Node3D, alert_pulse: float, storm_intensity: float, _signal_lost: bool, _time_sec: float) -> void:
+## Modulates scene lighting in response to SceneEventController events.
+## `event_state` carries power_flicker, array_restore, and storm timing.
+## Calling it with an empty state preserves the original alert/storm exposure path.
+static func apply_event_feedback(rig: Node3D, alert_pulse: float, storm_intensity: float, signal_lost: bool, time_sec: float, event_state: Dictionary = {}) -> void:
 	if rig == null:
 		return
 	if rig.has_meta("event_alert"):
 		var alert_l: OmniLight3D = rig.get_meta("event_alert") as OmniLight3D
 		if alert_l != null and is_instance_valid(alert_l):
 			alert_l.light_energy = 1.65 * clampf(alert_pulse, 0.0, 1.0)
+
+	var flicker: float = clampf(float(event_state.get("power_flicker", 0.0)), 0.0, 1.0)
+	var stutter: float = power_stutter_mul(time_sec, flicker)
+	var flash: float = storm_flash_amount(time_sec, storm_intensity)
+	var storm_c: float = clampf(storm_intensity, 0.0, 1.0)
+	if rig.has_meta("tracked_lights"):
+		var tracked: Variant = rig.get_meta("tracked_lights")
+		if tracked is Array:
+			for item: Variant in tracked as Array:
+				if not item is Dictionary:
+					continue
+				var entry: Dictionary = item as Dictionary
+				var light: Light3D = entry.get("light", null) as Light3D
+				if light == null or not is_instance_valid(light):
+					continue
+				var base_e: float = float(entry.get("base", light.light_energy))
+				var group: String = str(entry.get("group", ""))
+				if group == "overhead":
+					light.light_energy = base_e * stutter
+				elif group == "key":
+					var key_mul: float = lerpf(1.0, 0.58 + 0.2 * clampf(stutter, 0.0, 1.0), flicker)
+					light.light_energy = base_e * key_mul + flash * 3.2
+				elif group == "rim":
+					light.light_energy = base_e * lerpf(1.0, 0.75, flicker) + flash * 0.8
+
+	if rig.has_meta("event_emergency"):
+		var emerg: OmniLight3D = rig.get_meta("event_emergency") as OmniLight3D
+		if emerg != null and is_instance_valid(emerg):
+			if flicker > 0.01:
+				emerg.light_energy = lerpf(0.2, 1.85, 1.0 - clampf(stutter, 0.0, 1.0)) * flicker
+				emerg.light_color = Color("#ff5a18") if stutter < 0.35 else Color("#ff9a32")
+			else:
+				emerg.light_energy = 0.0
+
+	if rig.has_meta("event_lightning"):
+		var bolt: OmniLight3D = rig.get_meta("event_lightning") as OmniLight3D
+		if bolt != null and is_instance_valid(bolt):
+			bolt.light_energy = flash * 8.0
+
+	var restore_amt: float = clampf(float(event_state.get("array_restore", 0.0)), 0.0, 1.5)
+	var restore_u: float = clampf(float(event_state.get("array_restore_u", 0.0)), 0.0, 1.0)
+	var fault: bool = bool(event_state.get("array_fault", signal_lost))
+	if restore_amt > 0.1 and restore_u > 0.75:
+		rig.set_meta("array_lock_held", true)
+	if fault and restore_amt < 0.05:
+		rig.set_meta("array_lock_held", false)
+	var held_lock: bool = bool(rig.get_meta("array_lock_held", false))
+	if rig.has_meta("event_array_lock"):
+		var lock_l: OmniLight3D = rig.get_meta("event_array_lock") as OmniLight3D
+		if lock_l != null and is_instance_valid(lock_l):
+			if restore_amt > 0.05:
+				lock_l.light_color = Color("#ff2a18").lerp(Color("#39ffc0"), restore_u)
+				lock_l.light_energy = 1.35 * restore_u * minf(restore_amt, 1.0)
+			elif held_lock and not fault:
+				lock_l.light_color = Color("#39ffc0")
+				lock_l.light_energy = 0.55
+			elif fault or signal_lost:
+				lock_l.light_color = Color("#ff3a22")
+				lock_l.light_energy = 0.34
+			else:
+				lock_l.light_energy = 0.0
+
 	if rig.has_meta("world_env"):
 		var world: WorldEnvironment = rig.get_meta("world_env") as WorldEnvironment
 		if world != null and world.environment != null:
 			var base_exp: float = float(rig.get_meta("base_exposure", 1.0))
 			var base_amb: float = float(rig.get_meta("base_ambient_energy", 0.55))
-			var storm_c: float = clampf(storm_intensity, 0.0, 1.0)
-			world.environment.tonemap_exposure = base_exp * (1.0 - 0.10 * storm_c)
-			world.environment.ambient_light_energy = base_amb * (1.0 - 0.16 * storm_c)
+			var amb_mul := 1.0
+			var exp_mul := 1.0
+			if flicker > 0.01:
+				amb_mul = lerpf(1.0, 0.28 + 0.45 * clampf(stutter, 0.0, 1.0), flicker)
+				exp_mul = lerpf(1.0, 0.72, flicker * (1.0 - clampf(stutter, 0.0, 1.0)))
+			world.environment.tonemap_exposure = base_exp * (1.0 - 0.10 * storm_c) * (1.0 + 0.38 * flash) * exp_mul
+			world.environment.ambient_light_energy = base_amb * (1.0 - 0.16 * storm_c) * amb_mul
 
 
 static func update_time(rig: Node3D, time_sec: float) -> void:

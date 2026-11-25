@@ -29,7 +29,7 @@ const NOD_DEGREES := 8.0
 ## spread over the spine chain, then neck and head. Only used for retargeted
 ## non-matching rigs; ``look.posture`` overrides.
 const POSTURE_DEFAULT := {"spine_deg": -4.0, "neck_deg": -3.0, "head_deg": -7.0, "arm_splay_max_deg": 9.0}
-const FOOT_GROUND_LIMIT := 0.22
+const FOOT_GROUND_LIMIT := 0.85
 const LOOK_YAW_LIMIT := 28.0
 const LOOK_PITCH_LIMIT := 14.0
 const LOOK_NECK_SHARE := 0.35
@@ -163,6 +163,28 @@ const GAIT_PROFILES := {
 		"breath_amp": 0.95,
 	},
 }
+
+## In-place UAL clips used under dramatic actions. Locomotion clips are refused
+## so a performed beat cannot leave the feet skating in place.
+const DRAMATIC_DEFAULT_CLIP := {
+	"slam_table": "hit_chest",
+	"accuse_point": "point",
+	"confront_step": "point",
+	"arms_crossed": "idle",
+	"hands_on_hips": "idle",
+	"shrug_open": "talk",
+	"refuse_wave": "talk",
+	"interrupt_raise": "point",
+	"startle_recoil": "idle",
+	"snap_look_back": "idle",
+	"install_module": "pickup",
+	"detach_module": "pickup",
+	"operate_console": "idle",
+	"lean_table": "idle",
+	"turn_walk_away": "idle",
+}
+
+const DRAMATIC_PHASES: Array[String] = ["prepare", "execute", "follow_through", "recover"]
 
 const GRIP_FINGERS := ["thumb", "index", "middle", "ring", "pinky"]
 
@@ -302,6 +324,17 @@ var _is_moving := false
 var _last_speed_mps := 0.0
 var loco_state := "idle"          # idle | walk | run | decelerate | stop
 var idle_style := "professional_idle"  # relaxed_idle | professional_idle | alert_idle | combat_idle | conversation_idle
+var _dramatic_actions: Array[Dictionary] = []
+var _dramatic_active := false
+var _dramatic_id := ""
+var _dramatic_phase := ""
+var _dramatic_clip := ""
+var _dramatic_from := 0
+var _dramatic_intensity := 1.0
+var _dramatic_pose: Dictionary = {}
+var _retro_applied := false
+var _retro_roughness_min := 1.0
+var _retro_specular_max := 0.0
 var _decel_timer := 0.0
 var _stop_settle_timer := 0.0
 var _peak_move_speed_mps := 0.0
@@ -460,6 +493,7 @@ func setup(config: Dictionary) -> bool:
 	_calibrate_all_strides()
 	_init_facial_controller()
 	_apply_rest_pose()
+	set_dramatic_actions(config.get("dramatic_actions", []))
 	return true
 
 
@@ -1605,9 +1639,10 @@ func update_locomotion_state(
 			# When decelerating near the end of a run, step down through walk matching real speed.
 			if _peak_move_speed_mps >= 1.55 and move_speed_mps < 1.32:
 				loco_state = "decelerate"
-				eff_clip = "walk"
+				eff_clip = clip
 				eff_key = "decel:%s" % clip_key
-				eff_speed = clampf(move_speed_mps / maxf(natural_walk_speed, 0.45), 0.35, 1.45)
+				var stride: float = stride_speed_for(clip)
+				eff_speed = clampf(move_speed_mps / maxf(stride, 0.45), 0.35, 1.45)
 				eff_blend = 0.16
 			else:
 				loco_state = "run"
@@ -1725,6 +1760,15 @@ func apply_overlays(
 	reach_side: String = "right"
 ) -> void:
 	if _skeleton == null:
+		return
+
+	# Dramatic beats own the upper body once the actor has planted. A locomotion
+	# clip keeps its own stride; locking the pose on top of a run slides the feet.
+	if _dramatic_active and not _is_moving:
+		_apply_dramatic_pose()
+		_apply_hand_fingers("r", holding)
+		_apply_hand_fingers("l", holding_left)
+		_ground_feet()
 		return
 
 	# 1. Subtle breathing micro-motion + gait posture modulation + non-combat idle relaxation.
@@ -2010,8 +2054,9 @@ func _ground_feet() -> void:
 	if lowest == INF:
 		return
 	var wanted: float = clampf(-lowest * _model_scale, -FOOT_GROUND_LIMIT, FOOT_GROUND_LIMIT)
-	var smooth: float = 0.94 if loco_state in ["run", "decelerate", "stop"] else maxf(ground_smoothing, 0.80)
-	_ground_offset = lerpf(_ground_offset, wanted, smooth)
+	# Snap every frame. A smoothed correction leaves the stance foot a few
+	# centimetres up for one frame when a locomotion clip changes.
+	_ground_offset = wanted
 	_model_root.position.y = _model_base_y + _ground_offset
 
 
@@ -2196,6 +2241,623 @@ func get_qc_snapshot() -> Dictionary:
 	}
 
 
+func set_dramatic_actions(value: Variant) -> void:
+	_dramatic_actions.clear()
+	_dramatic_active = false
+	_dramatic_id = ""
+	_dramatic_phase = ""
+	_dramatic_clip = ""
+	_dramatic_pose = {}
+	if not value is Array:
+		return
+	for item: Variant in value as Array:
+		if not item is Dictionary:
+			continue
+		var source: Dictionary = item as Dictionary
+		var action_id := str(source.get("action_id", source.get("id", ""))).strip_edges().to_lower()
+		if action_id == "":
+			continue
+		var f0: int = int(source.get("from", 0))
+		var f1: int = int(source.get("to", f0 + 24))
+		if f1 < f0:
+			var swap: int = f0
+			f0 = f1
+			f1 = swap
+		var phases: Dictionary = {}
+		var phase_value: Variant = source.get("phases", {})
+		if phase_value is Dictionary:
+			for key_v: Variant in (phase_value as Dictionary).keys():
+				var phase_name := str(key_v)
+				if phase_name == "follow":
+					phase_name = "follow_through"
+				var one: Variant = (phase_value as Dictionary)[key_v]
+				if one is Dictionary:
+					phases[phase_name] = (one as Dictionary).duplicate()
+		_dramatic_actions.append({
+			"from": f0,
+			"to": f1,
+			"action_id": action_id,
+			"base_clip": str(source.get("base_clip", "")).strip_edges(),
+			"intensity": clampf(float(source.get("intensity", 1.0)), 0.0, 1.5),
+			"target": str(source.get("target", "")),
+			"phases": phases,
+		})
+
+
+func update_dramatic_action(frame_index: int, fps: int) -> void:
+	_dramatic_active = false
+	_dramatic_phase = ""
+	_dramatic_clip = ""
+	_dramatic_pose = {}
+	var chosen: Dictionary = {}
+	var chosen_from := -1
+	for action: Dictionary in _dramatic_actions:
+		var f0: int = int(action["from"])
+		var f1: int = int(action["to"])
+		if frame_index < f0 or frame_index > f1:
+			continue
+		if f0 >= chosen_from:
+			chosen = action
+			chosen_from = f0
+	if chosen.is_empty():
+		return
+	_dramatic_active = true
+	_dramatic_id = str(chosen["action_id"])
+	_dramatic_from = int(chosen["from"])
+	_dramatic_intensity = float(chosen["intensity"])
+	_dramatic_clip = _resolve_dramatic_clip(chosen)
+	var portions := _dramatic_portions(chosen)
+	var span: int = maxi(int(chosen["to"]) - int(chosen["from"]), 1)
+	var u: float = clampf(float(frame_index - int(chosen["from"])) / float(span), 0.0, 1.0)
+	var acc := 0.0
+	var phase_index := 3
+	var local_u := 1.0
+	for i in 4:
+		var nxt: float = acc + portions[i]
+		if u <= nxt or i == 3:
+			phase_index = i
+			local_u = clampf((u - acc) / maxf(portions[i], 0.0001), 0.0, 1.0)
+			break
+		acc = nxt
+	_dramatic_phase = DRAMATIC_PHASES[phase_index]
+	var eased: float = local_u * local_u * (3.0 - 2.0 * local_u)
+	var from_pose: Dictionary = _dramatic_phase_pose(chosen, phase_index - 1)
+	var to_pose: Dictionary = _dramatic_phase_pose(chosen, phase_index)
+	_dramatic_pose = _blend_dramatic_pose(from_pose, to_pose, eased)
+	_dramatic_pose = _reclamp_dramatic_pose(_dramatic_pose)
+	if fps < 1:
+		fps = 24
+
+
+func is_dramatic_action_active() -> bool:
+	return _dramatic_active
+
+
+func dramatic_playback_clip() -> String:
+	return _dramatic_clip if _dramatic_active else ""
+
+
+func dramatic_action_id() -> String:
+	return _dramatic_id
+
+
+func dramatic_action_from() -> int:
+	return _dramatic_from
+
+
+func get_dramatic_state() -> Dictionary:
+	return {
+		"active": _dramatic_active,
+		"action_id": _dramatic_id,
+		"phase": _dramatic_phase,
+		"base_clip": _dramatic_clip,
+		"intensity": _dramatic_intensity,
+		"from": _dramatic_from,
+	}
+
+
+func apply_retro_material_finish(profile: Dictionary) -> void:
+	_retro_applied = false
+	_retro_roughness_min = 1.0
+	_retro_specular_max = 0.0
+	if not bool(profile.get("enabled", false)):
+		return
+	var cloth_lo: float = float(profile.get("cloth_roughness_min", 0.78))
+	var cloth_hi: float = float(profile.get("cloth_roughness_max", 0.92))
+	var skin_r: float = float(profile.get("skin_roughness", 0.91))
+	var skin_s: float = float(profile.get("skin_specular", 0.0))
+	var cloth_s: float = float(profile.get("cloth_specular", 0.05))
+	var rim_cloth: float = float(profile.get("rim_cloth", 0.26))
+	var rim_skin: float = float(profile.get("rim_skin", 0.08))
+	for mi: MeshInstance3D in _meshes:
+		if mi.mesh == null:
+			continue
+		var mesh_name := str(mi.name).to_lower()
+		for s in mi.mesh.get_surface_count():
+			var src: Material = mi.get_active_material(s)
+			if not src is StandardMaterial3D:
+				continue
+			var mat := (src as StandardMaterial3D).duplicate() as StandardMaterial3D
+			var label := ("%s %s" % [mesh_name, str(mat.resource_name)]).to_lower()
+			var is_eye := label.contains("eye") and not label.contains("brow") and not label.contains("lash")
+			var is_hair := label.contains("hair") or label.contains("brow") or label.contains("beard") or label.contains("lash")
+			var is_skin := label.contains("skin") or label.contains("face") or label.contains("head") or label.contains("body") or label.contains("hand")
+			mat.metallic = 0.0
+			mat.clearcoat_enabled = false
+			if is_eye:
+				mat.roughness = clampf(mat.roughness, 0.18, 0.42)
+				mat.metallic_specular = minf(mat.metallic_specular, 0.32)
+				mat.rim_enabled = false
+			elif is_hair:
+				mat.roughness = clampf(maxf(mat.roughness, 0.8), 0.8, 0.94)
+				mat.metallic_specular = 0.06
+				mat.rim_enabled = true
+				mat.rim = 0.12
+				mat.rim_tint = 0.3
+				_retro_roughness_min = minf(_retro_roughness_min, mat.roughness)
+				_retro_specular_max = maxf(_retro_specular_max, mat.metallic_specular)
+			elif is_skin:
+				mat.roughness_texture = null
+				mat.roughness = skin_r
+				mat.metallic_specular = skin_s
+				mat.rim_enabled = true
+				mat.rim = rim_skin
+				mat.rim_tint = 0.25
+				_tint_retro_albedo(mat, profile, true)
+				_retro_roughness_min = minf(_retro_roughness_min, mat.roughness)
+				_retro_specular_max = maxf(_retro_specular_max, mat.metallic_specular)
+			else:
+				mat.roughness_texture = null
+				mat.roughness = clampf(maxf(mat.roughness, cloth_lo), cloth_lo, cloth_hi)
+				mat.metallic_specular = cloth_s
+				mat.rim_enabled = true
+				mat.rim = rim_cloth
+				mat.rim_tint = 0.42
+				_tint_retro_albedo(mat, profile, false)
+				_retro_roughness_min = minf(_retro_roughness_min, mat.roughness)
+				_retro_specular_max = maxf(_retro_specular_max, mat.metallic_specular)
+			mi.set_surface_override_material(s, mat)
+			_retro_applied = true
+
+
+func _tint_retro_albedo(mat: StandardMaterial3D, profile: Dictionary, skin: bool) -> void:
+	var spec: Variant = profile.get("character_material", {})
+	if not spec is Dictionary:
+		return
+	var key := "skin_tint" if skin else "jacket"
+	if not (spec as Dictionary).has(key):
+		return
+	var tint := Color(str((spec as Dictionary)[key]))
+	mat.albedo_color = mat.albedo_color.lerp(tint, 0.16 if skin else 0.2)
+
+
+func get_retro_finish_report() -> Dictionary:
+	return {
+		"applied": _retro_applied,
+		"roughness_min": _retro_roughness_min,
+		"specular_max": _retro_specular_max,
+	}
+
+
+func _resolve_dramatic_clip(action: Dictionary) -> String:
+	var requested := str(action.get("base_clip", "")).strip_edges()
+	if requested == "":
+		requested = str(DRAMATIC_DEFAULT_CLIP.get(str(action.get("action_id", "")), "idle"))
+	var key := requested.to_lower().replace(" ", "_")
+	if LOCOMOTION_CLIPS.has(key) or key in ["jump_land", "jump_start", "jump"]:
+		return ""
+	if _clip_names.has(key):
+		return key
+	for clip_key_v: Variant in CLIP_CANDIDATES.keys():
+		var clip_key := str(clip_key_v)
+		if LOCOMOTION_CLIPS.has(clip_key) or not _clip_names.has(clip_key):
+			continue
+		if clip_key == key:
+			return clip_key
+		for cand_v: Variant in (CLIP_CANDIDATES[clip_key] as Array):
+			if str(cand_v).to_lower() == key:
+				return clip_key
+	return ""
+
+
+func _dramatic_portions(action: Dictionary) -> Array[float]:
+	var defaults: Array[float] = [0.22, 0.30, 0.24, 0.24]
+	var phases: Dictionary = action.get("phases", {}) as Dictionary
+	var raw: Array[float] = []
+	var sum := 0.0
+	for i in 4:
+		var portion := -1.0
+		var custom: Variant = phases.get(DRAMATIC_PHASES[i], null)
+		if custom is Dictionary:
+			var phase_doc: Dictionary = custom as Dictionary
+			if phase_doc.has("portion"):
+				portion = float(phase_doc["portion"])
+			elif phase_doc.has("t0") and phase_doc.has("t1"):
+				portion = float(phase_doc["t1"]) - float(phase_doc["t0"])
+		if portion <= 0.0:
+			portion = defaults[i]
+		raw.append(portion)
+		sum += portion
+	var out: Array[float] = []
+	for i in 4:
+		out.append(raw[i] / maxf(sum, 0.001))
+	return out
+
+
+func _dramatic_phase_pose(action: Dictionary, phase_index: int) -> Dictionary:
+	if phase_index < 0:
+		return _dramatic_neutral_pose()
+	var phase_name: String = DRAMATIC_PHASES[clampi(phase_index, 0, 3)]
+	var pose: Dictionary = _dramatic_preset(str(action.get("action_id", "")), phase_name)
+	var phases: Dictionary = action.get("phases", {}) as Dictionary
+	var custom: Variant = phases.get(phase_name, null)
+	var nested := false
+	if custom is Dictionary:
+		var phase_doc: Dictionary = custom as Dictionary
+		nested = phase_doc.has("torso") or phase_doc.has("arm") or phase_doc.has("head")
+		if nested:
+			var driven: Dictionary = _apply_dramatic_overrides(pose.duplicate(true), phase_doc)
+			var mixed: Dictionary = _blend_dramatic_pose(pose, driven, 0.5)
+			var phase_weight := clampf(float(phase_doc.get("weight", 1.0)), 0.0, 1.0)
+			return _reclamp_dramatic_pose(_blend_dramatic_pose(_dramatic_neutral_pose(), mixed, phase_weight))
+		pose = _apply_dramatic_overrides(pose, phase_doc)
+	var scaled: Dictionary = _blend_dramatic_pose(_dramatic_neutral_pose(), pose, clampf(float(action.get("intensity", 1.0)), 0.0, 1.0))
+	return _reclamp_dramatic_pose(scaled)
+
+
+func _dramatic_neutral_pose() -> Dictionary:
+	return _make_dramatic_pose(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -0.22, 0.98, 0.10, 0.22, 0.98, 0.10, 0.12, 0.12)
+
+
+func _dramatic_preset(action_id: String, phase: String) -> Dictionary:
+	match action_id:
+		"slam_table":
+			match phase:
+				"prepare":
+					return _make_dramatic_pose(-10.0, -8.0, 0.0, -6.0, -6.0, 3.0, -0.30, 1.56, 0.30, 0.20, 1.00, 0.12, 0.94, 0.28)
+				"execute":
+					return _make_dramatic_pose(18.0, -4.0, 2.0, 8.0, -2.0, -4.0, -0.16, 0.90, 0.55, 0.16, 0.96, 0.30, 0.97, 0.36)
+				"follow_through":
+					return _make_dramatic_pose(8.0, 0.0, 1.0, 3.0, 0.0, -2.0, -0.20, 1.04, 0.40, 0.18, 0.98, 0.22, 0.82, 0.3)
+				_:
+					return _make_dramatic_pose(1.0, 0.0, 0.0, 0.0, 0.0, 0.0, -0.24, 1.02, 0.16, 0.22, 1.00, 0.12, 0.42, 0.18)
+		"accuse_point":
+			match phase:
+				"prepare":
+					return _make_dramatic_pose(4.0, -12.0, 0.0, 0.0, -8.0, 2.0, -0.34, 1.28, 0.18, 0.18, 1.02, 0.08, 0.78, 0.2)
+				"execute":
+					return _make_dramatic_pose(14.0, -8.0, -2.0, 2.0, -4.0, 3.0, -0.08, 1.46, 0.70, 0.22, 1.05, 0.06, 0.96, 0.22)
+				"follow_through":
+					return _make_dramatic_pose(12.0, -6.0, -1.0, 2.0, -3.0, 2.0, -0.10, 1.44, 0.64, 0.20, 1.04, 0.08, 0.9, 0.2)
+				_:
+					return _make_dramatic_pose(2.0, -2.0, 0.0, 0.0, 0.0, 0.0, -0.24, 1.08, 0.20, 0.22, 1.00, 0.10, 0.4, 0.16)
+		"confront_step":
+			match phase:
+				"prepare":
+					return _make_dramatic_pose(6.0, -8.0, 1.0, 2.0, -4.0, 3.0, -0.32, 1.22, 0.22, 0.26, 1.08, 0.02, 0.72, 0.28)
+				"execute":
+					return _make_dramatic_pose(18.0, -6.0, 2.0, 4.0, -2.0, 5.0, -0.06, 1.42, 0.68, 0.30, 1.12, -0.02, 0.96, 0.34)
+				"follow_through":
+					return _make_dramatic_pose(14.0, -4.0, 1.0, 3.0, -2.0, 3.0, -0.10, 1.38, 0.58, 0.26, 1.08, 0.02, 0.88, 0.28)
+				_:
+					return _make_dramatic_pose(3.0, 0.0, 0.0, 0.0, 0.0, 0.0, -0.24, 1.06, 0.16, 0.22, 1.02, 0.10, 0.36, 0.18)
+		"arms_crossed":
+			match phase:
+				"prepare":
+					return _make_dramatic_pose(2.0, 0.0, 0.0, 0.0, 0.0, 0.0, -0.08, 1.16, 0.22, 0.08, 1.14, 0.20, 0.7, 0.7)
+				"execute":
+					return _make_dramatic_pose(3.0, 2.0, 0.0, -1.0, 0.0, 0.0, 0.14, 1.30, 0.24, -0.14, 1.24, 0.22, 0.92, 0.92)
+				"follow_through":
+					return _make_dramatic_pose(2.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.12, 1.28, 0.22, -0.12, 1.22, 0.20, 0.88, 0.88)
+				_:
+					return _make_dramatic_pose(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -0.22, 1.02, 0.12, 0.22, 1.02, 0.12, 0.35, 0.35)
+		"hands_on_hips":
+			match phase:
+				"prepare":
+					return _make_dramatic_pose(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -0.28, 1.12, 0.16, 0.28, 1.12, 0.16, 0.7, 0.7)
+				"execute":
+					return _make_dramatic_pose(-3.0, 0.0, 0.0, -2.0, 0.0, 2.0, -0.30, 1.00, 0.06, 0.30, 1.00, 0.06, 0.9, 0.9)
+				"follow_through":
+					return _make_dramatic_pose(-2.0, 0.0, 0.0, -1.0, 0.0, 1.0, -0.28, 1.02, 0.08, 0.28, 1.02, 0.08, 0.86, 0.86)
+				_:
+					return _make_dramatic_pose(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -0.22, 1.02, 0.12, 0.22, 1.02, 0.12, 0.3, 0.3)
+		"shrug_open":
+			match phase:
+				"prepare":
+					return _make_dramatic_pose(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -0.28, 1.08, 0.14, 0.28, 1.08, 0.14, 0.55, 0.55)
+				"execute":
+					return _make_dramatic_pose(-8.0, 0.0, 0.0, -4.0, 0.0, 0.0, -0.50, 1.46, 0.16, 0.50, 1.46, 0.16, 0.9, 0.9)
+				"follow_through":
+					return _make_dramatic_pose(-5.0, 0.0, 0.0, -2.0, 0.0, 0.0, -0.42, 1.36, 0.18, 0.42, 1.36, 0.18, 0.78, 0.78)
+				_:
+					return _make_dramatic_pose(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -0.24, 1.04, 0.12, 0.24, 1.04, 0.12, 0.28, 0.28)
+		"refuse_wave":
+			match phase:
+				"prepare":
+					return _make_dramatic_pose(2.0, -6.0, 0.0, 0.0, -4.0, 0.0, -0.16, 1.38, 0.32, 0.22, 1.02, 0.10, 0.86, 0.16)
+				"execute":
+					return _make_dramatic_pose(4.0, 10.0, -2.0, 1.0, 6.0, -2.0, 0.36, 1.44, 0.40, 0.18, 1.02, 0.08, 0.95, 0.16)
+				"follow_through":
+					return _make_dramatic_pose(2.0, 6.0, 0.0, 0.0, 3.0, 0.0, 0.28, 1.28, 0.30, 0.20, 1.02, 0.10, 0.8, 0.16)
+				_:
+					return _make_dramatic_pose(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -0.24, 1.06, 0.16, 0.22, 1.02, 0.10, 0.34, 0.14)
+		"interrupt_raise":
+			match phase:
+				"prepare":
+					return _make_dramatic_pose(1.0, -4.0, 0.0, 0.0, 0.0, 0.0, -0.24, 1.22, 0.22, 0.20, 1.02, 0.10, 0.7, 0.14)
+				"execute":
+					return _make_dramatic_pose(2.0, -2.0, 0.0, -2.0, 0.0, 0.0, -0.16, 1.64, 0.36, 0.22, 1.04, 0.08, 0.94, 0.16)
+				"follow_through":
+					return _make_dramatic_pose(1.0, 0.0, 0.0, -1.0, 0.0, 0.0, -0.18, 1.58, 0.32, 0.22, 1.02, 0.10, 0.86, 0.14)
+				_:
+					return _make_dramatic_pose(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -0.24, 1.08, 0.16, 0.22, 1.02, 0.10, 0.32, 0.14)
+		"startle_recoil":
+			match phase:
+				"prepare":
+					return _make_dramatic_pose(-2.0, 0.0, 0.0, -1.0, 0.0, 0.0, -0.24, 1.16, 0.16, 0.24, 1.16, 0.16, 0.55, 0.55)
+				"execute":
+					return _make_dramatic_pose(-14.0, 0.0, 0.0, -8.0, 0.0, 0.0, -0.32, 1.50, 0.08, 0.32, 1.50, 0.08, 0.9, 0.9)
+				"follow_through":
+					return _make_dramatic_pose(-8.0, 0.0, 0.0, -4.0, 0.0, 0.0, -0.28, 1.36, 0.12, 0.28, 1.36, 0.12, 0.72, 0.72)
+				_:
+					return _make_dramatic_pose(-1.0, 0.0, 0.0, 0.0, 0.0, 0.0, -0.22, 1.04, 0.12, 0.22, 1.04, 0.12, 0.28, 0.28)
+		"abrupt_halt":
+			match phase:
+				"prepare":
+					return _make_dramatic_pose(-6.0, 0.0, 0.0, -2.0, 0.0, 2.0, -0.28, 1.22, 0.16, 0.28, 1.20, 0.16, 0.55, 0.55)
+				"execute":
+					return _make_dramatic_pose(12.0, 0.0, 1.0, 6.0, 0.0, -3.0, -0.22, 0.96, 0.34, 0.22, 0.96, 0.32, 0.78, 0.72)
+				"follow_through":
+					return _make_dramatic_pose(6.0, 0.0, 0.0, 2.0, 0.0, -1.0, -0.22, 1.02, 0.22, 0.22, 1.02, 0.2, 0.48, 0.46)
+				_:
+					return _make_dramatic_pose(1.0, 0.0, 0.0, 0.0, 0.0, 0.0, -0.22, 1.02, 0.12, 0.22, 1.02, 0.12, 0.24, 0.22)
+		"snap_look_back":
+			match phase:
+				"prepare":
+					return _make_dramatic_pose(1.0, 8.0, 0.0, 0.0, 12.0, 1.0, -0.24, 1.06, 0.12, 0.22, 1.04, 0.10, 0.3, 0.24)
+				"execute":
+					return _make_dramatic_pose(2.0, 26.0, 2.0, 1.0, 30.0, 2.0, -0.18, 1.08, 0.08, 0.28, 1.10, 0.06, 0.4, 0.28)
+				"follow_through":
+					return _make_dramatic_pose(1.0, 22.0, 1.0, 0.0, 24.0, 1.0, -0.20, 1.06, 0.10, 0.26, 1.06, 0.08, 0.34, 0.24)
+				_:
+					return _make_dramatic_pose(0.0, 6.0, 0.0, 0.0, 4.0, 0.0, -0.22, 1.02, 0.12, 0.22, 1.02, 0.10, 0.22, 0.18)
+		"install_module":
+			match phase:
+				"prepare":
+					return _make_dramatic_pose(8.0, -4.0, 0.0, 6.0, -4.0, 1.0, -0.12, 1.18, 0.36, 0.12, 1.16, 0.34, 0.82, 0.78)
+				"execute":
+					return _make_dramatic_pose(15.0, -2.0, 0.0, 8.0, -2.0, 1.0, -0.06, 0.96, 0.50, 0.12, 0.94, 0.48, 0.96, 0.94)
+				"follow_through":
+					return _make_dramatic_pose(12.0, 0.0, 0.0, 6.0, 0.0, 0.0, -0.05, 0.94, 0.46, 0.10, 0.94, 0.44, 0.9, 0.88)
+				_:
+					return _make_dramatic_pose(3.0, 0.0, 0.0, 1.0, 0.0, 0.0, -0.18, 1.08, 0.22, 0.16, 1.06, 0.20, 0.4, 0.36)
+		"detach_module":
+			match phase:
+				"prepare":
+					return _make_dramatic_pose(10.0, -2.0, 0.0, 6.0, -2.0, 0.0, -0.08, 1.08, 0.42, 0.10, 1.06, 0.40, 0.86, 0.84)
+				"execute":
+					return _make_dramatic_pose(14.0, 0.0, 0.0, 7.0, 0.0, 0.0, -0.06, 0.98, 0.48, 0.10, 0.96, 0.46, 0.95, 0.92)
+				"follow_through":
+					return _make_dramatic_pose(6.0, 4.0, 0.0, 2.0, 2.0, -2.0, -0.16, 1.22, 0.28, 0.14, 1.18, 0.26, 0.84, 0.8)
+				_:
+					return _make_dramatic_pose(1.0, 0.0, 0.0, 0.0, 0.0, 0.0, -0.22, 1.06, 0.16, 0.20, 1.04, 0.14, 0.32, 0.28)
+		"operate_console":
+			match phase:
+				"prepare":
+					return _make_dramatic_pose(6.0, -3.0, 0.0, 5.0, -4.0, 0.0, -0.16, 1.12, 0.34, 0.14, 1.10, 0.32, 0.72, 0.68)
+				"execute":
+					return _make_dramatic_pose(13.0, -2.0, 0.0, 8.0, -3.0, 1.0, -0.12, 1.00, 0.48, 0.14, 0.98, 0.46, 0.9, 0.86)
+				"follow_through":
+					return _make_dramatic_pose(11.0, 0.0, 0.0, 6.0, -1.0, 0.0, -0.10, 1.02, 0.44, 0.12, 1.00, 0.42, 0.84, 0.8)
+				_:
+					return _make_dramatic_pose(2.0, 0.0, 0.0, 1.0, 0.0, 0.0, -0.22, 1.04, 0.16, 0.22, 1.04, 0.14, 0.3, 0.28)
+		"lean_table":
+			match phase:
+				"prepare":
+					return _make_dramatic_pose(6.0, 0.0, 0.0, 4.0, 0.0, 1.0, -0.22, 1.10, 0.28, 0.18, 1.08, 0.26, 0.6, 0.55)
+				"execute":
+					return _make_dramatic_pose(16.0, 1.0, 0.0, 8.0, 0.0, 2.0, -0.20, 0.96, 0.44, 0.18, 0.96, 0.40, 0.9, 0.88)
+				"follow_through":
+					return _make_dramatic_pose(14.0, 0.0, 0.0, 6.0, 0.0, 1.0, -0.18, 0.98, 0.40, 0.16, 0.98, 0.38, 0.84, 0.82)
+				_:
+					return _make_dramatic_pose(2.0, 0.0, 0.0, 0.0, 0.0, 0.0, -0.22, 1.04, 0.14, 0.22, 1.04, 0.12, 0.28, 0.26)
+		"turn_walk_away":
+			match phase:
+				"prepare":
+					return _make_dramatic_pose(1.0, 10.0, 0.0, 0.0, 12.0, 2.0, -0.22, 1.02, 0.10, 0.20, 1.02, 0.08, 0.28, 0.24)
+				"execute":
+					return _make_dramatic_pose(2.0, 28.0, 1.0, 1.0, 18.0, 4.0, -0.16, 1.02, 0.02, 0.26, 1.04, 0.04, 0.36, 0.3)
+				"follow_through":
+					return _make_dramatic_pose(1.0, 24.0, 0.0, 0.0, 12.0, 2.0, -0.18, 1.02, 0.06, 0.22, 1.02, 0.06, 0.3, 0.24)
+				_:
+					return _make_dramatic_pose(0.0, 8.0, 0.0, 0.0, 4.0, 0.0, -0.22, 1.02, 0.10, 0.22, 1.02, 0.10, 0.2, 0.18)
+		_:
+			return _dramatic_preset("accuse_point", phase)
+
+
+func _make_dramatic_pose(
+	torso_pitch: float, torso_yaw: float, torso_roll: float,
+	head_pitch: float, head_yaw: float, hips_roll: float,
+	rx: float, ry: float, rz: float,
+	lx: float, ly: float, lz: float,
+	right_w: float, left_w: float
+) -> Dictionary:
+	return _reclamp_dramatic_pose({
+		"torso_pitch": torso_pitch,
+		"torso_yaw": torso_yaw,
+		"torso_roll": torso_roll,
+		"head_pitch": head_pitch,
+		"head_yaw": head_yaw,
+		"hips_roll": hips_roll,
+		"right": Vector3(rx, ry, rz),
+		"left": Vector3(lx, ly, lz),
+		"right_w": right_w,
+		"left_w": left_w,
+	})
+
+
+func _apply_dramatic_overrides(pose: Dictionary, custom: Dictionary) -> Dictionary:
+	if custom.has("torso_pitch"):
+		pose["torso_pitch"] = float(custom["torso_pitch"])
+	if custom.has("torso_yaw"):
+		pose["torso_yaw"] = float(custom["torso_yaw"])
+	if custom.has("torso_roll"):
+		pose["torso_roll"] = float(custom["torso_roll"])
+	if custom.has("head_pitch"):
+		pose["head_pitch"] = float(custom["head_pitch"])
+	if custom.has("head_yaw"):
+		pose["head_yaw"] = float(custom["head_yaw"])
+	if custom.has("hips_roll"):
+		pose["hips_roll"] = float(custom["hips_roll"])
+	if custom.has("right_hand"):
+		pose["right"] = _coerce_vec3(custom["right_hand"], pose["right"] as Vector3)
+	if custom.has("left_hand"):
+		pose["left"] = _coerce_vec3(custom["left_hand"], pose["left"] as Vector3)
+	if custom.has("right_weight"):
+		pose["right_w"] = float(custom["right_weight"])
+	if custom.has("left_weight"):
+		pose["left_w"] = float(custom["left_weight"])
+	var torso: Variant = custom.get("torso", null)
+	if torso is Dictionary:
+		var torso_doc: Dictionary = torso as Dictionary
+		if torso_doc.has("pitch"):
+			pose["torso_pitch"] = float(torso_doc["pitch"])
+		if torso_doc.has("yaw"):
+			pose["torso_yaw"] = float(torso_doc["yaw"])
+		if torso_doc.has("roll"):
+			pose["torso_roll"] = float(torso_doc["roll"])
+		if torso_doc.has("weight_shift"):
+			pose["hips_roll"] = float(torso_doc["weight_shift"]) * 8.0
+	var head: Variant = custom.get("head", null)
+	if head is Dictionary:
+		var head_doc: Dictionary = head as Dictionary
+		if head_doc.has("pitch"):
+			pose["head_pitch"] = float(head_doc["pitch"])
+		if head_doc.has("yaw"):
+			pose["head_yaw"] = float(head_doc["yaw"])
+	var arm: Variant = custom.get("arm", null)
+	if arm is Dictionary:
+		_apply_phase_arm(pose, arm as Dictionary, "right")
+		_apply_phase_arm(pose, arm as Dictionary, "left")
+	return _reclamp_dramatic_pose(pose)
+
+
+func _apply_phase_arm(pose: Dictionary, arm: Dictionary, side: String) -> void:
+	var spec: Variant = arm.get(side, null)
+	if not spec is Dictionary:
+		return
+	var arm_doc: Dictionary = spec as Dictionary
+	var raise_v := float(arm_doc.get("raise", 0.0))
+	var reach_v := float(arm_doc.get("reach", 0.0))
+	var sign := -1.0 if side == "right" else 1.0
+	var hand := Vector3(
+		sign * 0.2,
+		1.04 + raise_v * 0.62 - reach_v * 0.38,
+		0.14 + maxf(reach_v, 0.0) * 0.52
+	)
+	var weight := clampf(0.34 + absf(raise_v) * 0.4 + absf(reach_v) * 0.42, 0.0, 0.96)
+	if side == "right":
+		pose["right"] = hand
+		pose["right_w"] = weight
+	else:
+		pose["left"] = hand
+		pose["left_w"] = weight
+
+
+func _blend_dramatic_pose(a: Dictionary, b: Dictionary, t: float) -> Dictionary:
+	var amount: float = clampf(t, 0.0, 1.0)
+	var right_a: Vector3 = a.get("right", Vector3(-0.22, 1.0, 0.1)) as Vector3
+	var right_b: Vector3 = b.get("right", right_a) as Vector3
+	var left_a: Vector3 = a.get("left", Vector3(0.22, 1.0, 0.1)) as Vector3
+	var left_b: Vector3 = b.get("left", left_a) as Vector3
+	return {
+		"torso_pitch": lerpf(float(a.get("torso_pitch", 0.0)), float(b.get("torso_pitch", 0.0)), amount),
+		"torso_yaw": lerpf(float(a.get("torso_yaw", 0.0)), float(b.get("torso_yaw", 0.0)), amount),
+		"torso_roll": lerpf(float(a.get("torso_roll", 0.0)), float(b.get("torso_roll", 0.0)), amount),
+		"head_pitch": lerpf(float(a.get("head_pitch", 0.0)), float(b.get("head_pitch", 0.0)), amount),
+		"head_yaw": lerpf(float(a.get("head_yaw", 0.0)), float(b.get("head_yaw", 0.0)), amount),
+		"hips_roll": lerpf(float(a.get("hips_roll", 0.0)), float(b.get("hips_roll", 0.0)), amount),
+		"right": right_a.lerp(right_b, amount),
+		"left": left_a.lerp(left_b, amount),
+		"right_w": lerpf(float(a.get("right_w", 0.0)), float(b.get("right_w", 0.0)), amount),
+		"left_w": lerpf(float(a.get("left_w", 0.0)), float(b.get("left_w", 0.0)), amount),
+	}
+
+
+func _reclamp_dramatic_pose(pose: Dictionary) -> Dictionary:
+	pose["torso_pitch"] = clampf(float(pose.get("torso_pitch", 0.0)), -16.0, 22.0)
+	pose["torso_yaw"] = clampf(float(pose.get("torso_yaw", 0.0)), -32.0, 32.0)
+	pose["torso_roll"] = clampf(float(pose.get("torso_roll", 0.0)), -10.0, 10.0)
+	pose["head_pitch"] = clampf(float(pose.get("head_pitch", 0.0)), -14.0, 16.0)
+	pose["head_yaw"] = clampf(float(pose.get("head_yaw", 0.0)), -34.0, 34.0)
+	pose["hips_roll"] = clampf(float(pose.get("hips_roll", 0.0)), -6.0, 6.0)
+	pose["right_w"] = clampf(float(pose.get("right_w", 0.0)), 0.0, 0.96)
+	pose["left_w"] = clampf(float(pose.get("left_w", 0.0)), 0.0, 0.96)
+	var right: Vector3 = pose.get("right", Vector3(-0.22, 1.0, 0.1)) as Vector3
+	var left: Vector3 = pose.get("left", Vector3(0.22, 1.0, 0.1)) as Vector3
+	pose["right"] = Vector3(clampf(right.x, -0.62, 0.42), clampf(right.y, 0.72, 1.72), clampf(right.z, -0.15, 0.78))
+	pose["left"] = Vector3(clampf(left.x, -0.42, 0.62), clampf(left.y, 0.72, 1.72), clampf(left.z, -0.15, 0.78))
+	return pose
+
+
+func _coerce_vec3(value: Variant, fallback: Vector3) -> Vector3:
+	if value is Vector3:
+		return value as Vector3
+	if value is Array and (value as Array).size() >= 3:
+		var arr: Array = value as Array
+		return Vector3(float(arr[0]), float(arr[1]), float(arr[2]))
+	return fallback
+
+
+func _apply_dramatic_pose() -> void:
+	if _skeleton == null or _dramatic_pose.is_empty():
+		return
+	var pose: Dictionary = _dramatic_pose
+	var human: Dictionary = _target.human
+	var spine_count: int = int(human.get("spine_count", 0))
+	var chest := -1
+	var mid := -1
+	if spine_count > 0:
+		chest = int(human.get("spine%d" % (spine_count - 1), -1))
+		mid = int(human.get("spine%d" % maxi(spine_count - 2, 0), -1))
+	var hips: int = int(human.get("hips", -1))
+	var pitch: float = deg_to_rad(float(pose.get("torso_pitch", 0.0)))
+	var yaw: float = deg_to_rad(float(pose.get("torso_yaw", 0.0)))
+	var roll: float = deg_to_rad(float(pose.get("torso_roll", 0.0)))
+	var hips_roll: float = deg_to_rad(float(pose.get("hips_roll", 0.0)))
+	var head_pitch: float = deg_to_rad(float(pose.get("head_pitch", 0.0)))
+	var head_yaw: float = deg_to_rad(float(pose.get("head_yaw", 0.0)))
+	if hips >= 0 and absf(hips_roll) > 0.0001:
+		_roll_bone(hips, hips_roll)
+	if mid >= 0:
+		_pitch_bone(mid, pitch * 0.55)
+		_yaw_bone(mid, yaw * 0.4)
+	if chest >= 0:
+		_pitch_bone(chest, pitch * 0.45)
+		_yaw_bone(chest, yaw * 0.6)
+		_roll_bone(chest, roll)
+	if _neck_bone >= 0:
+		_yaw_bone(_neck_bone, head_yaw * 0.35)
+		_pitch_bone(_neck_bone, head_pitch * 0.35)
+	if _head_bone >= 0:
+		_yaw_bone(_head_bone, head_yaw * 0.65)
+		_pitch_bone(_head_bone, head_pitch * 0.65)
+	var scale_h: float = height_m / 1.70
+	var skel_inv: Transform3D = _skeleton.global_transform.affine_inverse()
+	var rw: float = float(pose.get("right_w", 0.0))
+	var lw: float = float(pose.get("left_w", 0.0))
+	if rw > 0.02:
+		var right_v: Variant = pose.get("right", Vector3(-0.22, 1.0, 0.12))
+		var rp: Vector3 = right_v as Vector3 if right_v is Vector3 else Vector3(-0.22, 1.0, 0.12)
+		rp = Vector3(rp.x * scale_h, rp.y * scale_h, rp.z * scale_h)
+		_reach_arm("r", skel_inv * (global_transform * rp), rw)
+	if lw > 0.02:
+		var left_v: Variant = pose.get("left", Vector3(0.22, 1.0, 0.12))
+		var lp: Vector3 = left_v as Vector3 if left_v is Vector3 else Vector3(0.22, 1.0, 0.12)
+		lp = Vector3(lp.x * scale_h, lp.y * scale_h, lp.z * scale_h)
+		_reach_arm("l", skel_inv * (global_transform * lp), lw)
+
+
 func _pitch_bone(bone: int, angle: float) -> void:
 	var global_pose: Transform3D = _skeleton.get_bone_global_pose(bone)
 	var lateral_skel: Vector3 = (_target.skel_xform as Transform3D).basis.inverse() * Vector3.RIGHT
@@ -2210,6 +2872,16 @@ func _roll_bone(bone: int, angle: float) -> void:
 	var global_pose: Transform3D = _skeleton.get_bone_global_pose(bone)
 	var fwd_skel: Vector3 = (_target.skel_xform as Transform3D).basis.inverse() * Vector3.BACK
 	var axis_local: Vector3 = (global_pose.basis.inverse() * fwd_skel).normalized()
+	if axis_local.length_squared() < 0.5:
+		return
+	var current: Quaternion = _skeleton.get_bone_pose_rotation(bone)
+	_skeleton.set_bone_pose_rotation(bone, (current * Quaternion(axis_local, angle)).normalized())
+
+
+func _yaw_bone(bone: int, angle: float) -> void:
+	var global_pose: Transform3D = _skeleton.get_bone_global_pose(bone)
+	var up_skel: Vector3 = (_target.skel_xform as Transform3D).basis.inverse() * Vector3.UP
+	var axis_local: Vector3 = (global_pose.basis.inverse() * up_skel).normalized()
 	if axis_local.length_squared() < 0.5:
 		return
 	var current: Quaternion = _skeleton.get_bone_pose_rotation(bone)

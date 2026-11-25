@@ -22,6 +22,7 @@ const RoverScript := preload("res://player/rover3d.gd")
 const PerformanceControllerScript := preload("res://player/performance_controller.gd")
 const SceneEventControllerScript := preload("res://player/scene_event_controller.gd")
 const LightingProfileScript := preload("res://player/lighting_profiles.gd")
+const RetroArtScript := preload("res://player/retro_art_profile.gd")
 
 const VIEW_SIZE := Vector2(1280.0, 720.0)
 const TURN_RATE_DEG := 260.0
@@ -53,6 +54,7 @@ var _sensor_spec: Dictionary = {}
 var _perf_controller: RefCounted
 var _event_controller: RefCounted
 var _last_event_state: Dictionary = {}
+var _art_profile: Dictionary = {}
 var _actor_gaze_labels: Dictionary = {}
 
 var _viewmodel: Node3D
@@ -96,9 +98,10 @@ func _ready() -> void:
 		RenderingServer.frame_post_draw.connect(post_draw)
 	_start_usec = Time.get_ticks_usec()
 	set_process(true)
-	print("STAGE3D_PLAYER ready frames=%d fps=%d actors=%d scene=%s lighting=%s" % [
+	print("STAGE3D_PLAYER ready frames=%d fps=%d actors=%d scene=%s lighting=%s art=%s" % [
 		_total_frames, _fps, _actors.size(),
-		str(_bay.get("scene_type")), str(_bay.get("lighting_profile_name"))
+		str(_bay.get("scene_type")), str(_bay.get("lighting_profile_name")),
+		str(_art_profile.get("preset", "neutral")) if bool(_art_profile.get("enabled", false)) else "neutral"
 	])
 
 
@@ -193,6 +196,9 @@ func _build_runtime() -> bool:
 		resolved_set["lighting_profile"] = _stage_data["lighting_profile"]
 	if _stage_data.has("scene_type") and not resolved_set.has("scene_type"):
 		resolved_set["scene_type"] = _stage_data["scene_type"]
+	_art_profile = _stage_art_profile()
+	if bool(_art_profile.get("enabled", false)) or _stage_data.has("art_profile"):
+		resolved_set["art_profile"] = _stage_data.get("art_profile", _art_profile)
 	_bay.call("build", resolved_set, _character_script)
 	_perf_controller = PerformanceControllerScript.new()
 	_event_controller = SceneEventControllerScript.new()
@@ -225,6 +231,10 @@ func _build_runtime() -> bool:
 			if not bool(actor.call("setup", spec)):
 				push_error("Stage3D: actor %s could not be loaded" % actor_id)
 				return false
+			if spec.get("dramatic_actions", null) is Array:
+				actor.call("set_dramatic_actions", spec["dramatic_actions"])
+			if bool(_art_profile.get("enabled", false)):
+				actor.call("apply_retro_material_finish", _art_profile)
 			_actors[actor_id] = actor
 			_actor_specs[actor_id] = spec
 			_actor_state[actor_id] = {"yaw": NAN}
@@ -233,6 +243,8 @@ func _build_runtime() -> bool:
 	_build_rover()
 	_load_font()
 	_build_captions()
+	if bool(_art_profile.get("enabled", false)):
+		RetroArtScript.attach_post_fx(self, _art_profile)
 	return true
 
 
@@ -343,6 +355,15 @@ func _apply_frame(frame_index: int) -> void:
 	if _event_controller != null:
 		var lrig: Node = _bay.get("_lighting_rig") as Node if _bay != null else null
 		_last_event_state = _event_controller.call("update", frame_index, _fps, _bay, lrig, _rover)
+		if lrig is Node3D:
+			LightingProfileScript.apply_event_feedback(
+				lrig as Node3D,
+				float(_last_event_state.get("alert_pulse", 0.0)),
+				float(_last_event_state.get("storm_intensity", 0.0)),
+				bool(_last_event_state.get("signal_lost", false)),
+				time_sec,
+				_last_event_state
+			)
 
 	# 1. Identify active speaker on this frame (for listener micro-reactions & rover gaze).
 	var active_speaker: Dictionary = _active_speaker_at(frame_index)
@@ -428,6 +449,16 @@ func _apply_actor_base(actor_id: String, frame_index: int, dt: float, active_spe
 	elif clip in ["walk", "walk_formal", "crouch_walk", "jog", "sprint"]:
 		clip = "idle"
 		key = "idle"
+
+	actor.call("update_dramatic_action", frame_index, _fps)
+	if bool(actor.call("is_dramatic_action_active")) and not moving:
+		var dramatic_clip: String = str(actor.call("dramatic_playback_clip"))
+		if dramatic_clip != "":
+			clip = dramatic_clip
+		elif clip in ["talk", "sit_talk"]:
+			clip = "idle"
+		key = "dramatic:%s@%d" % [str(actor.call("dramatic_action_id")), int(actor.call("dramatic_action_from"))]
+		speed = 1.0
 
 	actor.call("update_locomotion_state", clip, key, float(path.speed), speed, dt, 0.10 if moving else 0.24, moving)
 
@@ -880,6 +911,7 @@ func _apply_camera(shot: Dictionary, shot_frame: int, frame_index: int) -> void:
 	else:
 		_camera.position = pos
 	_camera.rotate_object_local(Vector3.BACK, deg_to_rad(float(cut.get("roll_deg", 0.0))))
+	_apply_camera_punch(shot, cut, frame_index)
 
 	# Optional cinematic depth-of-field focus update.
 	if _bay != null and _bay.has_method("set_camera_dof"):
@@ -887,6 +919,102 @@ func _apply_camera(shot: Dictionary, shot_frame: int, frame_index: int) -> void:
 		_bay.call("set_camera_dof", focus, dof_enabled, float(cut.get("dof_blur", 0.07)))
 
 	_set_first_person(first_person)
+
+
+func _stage_art_profile() -> Dictionary:
+	var raw: Variant = _stage_data.get("art_profile", null)
+	if raw == null:
+		var set_v: Variant = _stage_data.get("set", {})
+		if set_v is Dictionary:
+			raw = (set_v as Dictionary).get("art_profile", {})
+		else:
+			raw = {}
+	return RetroArtScript.resolve(raw)
+
+
+func _collect_punches(src: Dictionary, into: Array) -> void:
+	if src.is_empty():
+		return
+	for key: String in ["camera_punch", "camera_punches"]:
+		var value: Variant = src.get(key, null)
+		if value is Dictionary and not (value as Dictionary).is_empty():
+			into.append(value)
+		elif value is Array:
+			for item: Variant in value as Array:
+				if item is Dictionary:
+					into.append(item)
+
+
+func _punch_absolute_frame(punch: Dictionary, shot: Dictionary, shot_from: int) -> int:
+	# dramatic_director.frame is shot-relative (0 .. shot.frames). A value that
+	# cannot fit inside the shot is a global timeline frame.
+	var shot_len: int = maxi(int(shot.get("frames", 1)), 1)
+	var pf: int = int(punch.get("frame", 0))
+	var space := str(punch.get("space", punch.get("frame_space", ""))).strip_edges().to_lower()
+	if space == "global" or space == "timeline":
+		return pf
+	if pf >= 0 and pf < shot_len:
+		return shot_from + pf
+	if pf >= shot_from and pf < shot_from + shot_len:
+		return pf
+	return shot_from + clampi(pf, 0, shot_len - 1)
+
+
+func _apply_camera_punch(shot: Dictionary, cut: Dictionary, frame_index: int) -> void:
+	var punches: Array = []
+	_collect_punches(shot, punches)
+	_collect_punches(cut, punches)
+	if punches.is_empty() or _camera == null:
+		return
+	var shot_from: int = int(shot.get("from", 0))
+	var local_off := Vector3.ZERO
+	var roll := 0.0
+	var pitch := 0.0
+	var fov_add := 0.0
+	for item_v: Variant in punches:
+		var punch: Dictionary = item_v as Dictionary
+		var abs_f: int = _punch_absolute_frame(punch, shot, shot_from)
+		var dur: int = clampi(int(punch.get("duration_frames", 6)), 1, 18)
+		var age: int = frame_index - abs_f
+		if age < 0 or age > dur:
+			continue
+		var u: float = clampf(float(age) / float(dur), 0.0, 1.0)
+		var kind: String = str(punch.get("kind", "impact")).strip_edges().to_lower()
+		var env: float = pow(1.0 - u, 1.65)
+		if u > 0.75:
+			env -= 0.12 * ((u - 0.75) / 0.25)
+		if kind == "alarm":
+			env = sin(u * PI)
+		var strength: float = clampf(float(punch.get("strength", 1.0)), 0.0, 2.5)
+		match kind:
+			"alarm":
+				local_off += Vector3(0.016 * sin(u * PI), 0.0, 0.0) * strength
+				roll += deg_to_rad(0.35) * env * strength
+				fov_add += 0.8 * env * strength
+			"door":
+				local_off += Vector3(0.0, 0.0, 0.03) * env * strength
+				fov_add += 1.1 * env * strength
+			"push":
+				local_off += Vector3(0.0, 0.003, -0.04) * env * strength
+				pitch += deg_to_rad(-0.45) * env * strength
+				fov_add += -2.2 * env * strength
+			_:
+				local_off += Vector3(0.0, -0.014, 0.038) * env * strength
+				roll += deg_to_rad(1.05) * env * strength
+				pitch += deg_to_rad(0.7) * env * strength
+				fov_add += 2.6 * env * strength
+	if local_off.length_squared() < 1e-8 and absf(roll) < 1e-6 and absf(pitch) < 1e-6 and absf(fov_add) < 0.01:
+		return
+	_camera.position += _camera.global_transform.basis * local_off
+	if _bay != null and _bay.has_method("clamp_camera"):
+		_camera.position = _bay.call("clamp_camera", _camera.position)
+	_camera_state["pos"] = _camera.position
+	if absf(pitch) > 0.00001:
+		_camera.rotate_object_local(Vector3.RIGHT, pitch)
+	if absf(roll) > 0.00001:
+		_camera.rotate_object_local(Vector3.BACK, roll)
+	_camera.fov = clampf(_camera.fov + fov_add, 18.0, 80.0)
+	_camera_state["fov"] = _camera.fov
 
 
 func _set_first_person(actor_id: String) -> void:
