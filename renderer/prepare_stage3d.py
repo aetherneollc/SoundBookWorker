@@ -774,6 +774,7 @@ def prepare(manifest_path: Path, output_path: Path, check_files: bool = True) ->
             'from': cursor,
             'frames': frames,
             'voice_lead_frames': lead_frames,
+            'pov_required': bool(shot.get('pov_required', False)),
             'lines': lines,
         })
         cursor += frames
@@ -948,11 +949,26 @@ def prepare(manifest_path: Path, output_path: Path, check_files: bool = True) ->
             shot['secondary_subject'] = 'linlan'
         elif kind == 'first_person':
             far = (linlan[0] + view_dir[0] * 9.0, linlan[1] + view_dir[1] * 9.0)
-            cams = [{'from': 0, 'to': n, 'mode': 'pov', 'actor': 'linlan', 'eye_height': 1.55,
-                     'look_at': _round((far[0] - 0.8, 1.75, far[1])), 'look_to': _round((far[0] + 0.6, 2.85, far[1])),
-                     'fov': 60.0, 'sway': 0.005}]
+            if bool(shot.get('pov_required', False)):
+                cams = [{'from': 0, 'to': n, 'mode': 'pov', 'actor': 'linlan', 'eye_height': 1.55,
+                         'look_at': _round((far[0] - 0.8, 1.75, far[1])), 'look_to': _round((far[0] + 0.6, 2.85, far[1])),
+                         'fov': 60.0, 'sway': 0.005}]
+                shot['first_person'] = 'linlan'
+            else:
+                # BUG-004: Default away from gratuitous FPS game camera; frame a cinematic
+                # over-the-shoulder / prop close-up showing Linlan's real 3D body, real hand,
+                # and the held spare sensor looking out toward the lunar window & storm front.
+                cam_p0 = (linlan[0] + 0.72, 1.50, linlan[1] + 1.18)
+                cam_p1 = (linlan[0] + 0.58, 1.48, linlan[1] + 0.96)
+                look_0 = (linlan[0] - 0.25, 1.38, far[1])
+                look_1 = (linlan[0] + 0.10, 1.72, far[1])
+                cams = [{'from': 0, 'to': n, 'mode': 'dolly',
+                         'pos': _round(cam_p0), 'pos_to': _round(cam_p1),
+                         'look_at': _round(look_0), 'look_to': _round(look_1),
+                         'fov': 46.0, 'fov_to': 44.0}]
+                shot['first_person'] = ''
             shot['primary_subject'] = 'linlan'
-            shot['secondary_subject'] = ''
+            shot['secondary_subject'] = 'sensor'
         else:
             cams = [{'from': 0, 'to': n, 'mode': 'dolly',
                      'pos': _round((linlan[0] + closeup_dir[0] * 1.18, 1.48, linlan[1] + closeup_dir[1] * 1.18)),
@@ -962,8 +978,10 @@ def prepare(manifest_path: Path, output_path: Path, check_files: bool = True) ->
                      'dof_enabled': True, 'dof_focus_distance': 1.12}]
             shot['primary_subject'] = 'linlan'
             shot['secondary_subject'] = 'chen'
+            shot['first_person'] = ''
         shot['cameras'] = cams
-        shot['first_person'] = 'linlan' if kind == 'first_person' else ''
+        if 'first_person' not in shot:
+            shot['first_person'] = ''
 
     # ---- audio bed
     audio_dir = output_path.resolve().parent / 'audio'
@@ -1221,6 +1239,16 @@ def prepare_generic(doc: dict, manifest_path: Path, output_path: Path, check_fil
                 sp_entry['energy'] = energy
             speech.append(sp_entry)
 
+        actor_trajs = {}
+        for aid in actors:
+            pts_u = []
+            for k in range(6):
+                u = k / 5.0
+                f_sample = cursor + int(round((b_frames - 1) * u))
+                px, py, pz = _actor_pos_at(aid, f_sample)
+                pts_u.append([round(u, 3), [round(px, 3), round(py, 3), round(pz, 3)]])
+            actor_trajs[aid] = pts_u
+
         director_beats.append({
             'beat_id': str(b.get('id') or b.get('beat_id') or f'b{idx}'),
             'scene_number': int(b.get('scene_number', idx)),
@@ -1237,6 +1265,7 @@ def prepare_generic(doc: dict, manifest_path: Path, output_path: Path, check_fil
             'prop_position': b.get('prop_position'),
             'actor_positions': pos_start if b.get('action') in ('walk', 'move', 'enter') else pos_mid,
             'actor_end_positions': pos_end,
+            'actor_trajectories': actor_trajs,
             'actor_facings': facings,
             'actor_heights': actor_heights,
             'description': str(b.get('description') or ''),

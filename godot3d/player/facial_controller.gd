@@ -65,6 +65,13 @@ const EMOTIONS: Array[String] = [
 	"confident",
 ]
 
+const MAX_SPEECH_JAW_OPEN := 0.46
+const MAX_SHOUT_JAW_OPEN := 0.56
+const MAX_MOUTH_FUNNEL := 0.42
+const MAX_BROW_WEIGHT := 0.76
+const MAX_LIP_EMOTION_WEIGHT := 0.65
+const MAX_IDLE_EMOTION_JAW := 0.16
+
 ## Target BlendShape weights + subtle head/blink modifiers per emotion.
 const EMOTION_PROFILES := {
 	"neutral": {
@@ -76,7 +83,7 @@ const EMOTION_PROFILES := {
 		"listener_shapes": {"browUp": 0.08},
 	},
 	"happy": {
-		"shapes": {"mouthSmile": 0.72, "browUp": 0.16, "eyeBlink": 0.08},
+		"shapes": {"mouthSmile": 0.62, "browUp": 0.16, "eyeBlink": 0.06},
 		"head_pitch_deg": -1.5,
 		"head_tilt_deg": 2.0,
 		"blink_rate_mult": 1.05,
@@ -84,7 +91,7 @@ const EMOTION_PROFILES := {
 		"listener_shapes": {"mouthSmile": 0.22, "browUp": 0.10},
 	},
 	"sad": {
-		"shapes": {"mouthFrown": 0.65, "browUp": 0.36, "browDown": 0.14},
+		"shapes": {"mouthFrown": 0.56, "browUp": 0.34, "browDown": 0.14},
 		"head_pitch_deg": 5.5,
 		"head_tilt_deg": -2.5,
 		"blink_rate_mult": 0.85,
@@ -92,7 +99,7 @@ const EMOTION_PROFILES := {
 		"listener_shapes": {"mouthFrown": 0.18, "browUp": 0.20},
 	},
 	"angry": {
-		"shapes": {"browDown": 0.85, "mouthFrown": 0.52, "jawOpen": 0.08},
+		"shapes": {"browDown": 0.74, "mouthFrown": 0.46, "jawOpen": 0.02},
 		"head_pitch_deg": 3.0,
 		"head_tilt_deg": 0.0,
 		"blink_rate_mult": 0.78,
@@ -100,20 +107,20 @@ const EMOTION_PROFILES := {
 		"listener_shapes": {"browDown": 0.28, "mouthFrown": 0.14},
 	},
 	"fear": {
-		"shapes": {"browUp": 0.78, "jawOpen": 0.26, "mouthFrown": 0.34, "mouthFunnel": 0.18},
+		"shapes": {"browUp": 0.68, "jawOpen": 0.10, "mouthFrown": 0.32, "mouthFunnel": 0.12},
 		"head_pitch_deg": -1.0,
 		"head_tilt_deg": -3.0,
 		"blink_rate_mult": 1.35,
 		"listener_nod_mult": 0.5,
-		"listener_shapes": {"browUp": 0.26, "mouthFrown": 0.12},
+		"listener_shapes": {"browUp": 0.24, "mouthFrown": 0.12},
 	},
 	"surprised": {
-		"shapes": {"browUp": 0.90, "jawOpen": 0.42, "mouthFunnel": 0.28},
+		"shapes": {"browUp": 0.74, "jawOpen": 0.16, "mouthFunnel": 0.18},
 		"head_pitch_deg": -3.0,
 		"head_tilt_deg": 1.5,
 		"blink_rate_mult": 0.75,
 		"listener_nod_mult": 0.7,
-		"listener_shapes": {"browUp": 0.32, "jawOpen": 0.12},
+		"listener_shapes": {"browUp": 0.28, "jawOpen": 0.06},
 	},
 	"worried": {
 		"shapes": {"browUp": 0.44, "browDown": 0.38, "mouthFrown": 0.44},
@@ -550,28 +557,31 @@ func _step_lipsync(
 		var energy: float = speech_energy
 		if energy < 0.0:
 			# Fallback procedural syllable envelope when TTS energy array is absent.
-			var phase: float = float(frame_index) * 0.42 + float(_blink_seed % 37)
-			energy = clampf(0.42 + 0.38 * sin(phase) + 0.2 * sin(phase * 2.17), 0.0, 1.0)
+			var phase: float = float(frame_index) * 0.52 + float(_blink_seed % 37)
+			energy = clampf(0.36 + 0.44 * sin(phase) + 0.20 * sin(phase * 2.13), 0.0, 1.0)
 		_last_speech_energy = energy
-		if energy > 0.06:
-			var shaped: float = pow(clampf((energy - 0.06) / 0.94, 0.0, 1.0), 0.72)
-			jaw_target = shaped * 0.85
+		if energy > 0.08:
+			var shaped: float = pow(clampf((energy - 0.08) / 0.92, 0.0, 1.0), 0.85)
+			# Syllable cadence prevents static held-open mouth when TTS energy stays high.
+			var syl_phase: float = _elapsed_s * 16.5 + float(_blink_seed % 29)
+			var cadence: float = 0.42 + 0.58 * clampf(absf(sin(syl_phase)), 0.0, 1.0)
+			var max_jaw: float = MAX_SHOUT_JAW_OPEN if (active_emotion in ["angry", "surprised"] and emotion_intensity >= 0.75) else MAX_SPEECH_JAW_OPEN
+			jaw_target = clampf(shaped * max_jaw * cadence, 0.0, max_jaw)
 			var vkey: String = viseme_hint.strip_edges().to_lower()
 			if vkey != "" and VISEME_HINTS.has(vkey):
 				var vpair: Vector2 = VISEME_HINTS[vkey]
-				jaw_target = clampf(shaped * vpair.x, 0.0, 0.95)
-				funnel_target = clampf(shaped * vpair.y, 0.0, 0.9)
+				jaw_target = clampf(shaped * vpair.x * (max_jaw / 0.85) * cadence, 0.0, max_jaw)
+				funnel_target = clampf(shaped * vpair.y * 0.52, 0.0, MAX_MOUTH_FUNNEL)
 			else:
-				# Natural rounded-vowel variation at ~3.5-5 Hz while speaking.
-				var vowel_wave: float = 0.5 + 0.5 * sin(_elapsed_s * 14.5 + float(_blink_seed % 19))
-				var round_factor: float = clampf(vowel_wave * 0.55 - 0.12, 0.0, 0.45)
-				funnel_target = shaped * round_factor
+				var vowel_wave: float = 0.5 + 0.5 * sin(_elapsed_s * 13.5 + float(_blink_seed % 19))
+				var round_factor: float = clampf(vowel_wave * 0.46 - 0.14, 0.0, 0.34)
+				funnel_target = clampf(shaped * round_factor * cadence, 0.0, MAX_MOUTH_FUNNEL)
 	else:
 		_last_speech_energy = 0.0
 
-	# Asymmetric attack/release smoothing prevents mouth chatter.
-	var jaw_rate: float = 22.0 if jaw_target > _jaw_smoothed else 10.5
-	var funnel_rate: float = 18.0 if funnel_target > _funnel_smoothed else 9.0
+	# Crisp asymmetric attack/release smoothing for clear Mandarin syllables without chatter.
+	var jaw_rate: float = 24.0 if jaw_target > _jaw_smoothed else 15.0
+	var funnel_rate: float = 18.0 if funnel_target > _funnel_smoothed else 12.0
 	_jaw_smoothed = lerpf(_jaw_smoothed, jaw_target, 1.0 - exp(-dt * jaw_rate))
 	_funnel_smoothed = lerpf(_funnel_smoothed, funnel_target, 1.0 - exp(-dt * funnel_rate))
 	if _jaw_smoothed < 0.004:
@@ -673,14 +683,25 @@ func _compose_and_apply_shapes(frame_index: int, is_speaking: bool, speech_energ
 			var sn: String = str(s_key)
 			composed[sn] = float(composed.get(sn, 0.0)) + float(l_shapes[s_key]) * _listener_weight * pulse
 
-	# 3. TTS lip-sync overrides mouth channels smoothly.
-	if _jaw_smoothed > 0.001 or _funnel_smoothed > 0.001:
-		composed["jawOpen"] = maxf(float(composed["jawOpen"]) * 0.35, _jaw_smoothed)
-		composed["mouthFunnel"] = maxf(float(composed["mouthFunnel"]) * 0.4, _funnel_smoothed)
-		# Dampen smile/frown slightly during wide vowels so lips don't over-deform.
-		var speech_damp: float = 1.0 - clampf(_jaw_smoothed * 0.4, 0.0, 0.4)
+	# 3. Decoupled TTS lip-sync vs emotional mouth baseline.
+	if is_speaking or _jaw_smoothed > 0.004 or _funnel_smoothed > 0.004:
+		var max_jaw: float = MAX_SHOUT_JAW_OPEN if (active_emotion in ["angry", "surprised"] and emotion_intensity >= 0.75) else MAX_SPEECH_JAW_OPEN
+		composed["jawOpen"] = clampf(maxf(float(composed["jawOpen"]) * 0.20, _jaw_smoothed), 0.0, max_jaw)
+		composed["mouthFunnel"] = clampf(maxf(float(composed["mouthFunnel"]) * 0.30, _funnel_smoothed), 0.0, MAX_MOUTH_FUNNEL)
+		# Dampen smile/frown gently during open vowels so lips deform naturally without pinching.
+		var speech_damp: float = 1.0 - clampf(_jaw_smoothed * 0.55, 0.0, 0.45)
 		composed["mouthSmile"] = float(composed["mouthSmile"]) * speech_damp
 		composed["mouthFrown"] = float(composed["mouthFrown"]) * speech_damp
+	else:
+		# Non-speaking mouth stays naturally closed (never hanging open).
+		composed["jawOpen"] = clampf(float(composed["jawOpen"]), 0.0, MAX_IDLE_EMOTION_JAW)
+		composed["mouthFunnel"] = clampf(float(composed["mouthFunnel"]), 0.0, 0.18)
+
+	# Enforce natural anatomical limits per channel.
+	composed["browDown"] = clampf(float(composed["browDown"]), 0.0, MAX_BROW_WEIGHT)
+	composed["browUp"] = clampf(float(composed["browUp"]), 0.0, MAX_BROW_WEIGHT)
+	composed["mouthSmile"] = clampf(float(composed["mouthSmile"]), 0.0, MAX_LIP_EMOTION_WEIGHT)
+	composed["mouthFrown"] = clampf(float(composed["mouthFrown"]), 0.0, MAX_LIP_EMOTION_WEIGHT)
 
 	# 4. Natural blink channel.
 	composed["eyeBlink"] = maxf(float(composed["eyeBlink"]), _blink_weight)

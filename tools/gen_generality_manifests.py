@@ -204,7 +204,7 @@ def test_corridor(layout: SceneLayout) -> dict:
             layout, zhou, gait='heavy', height=1.80, start_anchor='entry_threshold',
             facing=[face(0, lin)],
             emotions=[emotion(0, total, 'angry', 0.9)],
-            moves=[walk(0, starts[1], 'center_a', 'urgent', ramp_s=0.45)],
+            moves=[walk(0, starts[1] - 6, 'center_a', 'urgent', ramp_s=0.72)],
         ),
         lin: actor(
             layout, lin, gait='cautious', height=1.65, start_anchor='center_b',
@@ -255,7 +255,7 @@ def test_medlab(layout: SceneLayout) -> dict:
     handoff_end = inspect_end + shot_frames(2.25)
     transfer = inspect_end + (handoff_end - inspect_end) // 2
     doc_x, doc_z = anchor_xz(layout, 'exam_doctor')
-    handoff_spot = [round(doc_x - 0.88, 3), round(doc_z - 0.12, 3)]
+    handoff_spot = [round(doc_x - 0.92, 3), round(doc_z - 0.12, 3)]
     cast = {
         doctor: actor(
             layout, doctor, gait='feminine', height=1.62, start_anchor='exam_doctor',
@@ -270,10 +270,10 @@ def test_medlab(layout: SceneLayout) -> dict:
             facing=[face(0, doctor)],
             emotions=[emotion(0, total, 'neutral', 0.45)],
             moves=[{
-                'from': starts[1] + 6,
-                'to': starts[2] - 8,
+                'from': starts[1] + 2,
+                'to': starts[2] - 12,
                 'points': [handoff_spot],
-                'ramp_s': 0.25,
+                'ramp_s': 0.30,
                 'gait': 'casual',
             }],
         ),
@@ -291,9 +291,9 @@ def test_medlab(layout: SceneLayout) -> dict:
             speaker=doctor, listener=assistant, emotion='confident', listener_emotion='neutral',
             action='inspect', importance=0.8, preferred_shot='medium',
             prop_event={
-                'prop_id': 'sensor',
+                'prop_id': 'spare_sensor',
                 'event': 'inspect',
-                'position': interaction_point(layout, 'exam_doctor', 'exam_assistant', 0.42, 1.05),
+                'position': interaction_point(layout, 'exam_doctor', 'exam_assistant', 0.42, 1.14),
             },
             description='Medium shot on Dr. Su inspecting the sensor as Chen steps in.',
             text='外壳完好，问题在校准。',
@@ -301,17 +301,37 @@ def test_medlab(layout: SceneLayout) -> dict:
         beat(
             'handoff', 3, durations[2],
             speaker=doctor, listener=assistant, emotion='confident', listener_emotion='neutral',
-            action='handoff', importance=0.75, preferred_shot='reaction',
-            prop_event={'prop_id': 'sensor', 'event': 'handoff'},
-            description='Dr. Su hands the sensor to Chen.',
+            action='handoff', importance=0.85, preferred_shot='two_shot',
+            prop_event={
+                'prop_id': 'spare_sensor',
+                'event': 'handoff',
+                'position': [round((doc_x + handoff_spot[0]) * 0.5, 3), 1.16, round((doc_z + handoff_spot[1]) * 0.5, 3)],
+            },
+            description='Two-shot showing Dr. Su handing the spare sensor cleanly to Chen above the subtitle band.',
             text='拿去，换上这块备件。',
         ),
     ]
+    bed_rest = surface_rest(layout, 'exam_bed_main_top')
     props = {
-        'sensor': {
+        # BUG-002 #11: Explicitly distinct entity IDs & ownership for faulty vs spare sensor.
+        'faulty_sensor': {
             'kind': 'sensor',
+            'entity_role': 'faulty_sensor',
             'model': require_asset(SENSOR_MODEL),
-            'surface': surface_rest(layout, 'exam_bed_main_top'),
+            'surface': {
+                **bed_rest,
+                'pos': [round(bed_rest['pos'][0] - 0.28, 3), round(bed_rest['pos'][1] + 0.12, 3)],
+                'yaw_deg': 28.0,
+            },
+            'timeline': [
+                {'from': 0, 'to': total, 'action': 'surface'},
+            ],
+        },
+        'spare_sensor': {
+            'kind': 'sensor',
+            'entity_role': 'spare_sensor',
+            'model': require_asset(SENSOR_MODEL),
+            'surface': bed_rest,
             'timeline': [
                 {'from': 0, 'to': inspect_end, 'action': 'inspect', 'actor': doctor, 'side': 'right'},
                 {
@@ -321,6 +341,7 @@ def test_medlab(layout: SceneLayout) -> dict:
                     'from_actor': doctor,
                     'to_actor': assistant,
                     'transfer_frame': transfer,
+                    'height': 1.18,
                     'ramp_s': 0.35,
                 },
                 {'from': handoff_end, 'to': total, 'action': 'held', 'actor': assistant, 'side': 'right'},

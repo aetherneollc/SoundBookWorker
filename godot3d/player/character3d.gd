@@ -29,7 +29,7 @@ const NOD_DEGREES := 8.0
 ## spread over the spine chain, then neck and head. Only used for retargeted
 ## non-matching rigs; ``look.posture`` overrides.
 const POSTURE_DEFAULT := {"spine_deg": -4.0, "neck_deg": -3.0, "head_deg": -7.0, "arm_splay_max_deg": 9.0}
-const FOOT_GROUND_LIMIT := 0.16
+const FOOT_GROUND_LIMIT := 0.22
 const LOOK_YAW_LIMIT := 28.0
 const LOOK_PITCH_LIMIT := 14.0
 const LOOK_NECK_SHARE := 0.35
@@ -300,6 +300,12 @@ var _elapsed_s := 0.0
 var _loco_phase := 0.0
 var _is_moving := false
 var _last_speed_mps := 0.0
+var loco_state := "idle"          # idle | walk | run | decelerate | stop
+var idle_style := "professional_idle"  # relaxed_idle | professional_idle | alert_idle | combat_idle | conversation_idle
+var _decel_timer := 0.0
+var _stop_settle_timer := 0.0
+var _peak_move_speed_mps := 0.0
+var _perf_overlay: Dictionary = {}
 var ground_smoothing := 0.65
 var stride_report: Dictionary = {}
 
@@ -1563,6 +1569,81 @@ func pose_clip(clip: String, time: float) -> void:
 	_current_key = "pose:%s" % clip
 
 
+func set_idle_style(style: String) -> void:
+	var s: String = style.strip_edges().to_lower()
+	if s in ["relaxed_idle", "professional_idle", "alert_idle", "combat_idle", "conversation_idle"]:
+		idle_style = s
+
+
+func set_performance_overlay(perf: Dictionary) -> void:
+	_perf_overlay = perf
+
+
+## Velocity-aware locomotion state machine implementing BUG-003:
+##   run -> decelerate (walk downshift) -> stop (settle) -> idle
+## Prevents instantaneous run-to-idle snaps and preserves foot support continuity.
+func update_locomotion_state(
+	clip: String,
+	clip_key: String,
+	move_speed_mps: float,
+	anim_speed: float,
+	delta: float,
+	blend: float = 0.25,
+	moving_flag: bool = false
+) -> void:
+	var dt: float = maxf(delta, 0.001)
+	var eff_clip: String = clip
+	var eff_key: String = clip_key
+	var eff_speed: float = anim_speed
+	var eff_blend: float = blend
+
+	var is_fast_clip: bool = clip in ["jog", "sprint"]
+	if moving_flag:
+		_stop_settle_timer = 0.0
+		if is_fast_clip or move_speed_mps >= 1.45:
+			_peak_move_speed_mps = maxf(_peak_move_speed_mps, move_speed_mps)
+			# When decelerating near the end of a run, step down through walk matching real speed.
+			if _peak_move_speed_mps >= 1.55 and move_speed_mps < 1.32:
+				loco_state = "decelerate"
+				eff_clip = "walk"
+				eff_key = "decel:%s" % clip_key
+				eff_speed = clampf(move_speed_mps / maxf(natural_walk_speed, 0.45), 0.35, 1.45)
+				eff_blend = 0.16
+			else:
+				loco_state = "run"
+				eff_blend = 0.14
+		else:
+			if loco_state == "run" and move_speed_mps < 1.32:
+				loco_state = "decelerate"
+				eff_speed = clampf(move_speed_mps / maxf(natural_walk_speed, 0.45), 0.35, 1.45)
+				eff_blend = 0.16
+			else:
+				loco_state = "walk"
+			_peak_move_speed_mps = maxf(_peak_move_speed_mps * 0.92, move_speed_mps)
+	else:
+		# Transitioning out of motion: never loop walk in place (prevents foot slide).
+		# Instead blend cleanly through a weighty 'stop' recovery phase into idle.
+		if loco_state in ["run", "decelerate"]:
+			loco_state = "stop"
+			_stop_settle_timer = 0.34
+			_peak_move_speed_mps = 0.0
+		elif loco_state == "walk":
+			loco_state = "stop"
+			_stop_settle_timer = 0.24
+			_peak_move_speed_mps = 0.0
+
+		if loco_state == "stop":
+			_stop_settle_timer = maxf(_stop_settle_timer - dt, 0.0)
+			eff_blend = 0.34
+			if _stop_settle_timer <= 0.0:
+				loco_state = "idle"
+		else:
+			loco_state = "idle"
+
+	_last_speed_mps = move_speed_mps
+	update_animation(eff_clip, eff_key, eff_speed, dt, eff_blend)
+
+
 func update_animation(clip: String, clip_key: String, speed: float, delta: float, blend: float = 0.25) -> void:
 	if _player == null:
 		return
@@ -1646,8 +1727,20 @@ func apply_overlays(
 	if _skeleton == null:
 		return
 
-	# 1. Subtle breathing micro-motion + gait posture modulation.
+	# 1. Subtle breathing micro-motion + gait posture modulation + non-combat idle relaxation.
 	_apply_breathing_and_gait()
+
+	# 1b. Non-combat idle posture relaxation (BUG-006): replace wide clenched-fist
+	#     combat idle arms with calm relaxed/professional/conversation arm posture.
+	var perf_r_w: float = float(_perf_overlay.get("right_reach_weight", 0.0))
+	var perf_l_w: float = float(_perf_overlay.get("left_reach_weight", 0.0))
+	if not _is_moving and reach_weight <= 0.05 and idle_style != "combat_idle":
+		_apply_non_combat_idle_posture(perf_r_w, perf_l_w)
+
+	# 1c. Semantic performance overlay (BUG-007 / BUG-010): torso lean, weight shift,
+	#     conversational hand gestures & console interaction reaches.
+	if not _perf_overlay.is_empty():
+		_apply_performance_overlay(reach_weight, reach_side)
 
 	# 2. Upper-body carry layering: when walking while holding a prop, subtly
 	# steady the carrying forearm so the prop stays naturally in front of hip.
@@ -1662,7 +1755,8 @@ func apply_overlays(
 		var side_prefix: String = "l" if reach_side == "left" else "r"
 		_reach_arm(side_prefix, _skeleton.global_transform.affine_inverse() * reach_target, clampf(reach_weight, 0.0, 1.0))
 
-	# 4. Natural 5-finger posing: tight grip when holding, gentle relaxed curl otherwise.
+	# 4. Natural 5-finger posing: tight grip when holding, genuinely relaxed open
+	#    fingers in non-combat idle/conversation (never clenched boxer fists!).
 	_apply_hand_fingers("r", holding)
 	_apply_hand_fingers("l", holding_left)
 
@@ -1704,6 +1798,85 @@ func _apply_breathing_and_gait() -> void:
 			_roll_bone(chest_bone, deg_to_rad(roll_deg) * sin(_loco_phase))
 
 
+	# Deceleration / stop momentum recovery (BUG-003): subtle upright settle instead of snap.
+	if loco_state == "decelerate" and mid_spine >= 0:
+		_pitch_bone(mid_spine, deg_to_rad(-2.8))
+	elif loco_state == "stop" and _stop_settle_timer > 0.0 and mid_spine >= 0:
+		var settle_u: float = clampf(_stop_settle_timer / 0.26, 0.0, 1.0)
+		_pitch_bone(mid_spine, deg_to_rad(-1.6 * settle_u))
+
+	# Subtle weight-shift micro-sway when standing idle so actors don't look frozen.
+	if not _is_moving and mid_spine >= 0:
+		var sway_deg: float = 1.2 if idle_style == "relaxed_idle" else (0.9 if idle_style == "conversation_idle" else 0.55)
+		_roll_bone(mid_spine, deg_to_rad(sway_deg) * sin(_elapsed_s * 0.65 + _blink_phase * TAU))
+
+
+## Pulls UAL combat-ready flared arms down into calm natural rest beside hips (BUG-006).
+func _apply_non_combat_idle_posture(perf_r_w: float, perf_l_w: float) -> void:
+	var relax_strength := 0.58
+	var hip_y_frac := 0.49
+	var hip_x := 0.21
+	var hip_z := 0.07
+	match idle_style:
+		"relaxed_idle":
+			relax_strength = 0.64
+			hip_y_frac = 0.47
+			hip_x = 0.20
+			hip_z = 0.05
+		"professional_idle":
+			relax_strength = 0.58
+			hip_y_frac = 0.48
+			hip_x = 0.21
+			hip_z = 0.06
+		"conversation_idle":
+			relax_strength = 0.54
+			hip_y_frac = 0.50
+			hip_x = 0.21
+			hip_z = 0.11
+		"alert_idle":
+			relax_strength = 0.34
+			hip_y_frac = 0.52
+			hip_x = 0.24
+			hip_z = 0.12
+
+	var skel_inv: Transform3D = _skeleton.global_transform.affine_inverse()
+	# In Character3D local space (+Z forward, +Y up), anatomical right is -X and left is +X.
+	if not holding and perf_r_w < 0.15:
+		var r_local := Vector3(-hip_x, height_m * hip_y_frac, hip_z)
+		_reach_arm("r", skel_inv * (global_transform * r_local), relax_strength * (1.0 - perf_r_w))
+	if not holding_left and perf_l_w < 0.15:
+		var l_local := Vector3(hip_x, height_m * hip_y_frac, hip_z)
+		_reach_arm("l", skel_inv * (global_transform * l_local), relax_strength * (1.0 - perf_l_w))
+
+
+func _apply_performance_overlay(prop_reach_w: float, prop_reach_side: String) -> void:
+	var human: Dictionary = _target.human
+	var spine_count: int = int(human.get("spine_count", 0))
+	var chest_bone: int = int(human.get("spine%d" % (spine_count - 1), -1)) if spine_count > 0 else -1
+	var mid_spine: int = int(human.get("spine%d" % maxi(spine_count - 2, 0), -1)) if spine_count > 0 else -1
+
+	var lean_deg: float = clampf(float(_perf_overlay.get("torso_lean_deg", 0.0)), -12.0, 14.0)
+	var twist_deg: float = clampf(float(_perf_overlay.get("torso_roll_deg", 0.0)), -8.0, 8.0)
+	if absf(lean_deg) > 0.05 and mid_spine >= 0:
+		_pitch_bone(mid_spine, deg_to_rad(lean_deg * 0.6))
+	if absf(lean_deg) > 0.05 and chest_bone >= 0:
+		_pitch_bone(chest_bone, deg_to_rad(lean_deg * 0.4))
+	if absf(twist_deg) > 0.05 and chest_bone >= 0:
+		_roll_bone(chest_bone, deg_to_rad(twist_deg))
+
+	var skel_inv: Transform3D = _skeleton.global_transform.affine_inverse()
+	var r_w: float = clampf(float(_perf_overlay.get("right_reach_weight", 0.0)), 0.0, 0.92)
+	if r_w > 0.02 and not (prop_reach_w > 0.05 and prop_reach_side == "right"):
+		var r_v: Variant = _perf_overlay.get("right_reach_world", null)
+		if r_v is Vector3:
+			_reach_arm("r", skel_inv * (r_v as Vector3), r_w)
+	var l_w: float = clampf(float(_perf_overlay.get("left_reach_weight", 0.0)), 0.0, 0.92)
+	if l_w > 0.02 and not (prop_reach_w > 0.05 and prop_reach_side == "left"):
+		var l_v: Variant = _perf_overlay.get("left_reach_world", null)
+		if l_v is Vector3:
+			_reach_arm("l", skel_inv * (l_v as Vector3), l_w)
+
+
 func _apply_carry_arm_bias(side: String) -> void:
 	var human: Dictionary = _target.human
 	var upper: int = int(human.get("%s_upper_arm" % side, -1))
@@ -1711,7 +1884,7 @@ func _apply_carry_arm_bias(side: String) -> void:
 	if upper < 0 or lower < 0:
 		return
 	# Gently steady forearm slightly forward so held prop doesn't swing backward through hip.
-	var carry_local := Vector3(0.20 if side == "r" else -0.20, height_m * 0.62, 0.28)
+	var carry_local := Vector3(-0.20 if side == "r" else 0.20, height_m * 0.62, 0.28)
 	var carry_world: Vector3 = global_transform * carry_local
 	_reach_arm(side, _skeleton.global_transform.affine_inverse() * carry_world, 0.38)
 
@@ -1736,7 +1909,13 @@ func _apply_hand_fingers(side: String, is_holding: bool) -> void:
 					var blend_amt: float = 0.35 if grip_map.has(b) else 0.92
 					_skeleton.set_bone_pose_rotation(b, (q_now * Quaternion(axis, deg_to_rad(extra_deg * blend_amt))).normalized())
 	else:
-		# Subtle relaxed natural finger curvature (never stiff splayed paddles).
+		# BUG-006: UAL Idle_Loop clenches fists into a combat pose. For all non-combat
+		# idle styles, relax fingers toward open rest pose with gentle natural curvature
+		# (and open palm when gesturing). Only combat_idle retains clenched fists.
+		var keep_fist: bool = (idle_style == "combat_idle") and not _is_moving
+		var open_blend: float = 0.0 if keep_fist else (0.72 if idle_style == "alert_idle" else 0.92)
+		if float(_perf_overlay.get("open_hand_weight", 0.0)) > 0.2:
+			open_blend = 0.96
 		for finger: String in GRIP_FINGERS:
 			for digit in [1, 2, 3]:
 				var key := "%s_%s%d" % [side, finger, digit]
@@ -1746,9 +1925,11 @@ func _apply_hand_fingers(side: String, is_holding: bool) -> void:
 				if not _finger_curl_axes.has(b):
 					continue
 				var axis: Vector3 = _finger_curl_axes[b] as Vector3
-				var relax_deg: float = 8.0 if finger == "thumb" else (12.0 if digit == 1 else (16.0 if digit == 2 else 12.0))
+				var rest_q: Quaternion = _skeleton.get_bone_rest(b).basis.get_rotation_quaternion()
+				var relax_deg: float = 6.0 if finger == "thumb" else (10.0 if digit == 1 else (14.0 if digit == 2 else 10.0))
+				var relaxed_q: Quaternion = (rest_q * Quaternion(axis, deg_to_rad(relax_deg))).normalized()
 				var q_now: Quaternion = _skeleton.get_bone_pose_rotation(b)
-				_skeleton.set_bone_pose_rotation(b, (q_now * Quaternion(axis, deg_to_rad(relax_deg))).normalized())
+				_skeleton.set_bone_pose_rotation(b, q_now.slerp(relaxed_q, open_blend))
 
 
 func _reach_arm(side: String, target: Vector3, weight: float) -> void:
@@ -1829,7 +2010,8 @@ func _ground_feet() -> void:
 	if lowest == INF:
 		return
 	var wanted: float = clampf(-lowest * _model_scale, -FOOT_GROUND_LIMIT, FOOT_GROUND_LIMIT)
-	_ground_offset = lerpf(_ground_offset, wanted, ground_smoothing)
+	var smooth: float = 0.94 if loco_state in ["run", "decelerate", "stop"] else maxf(ground_smoothing, 0.80)
+	_ground_offset = lerpf(_ground_offset, wanted, smooth)
 	_model_root.position.y = _model_base_y + _ground_offset
 
 
@@ -2006,6 +2188,8 @@ func get_qc_snapshot() -> Dictionary:
 		"clips": [_current_clip],
 		"clip_status": clip_status,
 		"gait": current_gait,
+		"loco_state": loco_state,
+		"idle_style": idle_style,
 		"holding_right": holding,
 		"holding_left": holding_left,
 		"facial": face_snap,
@@ -2272,13 +2456,19 @@ func _apply_look() -> void:
 					mat.metallic = 0.0
 					if lower_m.contains("eye") and not lower_m.contains("eyebrow"):
 						mat.roughness = minf(mat.roughness, 0.22)
-						mat.metallic_specular = 0.55
-					else:
-						mat.roughness = clampf(mat.roughness, 0.56, 0.92)
-						mat.metallic_specular = 0.24
+						mat.metallic_specular = 0.50
+					elif lower_m.contains("hair") or lower_m.contains("beard") or lower_m.contains("eyebrow"):
+						mat.roughness = clampf(mat.roughness, 0.72, 0.94)
+						mat.metallic_specular = 0.14
 						mat.rim_enabled = true
-						mat.rim = 0.14
-						mat.rim_tint = 0.32
+						mat.rim = 0.22
+						mat.rim_tint = 0.38
+					else:
+						mat.roughness = clampf(mat.roughness, 0.64, 0.90)
+						mat.metallic_specular = 0.18
+						mat.rim_enabled = true
+						mat.rim = 0.18
+						mat.rim_tint = 0.34
 					mi.set_surface_override_material(s, mat)
 		return
 
@@ -2541,15 +2731,27 @@ func build_viewmodel(grip_radius: float = 0.022) -> Node3D:
 	root.name = "Viewmodel_%s" % actor_id
 	var jacket: Color = _palette.get("jacket", Color("#2c5aa0"))
 	var collar: Color = _palette.get("collar", Color("#f08a24"))
-	var glove := toon_material(Color(str(_look.get("glove", "#23272e"))))
-	glove.set_shader_parameter("rim_strength", 0.22)
-	var glove_trim := toon_material(Color(str(_look.get("glove_trim", "#3b414a"))))
+	# BUG-004: Inherit the character's real skin & uniform colors (never a fake
+	# placeholder black glove unless explicitly configured via `use_glove: true`).
+	var use_glove: bool = bool(_look.get("use_glove", false))
+	var hand_col: Color = Color(str(_look.get("glove", "#23272e"))) if use_glove else Color(str(_look.get("skin", "#dfb696")))
+	var wrist_col: Color = Color(str(_look.get("glove_trim", "#3b414a"))) if use_glove else collar
+	var glove := StandardMaterial3D.new()
+	glove.albedo_color = hand_col
+	glove.roughness = 0.68
+	glove.metallic_specular = 0.18
+	var glove_trim := StandardMaterial3D.new()
+	glove_trim.albedo_color = wrist_col
+	glove_trim.roughness = 0.72
+	var sleeve_mat := StandardMaterial3D.new()
+	sleeve_mat.albedo_color = jacket
+	sleeve_mat.roughness = 0.76
 	var arm := Node3D.new()
 	arm.name = "Forearm"
 	root.add_child(arm)
-	arm.add_child(_vm_cylinder(0.047, 0.056, 0.4, -0.25, toon_material(jacket)))
-	arm.add_child(_vm_cylinder(0.05, 0.05, 0.026, -0.043, toon_material(collar)))
-	arm.add_child(_vm_cylinder(0.039, 0.043, 0.04, -0.012, glove_trim))
+	arm.add_child(_vm_cylinder(0.047, 0.056, 0.4, -0.25, sleeve_mat))
+	arm.add_child(_vm_cylinder(0.05, 0.05, 0.026, -0.043, glove_trim))
+	arm.add_child(_vm_cylinder(0.039, 0.043, 0.04, -0.012, glove))
 
 	var fist := Node3D.new()
 	fist.name = "Fist"

@@ -183,16 +183,28 @@ class PrepareStage3DTests(unittest.TestCase):
         self.assertGreater(min(energy[fps // 2 + 1:]), 0.9)
         self.assertIsNone(p3.speech_energy(self.dir / 'missing.wav', 10, fps))
 
-    def test_first_person_shot_hides_linlan_behind_a_pov_camera(self) -> None:
+    def test_first_person_shot_defaults_away_from_gratuitous_pov_unless_required(self) -> None:
         shot = self.shots['first_person']
-        self.assertEqual(shot['first_person'], 'linlan')
+        self.assertEqual(shot['first_person'], '')
         cam = shot['cameras'][0]
-        self.assertEqual(cam['mode'], 'pov')
-        self.assertEqual(cam['actor'], 'linlan')
+        self.assertEqual(cam['mode'], 'dolly')
         self.assertLess(cam['look_at'][2], self.stage['set']['room']['min'][2] - 5, 'looks out of the window')
         for other in self.stage['shots']:
             if other is not shot:
                 self.assertEqual(other['first_person'], '')
+
+        # Explicit pov_required=True is still honored when requested by the script.
+        with tempfile.TemporaryDirectory() as tmp:
+            m_path = _manifest(Path(tmp))
+            m_pov = json.loads(m_path.read_text(encoding='utf-8'))
+            for s in m_pov['shots']:
+                if s.get('type') == 'first_person':
+                    s['pov_required'] = True
+            m_path.write_text(json.dumps(m_pov, ensure_ascii=False), encoding='utf-8')
+            stage_pov = _prepare(m_path, Path(tmp) / 'stage3d.json')
+            shot_pov = next(s for s in stage_pov['shots'] if s['type'] == 'first_person')
+            self.assertEqual(shot_pov['first_person'], 'linlan')
+            self.assertEqual(shot_pov['cameras'][0]['mode'], 'pov')
 
     def test_closeup_frames_linlan_chest_up_while_she_nods(self) -> None:
         shot = self.shots['closeup']

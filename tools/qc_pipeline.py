@@ -392,6 +392,8 @@ def _check_camera(stage: dict, rows: list[dict]) -> dict:
 def _check_framing(rows: list[dict]) -> dict:
     issues = []
     saw = False
+    dyn_occ_streak = 0
+    sub_overlap_streak: dict[str, int] = {}
     for row in rows:
         camera = row.get('camera') if isinstance(row.get('camera'), dict) else None
         if camera is None:
@@ -410,6 +412,22 @@ def _check_framing(rows: list[dict]) -> dict:
             issues.append(_issue('FAIL', frame, subject_id, 'subject out of frame ndc=(%.3f, %.3f)' % (ndc_x, ndc_y)))
         if _truthy(subject.get('occluded')):
             issues.append(_issue('FAIL', frame, subject_id, 'subject is occluded'))
+        shot_type = str(row.get('shot_type') or '').lower()
+        dyn_ratio = _float_or_none(camera.get('dynamic_occlusion_ratio'))
+        occ_limit = 0.55 if shot_type in ('over_the_shoulder', 'over_shoulder') else 0.35
+        if dyn_ratio is not None and dyn_ratio > occ_limit:
+            dyn_occ_streak += 1
+            if dyn_occ_streak >= 5:
+                issues.append(_issue('FAIL', frame, subject_id, 'dynamic actor occlusion ratio %.2f exceeds %.2f' % (dyn_ratio, occ_limit)))
+        else:
+            dyn_occ_streak = 0
+        for pid, pdict in _row_props(row).items():
+            if str(pdict.get('state') or '') == 'handoff' and _truthy(pdict.get('subtitle_overlap')):
+                sub_overlap_streak[pid] = sub_overlap_streak.get(pid, 0) + 1
+                if sub_overlap_streak[pid] >= 8:
+                    issues.append(_issue('FAIL', frame, pid, 'handoff prop covered by subtitle safe area'))
+            else:
+                sub_overlap_streak[pid] = 0
     if not saw:
         issues.append(_issue('WARN', None, 'subject', 'subject framing telemetry is missing'))
     return _result('subject_framing', 'Subject framing', issues, [HINT_WIDEN])

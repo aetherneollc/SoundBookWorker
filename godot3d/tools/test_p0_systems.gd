@@ -96,7 +96,7 @@ func _run() -> void:
 		linlan.call("apply_overlays", 0.0, 0.0, Vector3.ZERO, 0.0, "right")
 	var snap_l: Dictionary = linlan.call("get_qc_snapshot")
 	var fsnap: Dictionary = snap_l.get("facial", {})
-	_assert(float(fsnap.get("jaw_open", 0.0)) > 0.35, "linlan jawOpen driven by speech (got %s)" % str(fsnap.get("jaw_open")))
+	_assert(float(fsnap.get("jaw_open", 0.0)) > 0.20 and float(fsnap.get("jaw_open", 0.0)) <= 0.56, "linlan jawOpen naturally bounded during speech (got %s)" % str(fsnap.get("jaw_open")))
 	_assert(float(fsnap.get("mouth_smile", 0.0)) > 0.25, "linlan mouthSmile driven by happy emotion (got %s)" % str(fsnap.get("mouth_smile")))
 	var lf: Array = snap_l.get("left_foot", [0, 9, 0])
 	var rf: Array = snap_l.get("right_foot", [0, 9, 0])

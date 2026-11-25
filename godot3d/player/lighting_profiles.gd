@@ -79,12 +79,12 @@ const PRESETS: Dictionary = {
 		"fog_density": 0.012,
 		"pulse_mode": "alert",
 		"pulse_hz": 1.15,
-		"alert_primary_color": "#ff3b24",
-		"alert_secondary_color": "#ff9e2c",
-		"alert_energy_min": 0.25,
-		"alert_energy_max": 1.25,
+		"alert_primary_color": "#ff2e1c",
+		"alert_secondary_color": "#ff7a20",
+		"alert_energy_min": 0.55,
+		"alert_energy_max": 2.35,
 		"face_fill_color": "#ffe9d4",
-		"face_fill_energy": 0.55,
+		"face_fill_energy": 0.62,
 		"dof_enabled": false,
 		"dof_focus_distance": 2.0,
 		"dof_blur_amount": 0.09,
@@ -161,32 +161,32 @@ const PRESETS: Dictionary = {
 		"accent_fills": [],
 	},
 	"dim_corridor": {
-		"description": "Overhead pool lights along corridor, cool shadows, crisp rim light on actors.",
-		"ambient_color": "#4f6684",
-		"ambient_energy": 0.42,
-		"sun_color": "#c2d6f0",
-		"sun_energy": 0.62,
-		"sun_dir": [-0.20, -0.78, 0.59],
-		"rim_color": "#8ac4ff",
-		"rim_energy": 0.58,
-		"rim_dir": [0.18, -0.32, -0.93],
-		"lamp_color": "#e2eeff",
-		"lamp_energy": 0.92,
-		"lamp_range": 4.4,
-		"lamp_attenuation": 1.55,
+		"description": "Overhead pool lights along corridor, cool shadows, crisp rim & face separation on actors.",
+		"ambient_color": "#587292",
+		"ambient_energy": 0.48,
+		"sun_color": "#cfe0f5",
+		"sun_energy": 0.72,
+		"sun_dir": [-0.24, -0.74, 0.62],
+		"rim_color": "#9ad0ff",
+		"rim_energy": 0.88,
+		"rim_dir": [0.22, -0.28, -0.93],
+		"lamp_color": "#e6f0ff",
+		"lamp_energy": 1.02,
+		"lamp_range": 4.8,
+		"lamp_attenuation": 1.38,
 		"lamp_layout": "corridor_pools",
-		"exposure": 1.05,
+		"exposure": 1.06,
 		"tonemap_white": 5.5,
-		"shadow_blur": 1.7,
-		"shadow_opacity": 0.84,
+		"shadow_blur": 1.6,
+		"shadow_opacity": 0.80,
 		"glow_enabled": true,
-		"glow_intensity": 0.38,
-		"glow_strength": 0.70,
-		"glow_bloom": 0.09,
-		"glow_hdr_threshold": 1.0,
+		"glow_intensity": 0.34,
+		"glow_strength": 0.65,
+		"glow_bloom": 0.08,
+		"glow_hdr_threshold": 1.05,
 		"fog_enabled": true,
-		"fog_color": "#24354a",
-		"fog_density": 0.015,
+		"fog_color": "#263a52",
+		"fog_density": 0.012,
 		"pulse_mode": "none",
 		"dof_enabled": false,
 		"dof_focus_distance": 2.4,
@@ -194,35 +194,35 @@ const PRESETS: Dictionary = {
 		"accent_fills": [],
 	},
 	"med_lab": {
-		"description": "Clean bright clinical daylight-white, teal console glow, soft ambient fill.",
-		"ambient_color": "#cadbe8",
-		"ambient_energy": 0.68,
-		"sun_color": "#f4faff",
-		"sun_energy": 1.05,
-		"sun_dir": [-0.24, -0.72, 0.65],
-		"rim_color": "#c8f2ef",
-		"rim_energy": 0.34,
-		"rim_dir": [0.40, -0.36, -0.84],
-		"lamp_color": "#f0f8ff",
-		"lamp_energy": 0.84,
-		"lamp_range": 6.8,
-		"lamp_attenuation": 1.1,
+		"description": "Clinical daylight-white with directional contrast, contact shadow depth, and teal task glow.",
+		"ambient_color": "#8eaec4",
+		"ambient_energy": 0.44,
+		"sun_color": "#f6fbff",
+		"sun_energy": 0.94,
+		"sun_dir": [-0.42, -0.62, 0.66],
+		"rim_color": "#8cebe4",
+		"rim_energy": 0.46,
+		"rim_dir": [0.44, -0.32, -0.84],
+		"lamp_color": "#edf6ff",
+		"lamp_energy": 0.56,
+		"lamp_range": 6.4,
+		"lamp_attenuation": 1.25,
 		"lamp_layout": "grid",
-		"exposure": 1.04,
-		"tonemap_white": 6.5,
-		"shadow_blur": 2.0,
-		"shadow_opacity": 0.68,
+		"exposure": 0.98,
+		"tonemap_white": 6.0,
+		"shadow_blur": 1.5,
+		"shadow_opacity": 0.84,
 		"glow_enabled": true,
-		"glow_intensity": 0.30,
-		"glow_strength": 0.62,
-		"glow_bloom": 0.06,
-		"glow_hdr_threshold": 1.08,
+		"glow_intensity": 0.24,
+		"glow_strength": 0.54,
+		"glow_bloom": 0.05,
+		"glow_hdr_threshold": 1.12,
 		"fog_enabled": false,
-		"fog_color": "#c4dce4",
+		"fog_color": "#b4d0dc",
 		"fog_density": 0.004,
 		"pulse_mode": "none",
-		"teal_accent_color": "#4ae6d8",
-		"teal_accent_energy": 0.46,
+		"teal_accent_color": "#38dcd0",
+		"teal_accent_energy": 0.62,
 		"dof_enabled": false,
 		"dof_focus_distance": 2.0,
 		"dof_blur_amount": 0.07,
@@ -564,10 +564,89 @@ static func apply_profile(
 			light.shadow_enabled = false
 			rig.add_child(light)
 
+	# Dedicated close-up & dark-scene character face exposure light (BUG-005 / BUG-013).
+	var char_face_fill := OmniLight3D.new()
+	char_face_fill.name = "CharacterFaceFill"
+	char_face_fill.position = Vector3(room_center.x, 1.75, room_center.z)
+	char_face_fill.omni_range = 2.8
+	char_face_fill.omni_attenuation = 1.6
+	char_face_fill.light_color = Color("#fff2e2")
+	char_face_fill.light_energy = 0.0
+	char_face_fill.shadow_enabled = false
+	rig.add_child(char_face_fill)
+
+	# Dedicated event-driven tactical alert wash (BUG-012).
+	var event_alert := OmniLight3D.new()
+	event_alert.name = "EventAlertWash"
+	event_alert.position = Vector3(room_center.x, maxf(room_max.y - 0.32, 2.2), room_center.z)
+	event_alert.omni_range = maxf(room_max.x - room_min.x, room_max.z - room_min.z) * 1.15
+	event_alert.omni_attenuation = 1.1
+	event_alert.light_color = Color("#ff2a1a")
+	event_alert.light_energy = 0.0
+	event_alert.shadow_enabled = false
+	rig.add_child(event_alert)
+
 	rig.set_meta("profile_name", str(cfg.get("profile_name", DEFAULT_PROFILE)))
 	rig.set_meta("world_env", world)
 	rig.set_meta("dynamic_lights", dynamic_lights)
+	rig.set_meta("char_face_fill", char_face_fill)
+	rig.set_meta("event_alert", event_alert)
+	rig.set_meta("base_ambient_energy", float(cfg.get("ambient_energy", 0.55)))
+	rig.set_meta("base_exposure", float(cfg.get("exposure", 1.0)))
 	return rig
+
+
+## Automatically illuminates primary subject's face during close-ups & dark scenes
+## without washing out surrounding walls (BUG-005 / BUG-013).
+static func update_subject_fill(rig: Node3D, cam_pos: Vector3, subject_head: Vector3, shot_type: String) -> void:
+	if rig == null or not rig.has_meta("char_face_fill"):
+		return
+	var fill: OmniLight3D = rig.get_meta("char_face_fill") as OmniLight3D
+	if fill == null or not is_instance_valid(fill):
+		return
+	if subject_head == Vector3.ZERO:
+		fill.light_energy = 0.0
+		return
+	var prof: String = str(rig.get_meta("profile_name", "day_bay"))
+	var to_cam: Vector3 = (cam_pos - subject_head)
+	var dist: float = to_cam.length()
+	if dist < 0.05:
+		fill.light_energy = 0.0
+		return
+	var dir_c: Vector3 = to_cam / dist
+	# Place soft key fill 0.85m in front & slightly above eye line toward camera.
+	fill.position = subject_head + dir_c * minf(0.85, dist * 0.55) + Vector3(0.0, 0.22, 0.0)
+	var is_closeup: bool = shot_type in ["close_up", "closeup", "extreme_close_up", "reaction", "over_the_shoulder", "over_shoulder"]
+	var is_dark: bool = prof in ["dim_corridor", "night_alert", "storm_exterior"]
+	if is_dark and is_closeup:
+		fill.light_energy = 0.58
+		fill.omni_range = 2.6
+	elif is_dark:
+		fill.light_energy = 0.42
+		fill.omni_range = 3.2
+	elif is_closeup and prof != "med_lab":
+		fill.light_energy = 0.26
+		fill.omni_range = 2.4
+	else:
+		fill.light_energy = 0.0
+
+
+## Modulates scene lighting in response to SceneEventController events (BUG-012).
+static func apply_event_feedback(rig: Node3D, alert_pulse: float, storm_intensity: float, _signal_lost: bool, _time_sec: float) -> void:
+	if rig == null:
+		return
+	if rig.has_meta("event_alert"):
+		var alert_l: OmniLight3D = rig.get_meta("event_alert") as OmniLight3D
+		if alert_l != null and is_instance_valid(alert_l):
+			alert_l.light_energy = 1.65 * clampf(alert_pulse, 0.0, 1.0)
+	if rig.has_meta("world_env"):
+		var world: WorldEnvironment = rig.get_meta("world_env") as WorldEnvironment
+		if world != null and world.environment != null:
+			var base_exp: float = float(rig.get_meta("base_exposure", 1.0))
+			var base_amb: float = float(rig.get_meta("base_ambient_energy", 0.55))
+			var storm_c: float = clampf(storm_intensity, 0.0, 1.0)
+			world.environment.tonemap_exposure = base_exp * (1.0 - 0.10 * storm_c)
+			world.environment.ambient_light_energy = base_amb * (1.0 - 0.16 * storm_c)
 
 
 static func update_time(rig: Node3D, time_sec: float) -> void:

@@ -15,9 +15,11 @@ extends Node3D
 ##
 ## Emits per-frame deterministic telemetry for the QC pipeline.
 
-const DEFAULT_HANDOFF_HEIGHT := 1.06
+const DEFAULT_HANDOFF_HEIGHT := 1.16
 const TORSO_CLEARANCE_RADIUS := 0.34
-const DEFAULT_MAX_HANDOFF_GAP := 0.36
+const DEFAULT_MAX_HANDOFF_GAP := 0.28
+const HAND_MIN_SEPARATION_M := 0.085
+const RECEIVER_HOLD_OVERLAP_FRAMES := 5
 
 var _character_script: Script
 var _props: Dictionary = {}        # prop_id -> Dictionary runtime state
@@ -77,22 +79,32 @@ func register_prop(prop_id: String, spec: Dictionary) -> Node3D:
 	var auto_rest_y: float = -box.position.y if box.size.length_squared() > 1e-8 else 0.0
 	var surface_rest_y: float = float(spec.get("surface_rest_y", auto_rest_y))
 
-	# Standard local socket markers inside `root` (root origin == grip socket).
+	# Standard local anchor markers inside `root` (GripAnchor, ReceiveAnchor, InspectAnchor).
 	var grip_socket := Node3D.new()
-	grip_socket.name = "Socket_Grip"
+	grip_socket.name = "GripAnchor"
 	root.add_child(grip_socket)
 
-	var receive_default: Vector3 = Vector3(0.0, clampf(box.size.y * 0.35, 0.04, 0.14), clampf(box.size.z * 0.35, 0.015, 0.06))
-	var receive_pos: Vector3 = _vec3(sockets_cfg.get("receive", spec.get("receive_point", null)), receive_default)
+	var receive_default: Vector3 = Vector3(
+		0.0,
+		clampf(box.size.y * 0.45, 0.08, 0.14),
+		clampf(box.size.z * 0.45, 0.055, 0.10),
+	)
+	var receive_pos: Vector3 = _vec3(
+		sockets_cfg.get("receive_anchor", sockets_cfg.get("receive", spec.get("receive_point", null))),
+		receive_default,
+	)
 	var receive_socket := Node3D.new()
-	receive_socket.name = "Socket_Receive"
+	receive_socket.name = "ReceiveAnchor"
 	receive_socket.position = receive_pos
 	root.add_child(receive_socket)
 
-	var operate_default: Vector3 = Vector3(0.0, box.end.y, box.end.z * 0.5)
-	var operate_pos: Vector3 = _vec3(sockets_cfg.get("operate", spec.get("operate_point", null)), operate_default)
+	var operate_default: Vector3 = Vector3(0.0, maxf(box.end.y, 0.10), maxf(box.end.z * 0.5, 0.04))
+	var operate_pos: Vector3 = _vec3(
+		sockets_cfg.get("inspect_anchor", sockets_cfg.get("operate", spec.get("operate_point", null))),
+		operate_default,
+	)
 	var operate_socket := Node3D.new()
-	operate_socket.name = "Socket_Operate"
+	operate_socket.name = "InspectAnchor"
 	operate_socket.position = operate_pos
 	root.add_child(operate_socket)
 
@@ -101,6 +113,7 @@ func register_prop(prop_id: String, spec: Dictionary) -> Node3D:
 
 	var state := {
 		"id": prop_id,
+		"entity_role": str(spec.get("entity_role", spec.get("kind", prop_id))),
 		"spec": spec.duplicate(true),
 		"root": root,
 		"grip_frame": grip_frame,
@@ -108,6 +121,7 @@ func register_prop(prop_id: String, spec: Dictionary) -> Node3D:
 		"grip_socket": grip_socket,
 		"receive_socket": receive_socket,
 		"operate_socket": operate_socket,
+		"inspect_socket": operate_socket,
 		"surface_rest_y": surface_rest_y,
 		"local_aabb": box,
 		"state": "hidden" if not initial_visible else "surface",
@@ -116,6 +130,7 @@ func register_prop(prop_id: String, spec: Dictionary) -> Node3D:
 		"hand_gap_m": 0.0,
 		"handoff_prev_gap": INF,
 		"handoff_done_keys": {},
+		"handoff_transfer_frames": {},
 		"transfer_count": 0,
 		"blend_offset": Transform3D.IDENTITY,
 		"blend_alpha": 0.0,
@@ -368,8 +383,22 @@ func _eval_handoff_action(entry: Dictionary, active: Dictionary, frame_index: in
 	if not already_done and str(entry["owner"]) != giver:
 		attach_to_actor(prop_id, giver, actors, giver_side, false)
 
-	# Compute torso-safe meeting point between giver and receiver.
+	# Compute torso-safe meeting point between giver and receiver (chest height, above subtitles).
 	var meet: Vector3 = _compute_safe_handoff_point(giver_node, recv_node, float(active.get("height", DEFAULT_HANDOFF_HEIGHT)))
+
+	# Validate actor spacing and mutual facing prior to handoff.
+	var delta_xz := Vector2(recv_node.global_position.x - giver_node.global_position.x, recv_node.global_position.z - giver_node.global_position.z)
+	var actor_dist_m: float = delta_xz.length()
+	var dir_to_recv: Vector3 = Vector3(delta_xz.x, 0.0, delta_xz.y).normalized() if actor_dist_m > 0.001 else Vector3.FORWARD
+	var giver_fwd: Vector3 = (giver_node.global_transform.basis * Vector3(0.0, 0.0, 1.0))
+	giver_fwd.y = 0.0
+	var recv_fwd: Vector3 = (recv_node.global_transform.basis * Vector3(0.0, 0.0, 1.0))
+	recv_fwd.y = 0.0
+	var facing_ok: bool = (
+		giver_fwd.normalized().dot(dir_to_recv) > 0.25
+		and recv_fwd.normalized().dot(-dir_to_recv) > 0.25
+	)
+	var distance_ok: bool = actor_dist_m >= 0.45 and actor_dist_m <= 1.55
 
 	# Smooth ramp-in / ramp-out reach weights.
 	var ramp: float = maxf(float(active.get("ramp_s", 0.35)) * float(maxi(fps, 1)), 1.0)
@@ -378,42 +407,68 @@ func _eval_handoff_action(entry: Dictionary, active: Dictionary, frame_index: in
 	var reach_w: float = minf(w_in, w_out)
 	reach_w = reach_w * reach_w * (3.0 - 2.0 * reach_w)
 
-	# Giver extends so receive socket meets midpoint; receiver reaches directly to receive socket.
+	# Keep distinct GripAnchor (giver side) and ReceiveAnchor (receiver side) separated
+	# by at least HAND_MIN_SEPARATION_M so palms/fingers never intersect.
 	var receive_world: Vector3 = (entry["receive_socket"] as Node3D).global_position
 	var grip_world: Vector3 = (entry["grip_socket"] as Node3D).global_position
 	var grip_to_receive: Vector3 = receive_world - grip_world
-	var giver_target: Vector3 = meet - grip_to_receive * 0.5
-	var receiver_target: Vector3 = receive_world if not already_done else meet
+	var sep_vec: Vector3 = dir_to_recv * (HAND_MIN_SEPARATION_M * 0.55)
+	var giver_target: Vector3 = meet - grip_to_receive * 0.5 - sep_vec
+	var receiver_target: Vector3 = (receive_world + sep_vec * 0.35) if not already_done else (meet + sep_vec * 0.5)
 
-	if reach_w > 0.001:
-		_reach_requests[giver] = {"target": giver_target, "weight": reach_w, "side": giver_side, "prop_id": prop_id}
-		_reach_requests[receiver] = {"target": receiver_target, "weight": reach_w, "side": recv_side, "prop_id": prop_id}
-		_gaze_requests[giver] = {"point": meet, "weight": 0.65 * reach_w, "prop_id": prop_id}
-		_gaze_requests[receiver] = {"point": meet, "weight": 0.75 * reach_w, "prop_id": prop_id}
+	# Post-transfer overlap: giver releases smoothly ONLY AFTER receiver has gripped for
+	# RECEIVER_HOLD_OVERLAP_FRAMES frames.
+	var transfer_map: Dictionary = entry["handoff_transfer_frames"] as Dictionary
+	var giver_reach_w: float = reach_w
+	var recv_reach_w: float = reach_w
+	if already_done:
+		var done_frame: int = int(transfer_map.get(handoff_key, transfer_frame))
+		var post_f: int = frame_index - done_frame
+		if post_f <= RECEIVER_HOLD_OVERLAP_FRAMES:
+			var hold_u: float = 1.0 - float(post_f) / float(maxi(RECEIVER_HOLD_OVERLAP_FRAMES, 1))
+			giver_reach_w = maxf(reach_w * 0.35, reach_w * hold_u)
+		else:
+			giver_reach_w = reach_w * clampf(1.0 - float(post_f - RECEIVER_HOLD_OVERLAP_FRAMES) / maxf(ramp * 0.6, 4.0), 0.0, 1.0)
+		recv_reach_w = maxf(reach_w, 0.85 * w_out)
+
+	if giver_reach_w > 0.001:
+		_reach_requests[giver] = {"target": giver_target, "weight": giver_reach_w, "side": giver_side, "prop_id": prop_id}
+		_gaze_requests[giver] = {"point": meet, "weight": 0.65 * giver_reach_w, "prop_id": prop_id}
+	if recv_reach_w > 0.001:
+		_reach_requests[receiver] = {"target": receiver_target, "weight": recv_reach_w, "side": recv_side, "prop_id": prop_id}
+		_gaze_requests[receiver] = {"point": meet, "weight": 0.80 * recv_reach_w, "prop_id": prop_id}
 
 	entry["state"] = "handoff"
 
 	if not already_done:
 		var recv_hand: Vector3 = _actor_hand_world(recv_node, recv_side)
+		var giver_hand: Vector3 = _actor_hand_world(giver_node, giver_side)
 		var gap: float = receive_world.distance_to(recv_hand)
+		var hand_sep: float = giver_hand.distance_to(recv_hand)
 		var max_gap: float = float(active.get("max_gap", DEFAULT_MAX_HANDOFF_GAP))
-		var explicit_trigger: bool = active.has("transfer_frame") and frame_index >= transfer_frame
-		var proximity_trigger: bool = (not active.has("transfer_frame")) and (
-			(minf(gap, float(entry["handoff_prev_gap"])) <= max_gap and gap > float(entry["handoff_prev_gap"]) + 0.001)
-			or frame_index >= transfer_frame
-		)
-		if explicit_trigger or proximity_trigger:
+		var contact_ok: bool = minf(gap, float(entry["handoff_prev_gap"])) <= max_gap
+		var late_deadline: int = maxi(transfer_frame + 6, b_f - RECEIVER_HOLD_OVERLAP_FRAMES - 2)
+		var contact_trigger: bool = contact_ok and frame_index >= (transfer_frame - 4)
+		var fallback_trigger: bool = frame_index >= late_deadline
+		if contact_trigger or fallback_trigger:
 			var final_gap: float = minf(gap, float(entry["handoff_prev_gap"]))
+			# Preserve exact world-space position/orientation across ownership switch.
 			attach_to_actor(prop_id, receiver, actors, recv_side, true)
 			(entry["handoff_done_keys"] as Dictionary)[handoff_key] = true
+			transfer_map[handoff_key] = frame_index
 			entry["handoff_prev_gap"] = INF
 			entry["state"] = "handoff"
 			_handoff_log.append({
 				"prop_id": prop_id,
+				"entity_role": str(entry.get("entity_role", prop_id)),
 				"frame": frame_index,
 				"from": giver,
 				"to": receiver,
 				"hand_gap_m": snappedf(final_gap, 0.001),
+				"hand_separation_m": snappedf(hand_sep, 0.001),
+				"contact_verified": contact_ok,
+				"stance_ok": distance_ok and facing_ok,
+				"actor_dist_m": snappedf(actor_dist_m, 0.001),
 				"meet_pos": [snappedf(meet.x, 0.001), snappedf(meet.y, 0.001), snappedf(meet.z, 0.001)],
 			})
 		else:

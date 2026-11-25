@@ -19,6 +19,9 @@ extends Node3D
 
 const PropSystemScript := preload("res://player/prop_system.gd")
 const RoverScript := preload("res://player/rover3d.gd")
+const PerformanceControllerScript := preload("res://player/performance_controller.gd")
+const SceneEventControllerScript := preload("res://player/scene_event_controller.gd")
+const LightingProfileScript := preload("res://player/lighting_profiles.gd")
 
 const VIEW_SIZE := Vector2(1280.0, 720.0)
 const TURN_RATE_DEG := 260.0
@@ -47,6 +50,10 @@ var _rover: Node3D
 var _rover_spec: Dictionary = {}
 var _rover_state: Dictionary = {}
 var _sensor_spec: Dictionary = {}
+var _perf_controller: RefCounted
+var _event_controller: RefCounted
+var _last_event_state: Dictionary = {}
+var _actor_gaze_labels: Dictionary = {}
 
 var _viewmodel: Node3D
 var _viewmodel_sensor: Node3D
@@ -187,6 +194,16 @@ func _build_runtime() -> bool:
 	if _stage_data.has("scene_type") and not resolved_set.has("scene_type"):
 		resolved_set["scene_type"] = _stage_data["scene_type"]
 	_bay.call("build", resolved_set, _character_script)
+	_perf_controller = PerformanceControllerScript.new()
+	_event_controller = SceneEventControllerScript.new()
+	var events_cfg: Array = _stage_data.get("events", []) as Array if _stage_data.get("events", []) is Array else []
+	_event_controller.call(
+		"setup",
+		events_cfg,
+		str(_bay.get("scene_type")),
+		str(_bay.get("lighting_profile_name")),
+		_captions
+	)
 
 	_camera = Camera3D.new()
 	_camera.name = "StageCamera"
@@ -320,9 +337,12 @@ func _apply_frame(frame_index: int) -> void:
 	var dt: float = 1.0 / float(_fps)
 	var time_sec: float = float(frame_index) / float(_fps)
 
-	# 0. Update time-driven lighting (subtle alert pulses, ambient fill).
+	# 0. Update time-driven lighting & SceneEventController environmental feedback (BUG-012).
 	if _bay != null and _bay.has_method("update_lighting"):
 		_bay.call("update_lighting", time_sec)
+	if _event_controller != null:
+		var lrig: Node = _bay.get("_lighting_rig") as Node if _bay != null else null
+		_last_event_state = _event_controller.call("update", frame_index, _fps, _bay, lrig, _rover)
 
 	# 1. Identify active speaker on this frame (for listener micro-reactions & rover gaze).
 	var active_speaker: Dictionary = _active_speaker_at(frame_index)
@@ -344,7 +364,7 @@ func _apply_frame(frame_index: int) -> void:
 		prop_reach_requests = _prop_system.call("get_actor_reach_requests")
 		prop_gaze_requests = _prop_system.call("get_actor_gaze_requests")
 
-	# 5. Second pass on actors: gaze (merging prop gaze + partner gaze) + IK/grip/grounding overlays.
+	# 5. Second pass on actors: performance controller + gaze + IK/grip/grounding overlays.
 	for actor_id_v: Variant in _actors.keys():
 		var actor_id: String = str(actor_id_v)
 		_apply_actor_overlays(
@@ -354,14 +374,16 @@ func _apply_frame(frame_index: int) -> void:
 			shot,
 			actor_paths.get(actor_id, {}),
 			prop_reach_requests.get(actor_id, {}),
-			prop_gaze_requests.get(actor_id, {})
+			prop_gaze_requests.get(actor_id, {}),
+			active_speaker
 		)
 
-	# 6. Camera & DoF & Captions.
+	# 6. Camera & DoF & Automatic Close-Up / Dark-Scene Face Fill (BUG-005 / BUG-013) & Captions.
 	_apply_camera(shot, shot_frame, frame_index)
+	_update_face_exposure_fill(shot)
 	_update_captions(frame_index)
 
-	# 7. Deterministic QC telemetry snapshot.
+	# 7. Deterministic QC telemetry snapshot (with full Shot Quality Verification metrics).
 	if _telemetry_json_path != "":
 		_telemetry_frames.append(_capture_telemetry_frame(frame_index, shot))
 
@@ -407,7 +429,7 @@ func _apply_actor_base(actor_id: String, frame_index: int, dt: float, active_spe
 		clip = "idle"
 		key = "idle"
 
-	actor.call("update_animation", clip, key, speed, dt, 0.10 if moving else 0.22)
+	actor.call("update_locomotion_state", clip, key, float(path.speed), speed, dt, 0.10 if moving else 0.24, moving)
 
 	# Emotions & listener micro-reactions.
 	var emo_entry: Dictionary = _active_entry(spec.get("emotions", []), frame_index)
@@ -464,15 +486,58 @@ func _apply_actor_overlays(
 	shot: Dictionary,
 	path: Dictionary,
 	prop_reach: Dictionary,
-	prop_gaze: Dictionary
+	prop_gaze: Dictionary,
+	active_speaker: Dictionary = {}
 ) -> void:
 	var actor: Node3D = _actors[actor_id]
 	var spec: Dictionary = _actor_specs[actor_id]
 
-	# Gaze: prop interaction gaze takes priority when active, else partner/path gaze.
+	# Evaluate unified CharacterPerformanceController (BUG-006 / BUG-007 / BUG-010).
+	var prop_reach_active: bool = not prop_reach.is_empty() and float(prop_reach.get("weight", 0.0)) > 0.05
+	var perf: Dictionary = {}
+	if _perf_controller != null:
+		var line: Dictionary = _speech_at(actor_id, frame_index)
+		var is_speaking: bool = not line.is_empty()
+		var spk_id: String = str(active_speaker.get("actor", ""))
+		var is_listening: bool = (not is_speaking) and spk_id != "" and spk_id != actor_id
+		var caption_txt: String = _caption_text_at(frame_index)
+		var nearest_dev: Dictionary = _bay.call("find_nearest_device", actor.position) if (_bay != null and _bay.has_method("find_nearest_device")) else {}
+		var active_evs: Array[String] = _event_controller.call("get_active_events") if _event_controller != null else []
+		var emo_now: String = str((actor.call("get_qc_snapshot") as Dictionary).get("facial", {}).get("emotion", "neutral"))
+		perf = _perf_controller.call(
+			"evaluate_actor",
+			actor_id,
+			actor,
+			spec,
+			frame_index,
+			_fps,
+			str(_bay.get("scene_type")) if _bay != null else "observation_bay",
+			emo_now,
+			is_speaking,
+			is_listening,
+			caption_txt,
+			int(line.get("from", frame_index)),
+			int(line.get("to", frame_index + 48)),
+			float(path.get("speed", 0.0)) > 0.04,
+			bool(actor.get("holding")),
+			bool(actor.get("holding_left")),
+			prop_reach_active,
+			nearest_dev,
+			active_evs
+		)
+		actor.call("set_idle_style", str(perf.get("idle_style", "professional_idle")))
+		actor.call("set_performance_overlay", perf)
+
+	# Gaze: prop interaction gaze takes priority, then active device operation, then partner/path gaze.
 	var gaze: Dictionary = _gaze_target(actor_id, spec, path, frame_index, shot)
+	var gaze_label: String = str(gaze.get("label", "forward"))
 	if not prop_gaze.is_empty() and float(prop_gaze.get("weight", 0.0)) > 0.05:
 		gaze = {"point": prop_gaze["point"], "weight": float(prop_gaze["weight"])}
+		gaze_label = "prop:%s" % str(prop_gaze.get("prop_id", "prop"))
+	elif bool(perf.get("device_operating", false)) and perf.get("device_look_target", Vector3.ZERO) != Vector3.ZERO:
+		gaze = {"point": perf["device_look_target"], "weight": 0.78}
+		gaze_label = "device:%s" % str(perf.get("device_id", "console"))
+	_actor_gaze_labels[actor_id] = gaze_label
 	actor.call("apply_look_at", gaze.get("point", actor.position), float(gaze.get("weight", 0.0)), dt)
 
 	# Explicit nods.
@@ -555,8 +620,15 @@ func _gaze_target(actor_id: String, spec: Dictionary, path: Dictionary, frame_in
 		var target: String = str(entry["target"])
 		if _actors.has(target) and target != actor_id:
 			point = _actors[target].call("eye_world_position")
+			var w_t := 0.82
+			var st_t: String = str(shot.get("type", shot.get("shot_type", ""))).to_lower()
+			if (st_t == "closeup" or st_t == "close_up" or st_t == "extreme_close_up") and _camera_state.has("pos"):
+				point = point.lerp(_camera_state["pos"] as Vector3, 0.22)
+				w_t = 0.85
+			return {"point": point, "weight": w_t, "label": "actor:%s" % target}
 		elif _rover != null and target == str(_rover_spec.get("id", "at1")) and _rover.visible:
 			point = _rover.call("get_eye_world_position")
+			return {"point": point, "weight": 0.80, "label": "rover:%s" % target}
 	elif entry.has("point"):
 		var p: Vector2 = _vec2(entry["point"])
 		point = Vector3(p.x, eye_height, p.y)
@@ -952,6 +1024,9 @@ func _capture_telemetry_frame(frame_index: int, shot: Dictionary) -> Dictionary:
 	var row := {
 		"frame": frame_index,
 		"shot_id": str(shot.get("id", "")),
+		"shot_type": str(shot.get("type", shot.get("shot_type", ""))),
+		"subtitle_active": _caption_text_at(frame_index) != "",
+		"events": _last_event_state.get("active_events", []),
 		"actors": actors_row,
 		"props": props_row,
 		"camera": {
@@ -959,12 +1034,141 @@ func _capture_telemetry_frame(frame_index: int, shot: Dictionary) -> Dictionary:
 			"look_at": [snappedf(cam_look.x, 0.001), snappedf(cam_look.y, 0.001), snappedf(cam_look.z, 0.001)],
 			"fov": snappedf(cam_fov, 0.1),
 			"wall_distance_m": snappedf(wall_dist, 0.001),
+			"camera_collision": wall_dist < 0.10,
 			"subject": subject_info,
 		},
 	}
+	# Enrich each actor & prop row with screen-space bounding boxes, face visibility,
+	# gaze target, foot contact, and dynamic occlusion ratio (Section V Shot Quality Verification).
+	var actor_boxes := {}
+	for key2: Variant in _actors.keys():
+		var aid2: String = str(key2)
+		var act_node: Node3D = _actors[aid2]
+		var snap_d: Dictionary = actors_row[aid2] as Dictionary
+		var bbox: Dictionary = _actor_screen_bbox(act_node)
+		actor_boxes[aid2] = bbox
+		var lf_arr: Array = snap_d.get("left_foot", [0.0, 0.0, 0.0]) as Array
+		var rf_arr: Array = snap_d.get("right_foot", [0.0, 0.0, 0.0]) as Array
+		snap_d["bbox_ndc"] = bbox
+		snap_d["face_visible"] = bool(bbox.get("in_frame", false)) and not bool(act_node.call("is_first_person_hidden"))
+		snap_d["gaze_target"] = str(_actor_gaze_labels.get(aid2, "forward"))
+		snap_d["foot_contact"] = {
+			"left": float(lf_arr[1]) <= 0.04,
+			"right": float(rf_arr[1]) <= 0.04,
+		}
+		snap_d["anim_state"] = str(snap_d.get("loco_state", "idle"))
+
+	var primary_id: String = str(subject_info.get("id", ""))
+	var dyn_occ_ratio := 0.0
+	if actor_boxes.has(primary_id):
+		var tb: Dictionary = actor_boxes[primary_id] as Dictionary
+		if bool(tb.get("in_frame", false)):
+			for other_k: Variant in actor_boxes.keys():
+				var oid: String = str(other_k)
+				if oid == primary_id:
+					continue
+				var ob: Dictionary = actor_boxes[oid] as Dictionary
+				if bool(ob.get("in_frame", false)) and float(ob.get("depth", 99.0)) < float(tb.get("depth", 99.0)) - 0.12:
+					dyn_occ_ratio = maxf(dyn_occ_ratio, _bbox_overlap_ratio(tb, ob))
+	(row["camera"] as Dictionary)["dynamic_occlusion_ratio"] = snappedf(dyn_occ_ratio, 0.001)
+
+	for pk2: Variant in props_row.keys():
+		var pid2: String = str(pk2)
+		var pdict: Dictionary = props_row[pid2] as Dictionary
+		var ppos_a: Array = pdict.get("position", [0.0, 0.0, 0.0]) as Array
+		var pproj: Vector3 = _project_world_ndc(Vector3(float(ppos_a[0]), float(ppos_a[1]), float(ppos_a[2])))
+		var p_in_frame: bool = pproj.z > 0.05 and absf(pproj.x) <= 1.0 and absf(pproj.y) <= 1.0
+		pdict["ndc"] = [snappedf(pproj.x, 0.001), snappedf(pproj.y, 0.001)]
+		pdict["visible"] = p_in_frame
+		pdict["subtitle_overlap"] = p_in_frame and bool(row["subtitle_active"]) and pproj.y < -0.60
+
 	if rover_row != null:
 		row["rover"] = rover_row
 	return row
+
+
+func _caption_text_at(frame_index: int) -> String:
+	for cap: Dictionary in _captions:
+		if frame_index >= int(cap.get("from", 0)) and frame_index < int(cap.get("to", 0)):
+			return str(cap.get("text", ""))
+	return ""
+
+
+func _update_face_exposure_fill(shot: Dictionary) -> void:
+	if _bay == null:
+		return
+	var lrig: Node3D = _bay.get("_lighting_rig") as Node3D
+	if lrig == null:
+		return
+	var cam_pos: Vector3 = _camera_state.get("pos", _camera.global_position) as Vector3
+	var subj_id: String = str(shot.get("primary_subject", shot.get("speaker", "")))
+	var head_pt := Vector3.ZERO
+	if subj_id != "" and _actors.has(subj_id):
+		var act: Node3D = _actors[subj_id]
+		if act.visible and not bool(act.call("is_first_person_hidden")):
+			head_pt = act.call("head_world_position")
+	LightingProfileScript.update_subject_fill(lrig, cam_pos, head_pt, str(shot.get("type", shot.get("shot_type", ""))))
+
+
+func _project_world_ndc(world_pt: Vector3) -> Vector3:
+	var local_pt: Vector3 = _camera.global_transform.affine_inverse() * world_pt
+	if local_pt.z >= -0.05:
+		return Vector3(2.0, 2.0, -1.0)
+	var half_h: float = tan(deg_to_rad(_camera.fov * 0.5)) * (-local_pt.z)
+	var half_w: float = half_h * (VIEW_SIZE.x / VIEW_SIZE.y)
+	return Vector3(local_pt.x / maxf(half_w, 0.0001), local_pt.y / maxf(half_h, 0.0001), -local_pt.z)
+
+
+func _actor_screen_bbox(act: Node3D) -> Dictionary:
+	if not act.visible or bool(act.call("is_first_person_hidden")):
+		return {"in_frame": false, "min_x": 2.0, "min_y": 2.0, "max_x": 2.0, "max_y": 2.0, "depth": 99.0}
+	var head: Vector3 = act.call("head_world_position")
+	var hips: Vector3 = act.call("bone_world_position", "hips")
+	var min_x := 99.0
+	var min_y := 99.0
+	var max_x := -99.0
+	var max_y := -99.0
+	var min_d := 99.0
+	var valid := false
+	for pt: Vector3 in [
+		head + Vector3(0.0, 0.12, 0.0),
+		head + Vector3(0.22, -0.15, 0.0),
+		head + Vector3(-0.22, -0.15, 0.0),
+		hips + Vector3(0.24, 0.0, 0.0),
+		hips + Vector3(-0.24, 0.0, 0.0),
+	]:
+		var p: Vector3 = _project_world_ndc(pt)
+		if p.z > 0.05:
+			valid = true
+			min_x = minf(min_x, p.x)
+			min_y = minf(min_y, p.y)
+			max_x = maxf(max_x, p.x)
+			max_y = maxf(max_y, p.y)
+			min_d = minf(min_d, p.z)
+	if not valid:
+		return {"in_frame": false, "min_x": 2.0, "min_y": 2.0, "max_x": 2.0, "max_y": 2.0, "depth": 99.0}
+	var in_f: bool = max_x >= -1.0 and min_x <= 1.0 and max_y >= -1.0 and min_y <= 1.0
+	return {
+		"in_frame": in_f,
+		"min_x": snappedf(min_x, 0.001),
+		"min_y": snappedf(min_y, 0.001),
+		"max_x": snappedf(max_x, 0.001),
+		"max_y": snappedf(max_y, 0.001),
+		"depth": snappedf(min_d, 0.001),
+	}
+
+
+func _bbox_overlap_ratio(target: Dictionary, blocker: Dictionary) -> float:
+	var tx0: float = float(target["min_x"])
+	var ty0: float = float(target["min_y"])
+	var tx1: float = float(target["max_x"])
+	var ty1: float = float(target["max_y"])
+	var area: float = maxf(0.0, tx1 - tx0) * maxf(0.0, ty1 - ty0)
+	if area <= 1e-5:
+		return 0.0
+	var ix: float = maxf(0.0, minf(tx1, float(blocker["max_x"])) - maxf(tx0, float(blocker["min_x"])))
+	var iy: float = maxf(0.0, minf(ty1, float(blocker["max_y"])) - maxf(ty0, float(blocker["min_y"])))
+	return clampf((ix * iy) / area, 0.0, 1.0)
 
 
 func _camera_wall_clearance(cam_pos: Vector3) -> float:
@@ -1041,7 +1245,15 @@ func _subject_projection(shot: Dictionary, cam_pos: Vector3) -> Dictionary:
 
 	var occluded := false
 	if _bay != null and _bay.has_method("is_camera_clear"):
-		occluded = not bool(_bay.call("is_camera_clear", cam_pos, world_pt, 0.14))
+		var chest_blocked: bool = not bool(_bay.call("is_camera_clear", cam_pos, world_pt, 0.12))
+		var head_blocked: bool = chest_blocked
+		if chest_blocked and _actors.has(subj_id):
+			var s_act: Node3D = _actors[subj_id]
+			if s_act != null and s_act.has_method("head_world_position"):
+				var h_pt: Vector3 = s_act.call("head_world_position")
+				head_blocked = not bool(_bay.call("is_camera_clear", cam_pos, h_pt, 0.08))
+		# Waist-high tables/consoles in front of lower torso do not occlude an unobstructed face/head.
+		occluded = chest_blocked and head_blocked
 
 	return {
 		"id": subj_id,

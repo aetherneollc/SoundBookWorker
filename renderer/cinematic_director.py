@@ -186,6 +186,14 @@ def segment_intersects_aabb(
     return t_max >= 0.0 and t_min <= t_limit
 
 
+def _v3_lerp(a: tuple[float, float, float], b: tuple[float, float, float], t: float) -> tuple[float, float, float]:
+    return (
+        a[0] + (b[0] - a[0]) * t,
+        a[1] + (b[1] - a[1]) * t,
+        a[2] + (b[2] - a[2]) * t,
+    )
+
+
 @dataclass
 class BeatSpec:
     """High-level semantic input describing one story beat."""
@@ -203,6 +211,7 @@ class BeatSpec:
     pov_required: bool = False
     actor_positions: dict[str, tuple[float, float, float]] = field(default_factory=dict)
     actor_end_positions: dict[str, tuple[float, float, float]] = field(default_factory=dict)
+    actor_trajectories: dict[str, list[tuple[float, tuple[float, float, float]]]] = field(default_factory=dict)
     actor_facings: dict[str, tuple[float, float]] = field(default_factory=dict)
     actor_tiers: dict[str, Any] = field(default_factory=dict)
     actor_heights: dict[str, float] = field(default_factory=dict)
@@ -243,6 +252,18 @@ class BeatSpec:
 
         pos_map = {str(k): _parse_pos3(v, 0.0) for k, v in (raw.get("actor_positions") or {}).items()}
         end_map = {str(k): _parse_pos3(v, 0.0) for k, v in (raw.get("actor_end_positions") or {}).items()}
+        traj_map: dict[str, list[tuple[float, tuple[float, float, float]]]] = {}
+        for aid, pts in (raw.get("actor_trajectories") or {}).items():
+            if isinstance(pts, list) and pts:
+                parsed: list[tuple[float, tuple[float, float, float]]] = []
+                for item in pts:
+                    if isinstance(item, (list, tuple)) and len(item) == 2:
+                        parsed.append((float(item[0]), _parse_pos3(item[1], 0.0)))
+                    elif isinstance(item, dict) and "u" in item and "pos" in item:
+                        parsed.append((float(item["u"]), _parse_pos3(item["pos"], 0.0)))
+                if parsed:
+                    parsed.sort(key=lambda pair: pair[0])
+                    traj_map[str(aid)] = parsed
         facing_map = {str(k): _parse_facing_2d(v) for k, v in (raw.get("actor_facings") or {}).items()}
         heights = {str(k): float(v) for k, v in (raw.get("actor_heights") or {}).items()}
         tiers = dict(default_actor_tiers or {})
@@ -275,6 +296,7 @@ class BeatSpec:
             pov_required=bool(raw.get("pov_required", False)),
             actor_positions=pos_map,
             actor_end_positions=end_map,
+            actor_trajectories=traj_map,
             actor_facings=facing_map,
             actor_tiers=tiers,
             actor_heights=heights,
@@ -357,6 +379,10 @@ class CameraCandidate:
     wall_clearance_m: float = 0.0
     doorframe_clearance_m: float = 99.0
     occluded: bool = False
+    dynamic_occluded: bool = False
+    max_dynamic_occlusion_ratio: float = 0.0
+    camera_inside_actor: bool = False
+    subtitle_overlap: bool = False
     crosses_180_axis: bool = False
     frustum_edge_blocked: bool = False
 
@@ -594,7 +620,34 @@ class CinematicDirector:
             if best is None or cand.score > best.score:
                 best = cand
 
+        # Dynamic visibility fallback replan (BUG-001 / BUG-002):
+        # If the best candidate still suffers dynamic actor occlusion, camera-inside-actor,
+        # static occlusion, or subtitle obstruction on a prop handoff, evaluate clean fallback
+        # shot types deterministically without oscillating.
         assert best is not None, "Candidate generator must always return at least one candidate"
+        if (best.dynamic_occluded or best.camera_inside_actor or best.occluded or best.subtitle_overlap) and shot_type != "pov":
+            fallback_order = ("two_shot", "wide", "medium", "over_the_shoulder", "establishing")
+            for alt_type in fallback_order:
+                if alt_type == shot_type:
+                    continue
+                alt_cands = self._generate_candidates(
+                    beat, alt_type, primary_subject, secondary_subject, room_min, room_max, pair_positions
+                )
+                alt_best: CameraCandidate | None = None
+                for cand in alt_cands:
+                    self._score_candidate(
+                        cand, beat, alt_type, primary_subject, secondary_subject,
+                        room_min, room_max, jambs, pair_key, pair_positions,
+                    )
+                    if alt_best is None or cand.score > alt_best.score:
+                        alt_best = cand
+                if alt_best is not None and alt_best.score > best.score + 120.0:
+                    shot_type = alt_type
+                    best = alt_best
+                    candidates = alt_cands
+                    downgrade_reason = downgrade_reason or "dynamic_visibility_replan"
+                    if not (best.dynamic_occluded or best.camera_inside_actor or best.occluded or best.subtitle_overlap):
+                        break
 
         # Lock or preserve 180-degree axis side for dialogue/pair shots.
         if pair_key is not None and pair_positions is not None and shot_type in (
@@ -648,6 +701,7 @@ class CinematicDirector:
             pov_required=beat.pov_required,
             actor_positions=dict(beat.actor_positions),
             actor_end_positions=dict(beat.actor_end_positions),
+            actor_trajectories={k: list(v) for k, v in beat.actor_trajectories.items()},
             actor_facings=dict(beat.actor_facings),
             actor_tiers=dict(beat.actor_tiers),
             actor_heights=dict(beat.actor_heights),
@@ -1304,7 +1358,27 @@ class CinematicDirector:
                     occluded = True
                     break
 
-        cand.occluded = occluded or inside_obs
+        # 3b. Dynamic actor visibility across the full beat timeline (BUG-001)
+        #     + subtitle safe-area check for props/handoffs (BUG-002).
+        dyn_occluded, inside_actor, max_occ_ratio, sub_overlap = self._evaluate_dynamic_visibility(
+            cand, beat, shot_type, primary, secondary
+        )
+        cand.dynamic_occluded = dyn_occluded
+        cand.camera_inside_actor = inside_actor
+        cand.max_dynamic_occlusion_ratio = round(max_occ_ratio, 4)
+        cand.subtitle_overlap = sub_overlap
+        if inside_actor:
+            breakdown["dynamic_visibility"] = -1400.0
+        elif dyn_occluded:
+            breakdown["dynamic_visibility"] = -900.0 - max_occ_ratio * 250.0
+        else:
+            breakdown["dynamic_visibility"] = 20.0 * (1.0 - min(1.0, max_occ_ratio))
+        if sub_overlap:
+            breakdown["subtitle_safe_area"] = -480.0
+        else:
+            breakdown["subtitle_safe_area"] = 10.0
+
+        cand.occluded = occluded or inside_obs or dyn_occluded or inside_actor
         if inside_obs:
             breakdown["occlusion"] = -950.0
         elif occluded:
@@ -1407,6 +1481,239 @@ class CinematicDirector:
         cand.score_breakdown = {k: round(v, 3) for k, v in breakdown.items()}
         cand.score = round(sum(breakdown.values()), 3)
 
+    # ------------------------------------------------- dynamic visibility (BUG-001/002)
+
+    def _sample_actor_pos(
+        self,
+        beat: BeatSpec,
+        actor_id: str,
+        u: float,
+    ) -> tuple[float, float, float] | None:
+        traj = beat.actor_trajectories.get(actor_id)
+        if traj:
+            if u <= traj[0][0]:
+                return traj[0][1]
+            if u >= traj[-1][0]:
+                return traj[-1][1]
+            for (u0, p0), (u1, p1) in zip(traj, traj[1:]):
+                if u0 <= u <= u1:
+                    span = max(u1 - u0, 1e-6)
+                    return _v3_lerp(p0, p1, (u - u0) / span)
+            return traj[-1][1]
+        p0 = beat.actor_positions.get(actor_id)
+        if p0 is None:
+            return None
+        p1 = beat.actor_end_positions.get(actor_id, p0)
+        return _v3_lerp(p0, p1, u)
+
+    @staticmethod
+    def _project_point_ndc(
+        cam_pos: tuple[float, float, float],
+        look_at: tuple[float, float, float],
+        fov_deg: float,
+        point: tuple[float, float, float],
+        aspect: float = 16.0 / 9.0,
+    ) -> tuple[float, float, float] | None:
+        """Project a world point into NDC (x, y in [-1, 1], depth > 0 in front of camera)."""
+        fx, fy, fz = look_at[0] - cam_pos[0], look_at[1] - cam_pos[1], look_at[2] - cam_pos[2]
+        flen = math.sqrt(fx * fx + fy * fy + fz * fz)
+        if flen < 1e-6:
+            return None
+        fx, fy, fz = fx / flen, fy / flen, fz / flen
+        # Camera right = normalize(forward x world_up)
+        rx, ry, rz = -fz, 0.0, fx
+        rlen = math.hypot(rx, rz)
+        if rlen < 1e-6:
+            rx, ry, rz = 1.0, 0.0, 0.0
+        else:
+            rx, rz = rx / rlen, rz / rlen
+        # Camera up = right x forward
+        ux = ry * fz - rz * fy
+        uy = rz * fx - rx * fz
+        uz = rx * fy - ry * fx
+
+        dx, dy, dz = point[0] - cam_pos[0], point[1] - cam_pos[1], point[2] - cam_pos[2]
+        depth = dx * fx + dy * fy + dz * fz
+        if depth <= 0.05:
+            return None
+        cx = dx * rx + dy * ry + dz * rz
+        cy = dx * ux + dy * uy + dz * uz
+        half_h = depth * math.tan(math.radians(max(10.0, min(140.0, fov_deg)) * 0.5))
+        half_w = half_h * aspect
+        if half_h <= 1e-6 or half_w <= 1e-6:
+            return None
+        return (cx / half_w, cy / half_h, depth)
+
+    def _project_actor_bbox_ndc(
+        self,
+        cam_pos: tuple[float, float, float],
+        look_at: tuple[float, float, float],
+        fov_deg: float,
+        pos: tuple[float, float, float],
+        height: float,
+        radius: float = 0.25,
+    ) -> tuple[float, float, float, float, float] | None:
+        """Return (min_x, min_y, max_x, max_y, min_depth) in NDC for an actor's upper body."""
+        xs: list[float] = []
+        ys: list[float] = []
+        min_d = 999.0
+        y_lo = pos[1] + height * 0.42
+        y_hi = pos[1] + height * 0.98
+        for ox in (-radius, radius):
+            for oz in (-radius, radius):
+                for py in (y_lo, y_hi):
+                    proj = self._project_point_ndc(cam_pos, look_at, fov_deg, (pos[0] + ox, py, pos[2] + oz))
+                    if proj is None:
+                        continue
+                    xs.append(proj[0])
+                    ys.append(proj[1])
+                    min_d = min(min_d, proj[2])
+        if not xs:
+            return None
+        return (min(xs), min(ys), max(xs), max(ys), min_d)
+
+    @staticmethod
+    def _rect_overlap_ratio(
+        target: tuple[float, float, float, float],
+        blocker: tuple[float, float, float, float],
+    ) -> float:
+        tx0, ty0, tx1, ty1 = target
+        bx0, by0, bx1, by1 = blocker
+        t_area = max(0.0, tx1 - tx0) * max(0.0, ty1 - ty0)
+        if t_area <= 1e-6:
+            return 0.0
+        ix = max(0.0, min(tx1, bx1) - max(tx0, bx0))
+        iy = max(0.0, min(ty1, by1) - max(ty0, by0))
+        return min(1.0, (ix * iy) / t_area)
+
+    def _evaluate_dynamic_visibility(
+        self,
+        cand: CameraCandidate,
+        beat: BeatSpec,
+        shot_type: str,
+        primary: str,
+        secondary: str,
+    ) -> tuple[bool, bool, float, bool]:
+        """Evaluate multi-point dynamic visibility & subtitle safe area across beat time.
+
+        Returns (dynamic_occluded, camera_inside_actor, max_occlusion_ratio, subtitle_overlap).
+        """
+        if cand.mode == "pov":
+            return (False, False, 0.0, False)
+
+        all_actor_ids = sorted(set(beat.actor_positions) | set(beat.actor_end_positions) | set(beat.actor_trajectories))
+        if not all_actor_ids:
+            return (False, False, 0.0, False)
+
+        sample_us = (0.0, 0.2, 0.4, 0.6, 0.8, 1.0)
+        dyn_occluded = False
+        inside_actor = False
+        max_occ_ratio = 0.0
+        subtitle_overlap = False
+
+        # Subtitle safe band: bottom 20% of frame corresponds to NDC y < -0.60.
+        sub_safe_y = -0.58
+        prop_pos: tuple[float, float, float] | None = None
+        is_handoff_or_prop = False
+        if isinstance(beat.prop_event, dict):
+            ev = str(beat.prop_event.get("event", "")).lower()
+            is_handoff_or_prop = ev in ("handoff", "inspect", "pickup", "use", "operate") or beat.action in ("handoff", "inspect")
+            if "position" in beat.prop_event:
+                prop_pos = _parse_pos3(beat.prop_event["position"], 1.08)
+
+        for u in sample_us:
+            cam_p = _v3_lerp(cand.pos, cand.pos_to, u)
+            cam_l = _v3_lerp(cand.look_at, cand.look_to, u)
+            cam_fov = cand.fov + (cand.fov_to - cand.fov) * u
+
+            actor_pos_u: dict[str, tuple[float, float, float]] = {}
+            actor_boxes_u: dict[str, AABB3] = {}
+            for aid in all_actor_ids:
+                ap = self._sample_actor_pos(beat, aid, u)
+                if ap is None:
+                    continue
+                ah = float(beat.actor_heights.get(aid, 1.72))
+                actor_pos_u[aid] = ap
+                # 1. Camera must NEVER enter any actor's body cylinder (radius 0.44m).
+                if math.hypot(cam_p[0] - ap[0], cam_p[2] - ap[2]) < 0.44 and ap[1] - 0.05 <= cam_p[1] <= ap[1] + ah + 0.14:
+                    inside_actor = True
+                actor_boxes_u[aid] = AABB3(
+                    id=aid,
+                    min_xyz=(ap[0] - 0.25, ap[1] + 0.05, ap[2] - 0.22),
+                    max_xyz=(ap[0] + 0.25, ap[1] + ah, ap[2] + 0.22),
+                    kind="actor",
+                )
+
+            # Build multi-point visibility targets (head, chest, hands, prop).
+            target_points: list[tuple[str, tuple[float, float, float]]] = []
+            target_box_ndc: tuple[float, float, float, float, float] | None = None
+            target_owner = primary if primary in actor_pos_u else (beat.speaker if beat.speaker in actor_pos_u else "")
+            if target_owner and target_owner in actor_pos_u:
+                tp = actor_pos_u[target_owner]
+                th = float(beat.actor_heights.get(target_owner, 1.72))
+                facing = self._actor_facing(beat, target_owner, actor_pos_u.get(secondary))
+                right = (-facing[1], facing[0])
+                target_points.append(("head", (tp[0], tp[1] + th * 0.90, tp[2])))
+                target_points.append(("chest", (tp[0], tp[1] + th * 0.72, tp[2])))
+                target_points.append(("hand_l", (tp[0] + facing[0] * 0.24 - right[0] * 0.18, tp[1] + th * 0.62, tp[2] + facing[1] * 0.24 - right[1] * 0.18)))
+                target_points.append(("hand_r", (tp[0] + facing[0] * 0.24 + right[0] * 0.18, tp[1] + th * 0.62, tp[2] + facing[1] * 0.24 + right[1] * 0.18)))
+                target_box_ndc = self._project_actor_bbox_ndc(cam_p, cam_l, cam_fov, tp, th, radius=0.22)
+
+            if prop_pos is not None:
+                target_points.append(("prop", prop_pos))
+            elif is_handoff_or_prop and target_owner in actor_pos_u and secondary in actor_pos_u:
+                pa, pb = actor_pos_u[target_owner], actor_pos_u[secondary]
+                mid_prop = ((pa[0] + pb[0]) * 0.5, 1.08, (pa[2] + pb[2]) * 0.5)
+                target_points.append(("prop", mid_prop))
+
+            # Subtitle safe area check for active prop/handoff & primary face.
+            for tag, pt in target_points:
+                if tag == "prop" or (tag == "head" and shot_type in ("close_up", "extreme_close_up", "reaction")):
+                    proj = self._project_point_ndc(cam_p, cam_l, cam_fov, pt)
+                    if proj is None or proj[1] < sub_safe_y:
+                        subtitle_overlap = True
+
+            # Check every non-target actor for dynamic ray + screen-space occlusion.
+            for other_id, ob in actor_boxes_u.items():
+                if other_id == target_owner:
+                    continue
+                op = actor_pos_u[other_id]
+                oh = float(beat.actor_heights.get(other_id, 1.72))
+                is_intentional_ots = (shot_type == "over_the_shoulder" and other_id == secondary)
+
+                # Multi-point ray test against non-target actor AABB.
+                head_blocked = False
+                blocked_count = 0
+                for tag, pt in target_points:
+                    # Only actors strictly closer to the camera than the target point can occlude it.
+                    if _v3_dist(cam_p, op) >= _v3_dist(cam_p, pt) - 0.15:
+                        continue
+                    if segment_intersects_aabb(cam_p, pt, ob, end_trim_m=0.05, padding=0.02):
+                        blocked_count += 1
+                        if tag in ("head", "prop"):
+                            head_blocked = True
+
+                # Screen-space bounding-box overlap ratio.
+                ratio = 0.0
+                other_box_ndc = self._project_actor_bbox_ndc(cam_p, cam_l, cam_fov, op, oh, radius=0.25)
+                if target_box_ndc is not None and other_box_ndc is not None and other_box_ndc[4] < target_box_ndc[4] - 0.12:
+                    ratio = self._rect_overlap_ratio(target_box_ndc[:4], other_box_ndc[:4])
+
+                if is_intentional_ots:
+                    # Intentional OTS foreground shoulder is allowed ONLY on outer framing edge
+                    # and NEVER covering the primary speaker's face or > 34% of target area.
+                    fg_center_x = 0.0 if other_box_ndc is None else (other_box_ndc[0] + other_box_ndc[2]) * 0.5
+                    if head_blocked or ratio > 0.34 or (ratio > 0.18 and abs(fg_center_x) < 0.24):
+                        dyn_occluded = True
+                        max_occ_ratio = max(max_occ_ratio, ratio, 0.5 if head_blocked else 0.0)
+                else:
+                    max_occ_ratio = max(max_occ_ratio, ratio)
+                    if head_blocked or blocked_count >= 2 or ratio > 0.20:
+                        dyn_occluded = True
+                        max_occ_ratio = max(max_occ_ratio, 0.5 if head_blocked else ratio)
+
+        return (dyn_occluded, inside_actor, max_occ_ratio, subtitle_overlap)
+
     # ------------------------------------------------------- stage3d export
 
     def _emit_stage3d_shot(
@@ -1466,6 +1773,32 @@ class CinematicDirector:
             ],
         }
 
+        cam_move = "static"
+        if chosen.mode == "pov":
+            cam_move = "pov"
+        elif _v3_dist(chosen.pos, chosen.pos_to) > 0.05:
+            cam_move = "tracking" if shot_type == "tracking" else "dolly"
+        elif _v3_dist(chosen.look_at, chosen.look_to) > 0.05:
+            cam_move = "pan"
+
+        vis_reqs: list[str] = []
+        if primary_subject:
+            vis_reqs.append(f"{primary_subject}:head,chest")
+        if secondary_subject and shot_type in ("two_shot", "over_the_shoulder"):
+            vis_reqs.append(f"{secondary_subject}:head")
+        if isinstance(beat.prop_event, dict) and beat.prop_event.get("prop_id"):
+            vis_reqs.append(f"prop:{beat.prop_event['prop_id']}")
+
+        action_target = (
+            str(beat.prop_event.get("prop_id"))
+            if isinstance(beat.prop_event, dict) and beat.prop_event.get("prop_id")
+            else (beat.listener or primary_subject)
+        )
+        emotion_intensity = round(
+            0.85 if beat.emotion in HIGH_EMOTIONS else (0.55 if beat.emotion != "neutral" else 0.35),
+            2,
+        )
+
         return {
             "id": f"{beat.beat_id}_{shot_type}",
             "beat_id": beat.beat_id,
@@ -1477,6 +1810,14 @@ class CinematicDirector:
             "frames": frames,
             "voice_lead_frames": beat.voice_lead_frames,
             "lines": beat.lines,
+            "speaker": beat.speaker,
+            "listener": beat.listener,
+            "focus_target": primary_subject,
+            "action_target": action_target,
+            "emotional_intensity": emotion_intensity,
+            "visibility_requirements": vis_reqs,
+            "subtitle_safe_area": {"y_min_ndc": -0.58, "reserved_bottom_frac": 0.21},
+            "camera_movement": cam_move,
             "primary_subject": primary_subject,
             "secondary_subject": secondary_subject,
             "fov": round(chosen.fov, 2),
@@ -1493,6 +1834,10 @@ class CinematicDirector:
                 "wall_clearance_m": chosen.wall_clearance_m,
                 "doorframe_clearance_m": chosen.doorframe_clearance_m,
                 "occluded": chosen.occluded,
+                "dynamic_occluded": chosen.dynamic_occluded,
+                "max_dynamic_occlusion_ratio": chosen.max_dynamic_occlusion_ratio,
+                "camera_inside_actor": chosen.camera_inside_actor,
+                "subtitle_overlap": chosen.subtitle_overlap,
                 "crosses_180_axis": chosen.crosses_180_axis,
                 "frustum_edge_blocked": chosen.frustum_edge_blocked,
                 "downgrade_reason": downgrade_reason,

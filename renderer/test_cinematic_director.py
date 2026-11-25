@@ -8,6 +8,7 @@ from renderer.cinematic_director import (
     SHOT_TYPES,
     WALL_CLEARANCE_MIN_M,
     AABB3,
+    BeatSpec,
     CinematicDirector,
     segment_intersects_aabb,
 )
@@ -290,6 +291,42 @@ class CinematicDirectorTests(unittest.TestCase):
                 for shot in run1:
                     self.assertGreaterEqual(shot["director_meta"]["wall_clearance_m"], WALL_CLEARANCE_MIN_M)
                     self.assertFalse(shot["director_meta"]["occluded"], f"{scene_type} shot {shot['id']} was occluded")
+
+    def test_dynamic_actor_occlusion_rejected_and_narrative_meta_emitted(self) -> None:
+        """BUG-001 & BUG-008: Walking passerby crossing camera->speaker must not block speaker, and narrative fields exist."""
+        director = CinematicDirector(fps=24)
+        beat = BeatSpec(
+            beat_id="medlab_walk_cross",
+            duration=3.0,
+            speaker="linlan",
+            listener="chen",
+            emotion="worried",
+            action="talk",
+            preferred_shot="medium",
+            actor_positions={"linlan": (0.0, 0.0, -1.0), "chen": (-2.4, 0.0, 1.0)},
+            actor_end_positions={"linlan": (0.0, 0.0, -1.0), "chen": (1.6, 0.0, 0.6)},
+            actor_trajectories={
+                "linlan": [(0.0, (0.0, 0.0, -1.0)), (1.0, (0.0, 0.0, -1.0))],
+                "chen": [
+                    (0.0, (-2.4, 0.0, 1.0)),
+                    (0.4, (-0.4, 0.0, 0.85)),
+                    (0.6, (0.1, 0.0, 0.80)),
+                    (1.0, (1.6, 0.0, 0.6)),
+                ],
+            },
+            actor_facings={"linlan": (0.0, 1.0), "chen": (0.0, -1.0)},
+            actor_tiers={"linlan": "TIER_A", "chen": "TIER_A"},
+            room_bounds={"min": [-5.0, 0.0, -4.5], "max": [5.0, 3.6, 4.5]},
+        )
+        shot = director.plan_beat(beat)
+        meta = shot["director_meta"]
+        self.assertFalse(meta["dynamic_occluded"], "Director must avoid cameras where chen walks directly in front of linlan")
+        self.assertFalse(meta["camera_inside_actor"])
+        for req_key in (
+            "speaker", "listener", "focus_target", "action_target", "shot_type",
+            "emotional_intensity", "visibility_requirements", "subtitle_safe_area", "camera_movement",
+        ):
+            self.assertIn(req_key, shot, f"BUG-008 shot metadata missing {req_key}")
 
 
 if __name__ == "__main__":

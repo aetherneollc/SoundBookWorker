@@ -104,12 +104,24 @@ var _sky_color := Color("#1d3f86")
 var _lighting_rig: Node3D
 var _obstacle_aabbs: Array[AABB] = []
 var _doorframe_aabbs: Array[AABB] = []
+var _interactive_devices: Array[Dictionary] = []  # BUG-010 anchors
+var _dynamic_screens: Array[Dictionary] = []      # BUG-016 live screen materials
+var _screen_textures: Dictionary = {}             # "kind:mode" -> ImageTexture
+var _alert_strips: Array[StandardMaterial3D] = [] # BUG-012 alert beacon strips
+var _storm_band: MeshInstance3D = null            # BUG-012 storm front mesh
+var _last_event_screen_mode := ""
 
 
 func build(set_cfg: Dictionary, character_script: Script) -> void:
 	_character_script = character_script
 	_obstacle_aabbs.clear()
 	_doorframe_aabbs.clear()
+	_interactive_devices.clear()
+	_dynamic_screens.clear()
+	_screen_textures.clear()
+	_alert_strips.clear()
+	_storm_band = null
+	_last_event_screen_mode = ""
 	props_loaded = 0
 	props_failed = 0
 
@@ -403,85 +415,90 @@ func _build_materials() -> void:
 
 	match scene_type:
 		"med_lab":
+			# BUG-014: Distinct cool-slate floor, darker wainscoting, brushed aluminum frames
+			# and deeper teal accents give clinical white rooms clear depth & silhouette separation.
 			if _materials["floor"] == null:
-				_materials["floor"] = _tile_material(Color("#dce4ea"), Color("#b8c8d4"), 0.85)
+				_materials["floor"] = _tile_material(Color("#b6c8d6"), Color("#8ca3b5"), 0.85)
 			if _materials["wall"] == null:
-				_materials["wall"] = _mat(Color("#e6edf2"), 0.72)
+				_materials["wall"] = _panel_material(Color("#d5e1e8"), Color("#aebfcf"), 0.72, 0.04)
 			if _materials["wall_low"] == null:
-				_materials["wall_low"] = _mat(Color("#c8d6df"), 0.75)
+				_materials["wall_low"] = _panel_material(Color("#9bb2c2"), Color("#7892a6"), 0.76, 0.08)
 			if _materials["corridor"] == null:
-				_materials["corridor"] = _mat(Color("#cfdbe3"), 0.75)
-			_materials["panel_line"] = _mat(Color("#9bb2c0"), 0.7)
-			_materials["ledge"] = _mat(Color("#9ab3bf"), 0.55)
-			_materials["frame"] = _mat(Color("#4c6473"), 0.55, 0.0, 0.2)
-			_materials["ceiling"] = _mat(Color("#d4dde3"), 0.8)
-			_materials["beam"] = _mat(Color("#a8bac6"), 0.65)
-			_materials["light_bar"] = _mat(Color("#f4fbff"), 0.35, 2.2)
-			_materials["trim"] = _mat(Color("#29b8ad"), 0.5, 0.35)
+				_materials["corridor"] = _panel_material(Color("#b2c4d0"), Color("#8ca2b2"), 0.75, 0.06)
+			_materials["panel_line"] = _mat(Color("#7690a3"), 0.7)
+			_materials["ledge"] = _mat(Color("#7e98aa"), 0.52, 0.0, 0.16)
+			_materials["frame"] = _mat(Color("#364d5e"), 0.52, 0.0, 0.28)
+			_materials["ceiling"] = _mat(Color("#bccad4"), 0.82)
+			_materials["beam"] = _mat(Color("#889fae"), 0.62, 0.0, 0.15)
+			_materials["light_bar"] = _mat(Color("#eaf7ff"), 0.35, 1.55)
+			_materials["trim"] = _mat(Color("#1fa89e"), 0.48, 0.28)
 		"corridor":
+			# BUG-013: Mid-slate ribbed bulkhead panels with brighter trim so dark uniforms
+			# separate cleanly from walls without washing out moody corridor lighting.
 			if _materials["floor"] == null:
-				_materials["floor"] = _tile_material(Color("#5a6470"), Color("#3e4652"), 1.0)
+				_materials["floor"] = _tile_material(Color("#627082"), Color("#434f5e"), 1.0)
 			if _materials["wall"] == null:
-				_materials["wall"] = _mat(Color("#364559"), 0.8)
+				_materials["wall"] = _panel_material(Color("#445870"), Color("#2c3c4f"), 0.76, 0.12)
 			if _materials["wall_low"] == null:
-				_materials["wall_low"] = _mat(Color("#273342"), 0.82)
+				_materials["wall_low"] = _panel_material(Color("#34465c"), Color("#223040"), 0.80, 0.14)
 			if _materials["corridor"] == null:
-				_materials["corridor"] = _mat(Color("#2e3c4f"), 0.8)
-			_materials["panel_line"] = _mat(Color("#1b2430"), 0.75)
-			_materials["ledge"] = _mat(Color("#526478"), 0.65)
-			_materials["frame"] = _mat(Color("#242e3b"), 0.55, 0.0, 0.25)
-			_materials["ceiling"] = _mat(Color("#19202a"), 0.85)
-			_materials["beam"] = _mat(Color("#2b3645"), 0.65, 0.0, 0.2)
-			_materials["light_bar"] = _mat(Color("#e6f1ff"), 0.35, 2.5)
-			_materials["trim"] = _mat(Color("#e08b32"), 0.55, 0.22)
+				_materials["corridor"] = _panel_material(Color("#3c4e64"), Color("#273647"), 0.78, 0.12)
+			_materials["panel_line"] = _mat(Color("#1f2c3c"), 0.72)
+			_materials["ledge"] = _mat(Color("#6c829b"), 0.58, 0.0, 0.18)
+			_materials["frame"] = _mat(Color("#2a3748"), 0.52, 0.0, 0.28)
+			_materials["ceiling"] = _mat(Color("#1d2633"), 0.85)
+			_materials["beam"] = _mat(Color("#374659"), 0.60, 0.0, 0.22)
+			_materials["light_bar"] = _mat(Color("#e4f0ff"), 0.35, 2.0)
+			_materials["trim"] = _mat(Color("#e6933a"), 0.52, 0.24)
 		"command_deck":
 			if _materials["floor"] == null:
-				_materials["floor"] = _tile_material(Color("#444e5c"), Color("#2c3440"), 1.0)
+				_materials["floor"] = _tile_material(Color("#4c5868"), Color("#303a48"), 1.0)
 			if _materials["wall"] == null:
-				_materials["wall"] = _mat(Color("#25374d"), 0.78)
+				_materials["wall"] = _panel_material(Color("#2d425b"), Color("#1c2c40"), 0.74, 0.15)
 			if _materials["wall_low"] == null:
-				_materials["wall_low"] = _mat(Color("#1c2b3e"), 0.8)
+				_materials["wall_low"] = _panel_material(Color("#22344a"), Color("#162334"), 0.78, 0.16)
 			if _materials["corridor"] == null:
-				_materials["corridor"] = _mat(Color("#2a3e56"), 0.8)
+				_materials["corridor"] = _panel_material(Color("#314660"), Color("#1f3045"), 0.76, 0.14)
 			_materials["panel_line"] = _mat(Color("#162130"), 0.7)
-			_materials["ledge"] = _mat(Color("#6b7f96"), 0.55, 0.0, 0.2)
-			_materials["frame"] = _mat(Color("#1b2838"), 0.55, 0.0, 0.25)
-			_materials["ceiling"] = _mat(Color("#141a24"), 0.85)
-			_materials["beam"] = _mat(Color("#232e3d"), 0.6, 0.0, 0.25)
-			_materials["light_bar"] = _mat(Color("#dff0ff"), 0.35, 2.2)
-			_materials["trim"] = _mat(Color("#e89232"), 0.55, 0.22)
+			_materials["ledge"] = _mat(Color("#768ba3"), 0.52, 0.0, 0.22)
+			_materials["frame"] = _mat(Color("#1e2d3f"), 0.52, 0.0, 0.28)
+			_materials["ceiling"] = _mat(Color("#161d28"), 0.85)
+			_materials["beam"] = _mat(Color("#2c394b"), 0.58, 0.0, 0.24)
+			_materials["light_bar"] = _mat(Color("#dff0ff"), 0.35, 1.8)
+			_materials["trim"] = _mat(Color("#e89232"), 0.52, 0.24)
 		_:
 			if _materials["floor"] == null:
 				_materials["floor"] = _tile_material(Color("#aab5bf"), Color("#87939f"), 1.0)
 			if _materials["wall"] == null:
-				_materials["wall"] = _mat(Color("#2a4a6b"))
+				_materials["wall"] = _panel_material(Color("#2e5072"), Color("#1f3954"), 0.76, 0.14)
 			if _materials["wall_low"] == null:
-				_materials["wall_low"] = _mat(Color("#21395a"))
+				_materials["wall_low"] = _panel_material(Color("#243f5e"), Color("#182c44"), 0.80, 0.14)
 			if _materials["corridor"] == null:
-				_materials["corridor"] = _mat(Color("#33506e"))
+				_materials["corridor"] = _panel_material(Color("#355575"), Color("#243d57"), 0.78, 0.12)
 			_materials["panel_line"] = _mat(Color("#1a2c44"))
-			_materials["ledge"] = _mat(Color("#c98a45"), 0.7)
-			_materials["frame"] = _mat(Color("#1f3550"), 0.6)
+			_materials["ledge"] = _mat(Color("#c98a45"), 0.65, 0.0, 0.14)
+			_materials["frame"] = _mat(Color("#1f3550"), 0.56, 0.0, 0.22)
 			_materials["ceiling"] = _mat(Color("#1b222d"))
-			_materials["beam"] = _mat(Color("#28323f"))
-			_materials["light_bar"] = _mat(Color("#fff3e0"), 0.4, 2.4)
-			_materials["trim"] = _mat(Color("#e8892e"), 0.6, 0.15)
+			_materials["beam"] = _mat(Color("#2c3847"), 0.62, 0.0, 0.20)
+			_materials["light_bar"] = _mat(Color("#fff3e0"), 0.4, 2.2)
+			_materials["trim"] = _mat(Color("#e8892e"), 0.56, 0.16)
 
-	# Shared semantic furniture & exterior materials.
+	# Shared semantic furniture & exterior materials (BUG-015: subtle brushed panel detail
+	# so consoles/beds/cabinets match architectural walls instead of flat plastic).
 	_materials["exterior"] = _mat(Color("#2b3440"), 0.7)
 	_materials["exterior_lit"] = _mat(Color("#e9a24a"), 0.5, 1.6)
 	_materials["ground"] = _tile_material(Color("#c9cfd8"), Color("#b6bec9"), 0.0)
-	_materials["crate"] = _mat(Color("#d27a2c"), 0.75)
-	_materials["crate_dark"] = _mat(Color("#3d4757"), 0.8)
-	_materials["metal_dark"] = _mat(Color("#2c3542"), 0.55, 0.0, 0.28)
-	_materials["metal_light"] = _mat(Color("#b7c4cf"), 0.48, 0.0, 0.2)
-	_materials["medical_white"] = _mat(Color("#edf3f7"), 0.58)
-	_materials["medical_pad"] = _mat(Color("#7aa7b8"), 0.75)
-	_materials["teal_glow"] = _mat(Color("#47e8db"), 0.35, 1.65)
-	_materials["cyan_glow"] = _mat(Color("#59d4ff"), 0.35, 1.75)
-	_materials["amber_glow"] = _mat(Color("#ffab3d"), 0.4, 1.6)
-	_materials["holo_glass"] = _glass_mat(Color(0.32, 0.85, 1.0, 0.34))
-	_materials["glass_partition"] = _glass_mat(Color(0.75, 0.92, 0.96, 0.22))
+	_materials["crate"] = _panel_material(Color("#cf782c"), Color("#9a5318"), 0.74, 0.08)
+	_materials["crate_dark"] = _panel_material(Color("#3b4657"), Color("#262f3c"), 0.76, 0.16)
+	_materials["metal_dark"] = _panel_material(Color("#2f3b4a"), Color("#1e2733"), 0.54, 0.28)
+	_materials["metal_light"] = _panel_material(Color("#8ca0b0") if scene_type == "med_lab" else Color("#9aa9b8"), Color("#6b7f90"), 0.50, 0.24)
+	_materials["medical_white"] = _panel_material(Color("#d9e3ea"), Color("#b2c4d0"), 0.60, 0.06)
+	_materials["medical_pad"] = _panel_material(Color("#4f8396"), Color("#396678"), 0.78, 0.02)
+	_materials["teal_glow"] = _mat(Color("#2fd1c4"), 0.38, 1.05)
+	_materials["cyan_glow"] = _mat(Color("#38b8ea"), 0.38, 1.05)
+	_materials["amber_glow"] = _mat(Color("#f29d35"), 0.42, 1.15)
+	_materials["holo_glass"] = _glass_mat(Color(0.24, 0.78, 0.96, 0.28))
+	_materials["glass_partition"] = _glass_mat(Color(0.68, 0.86, 0.92, 0.22))
 
 
 func _surface_material(key: String, tint: Color) -> StandardMaterial3D:
@@ -1252,6 +1269,7 @@ func _place_prop(cfg: Dictionary, ground_y: float, track_obstacle: bool = true) 
 		var size: Vector3 = _build_procedural_prop(holder, kind, cfg)
 		if track_obstacle:
 			_register_rotated_box_obstacle(pos, size, yaw)
+		_register_interactive_device(label, kind, holder, size)
 		props_loaded += 1
 		return
 
@@ -1271,6 +1289,8 @@ func _place_prop(cfg: Dictionary, ground_y: float, track_obstacle: bool = true) 
 	holder3.position = pos
 	if track_obstacle:
 		_register_rotated_box_obstacle(pos, box.size * scale_value, yaw)
+	if kind in ["console", "workstation", "bio_monitor", "command_table", "screen"] or label.to_lower().contains("console"):
+		_register_interactive_device(label, "console", holder3, box.size * scale_value)
 	var tint_value: Variant = cfg.get("emission_boost", 0.0)
 	if float(tint_value) > 0.0:
 		for node: Node in _descendants(model):
@@ -1313,12 +1333,12 @@ func _build_procedural_prop(holder: Node3D, kind: String, cfg: Dictionary) -> Ve
 			_child_box(holder, "Base", Vector3(size.x * 0.9, size.y - 0.08, size.z * 0.8), Vector3(0.0, (size.y - 0.08) * 0.5, 0.0), "metal_dark")
 			_child_box(holder, "Top", Vector3(size.x, 0.08, size.z), Vector3(0.0, size.y - 0.04, 0.0), "metal_light")
 			_child_box(holder, "ScreenBezel", Vector3(size.x * 0.68, 0.52, 0.06), Vector3(0.0, size.y + 0.30, -size.z * 0.28), "frame")
-			_child_box(holder, "ScreenPanel", Vector3(size.x * 0.62, 0.44, 0.02), Vector3(0.0, size.y + 0.30, -size.z * 0.24), glow_key, false)
+			_child_dynamic_screen(holder, "ScreenPanel", Vector3(size.x * 0.62, 0.44, 0.02), Vector3(0.0, size.y + 0.30, -size.z * 0.24), "console")
 			_child_box(holder, "KeyStrip", Vector3(size.x * 0.56, 0.02, 0.18), Vector3(0.0, size.y + 0.01, size.z * 0.14), glow_key, false)
 			return Vector3(size.x, size.y + 0.56, size.z)
 		"medical_bed", "exam_bed":
 			var size: Vector3 = _vec3(cfg.get("size", null), Vector3(2.1, 0.88, 0.95))
-			_child_box(holder, "Pedestal", Vector3(size.x * 0.55, size.y * 0.68, size.z * 0.58), Vector3(0.0, size.y * 0.34, 0.0), "metal_light")
+			_child_box(holder, "Pedestal", Vector3(size.x * 0.55, size.y * 0.68, size.z * 0.58), Vector3(0.0, size.y * 0.34, 0.0), "metal_dark")
 			_child_box(holder, "Deck", Vector3(size.x, 0.12, size.z), Vector3(0.0, size.y - 0.18, 0.0), "medical_white")
 			_child_box(holder, "Mattress", Vector3(size.x - 0.08, 0.12, size.z - 0.08), Vector3(0.0, size.y - 0.06, 0.0), "medical_pad")
 			_child_box(holder, "HeadBolster", Vector3(0.32, 0.10, size.z - 0.16), Vector3(-size.x * 0.36, size.y + 0.03, 0.0), "medical_white")
@@ -1330,25 +1350,24 @@ func _build_procedural_prop(holder: Node3D, kind: String, cfg: Dictionary) -> Ve
 			var size: Vector3 = _vec3(cfg.get("size", null), Vector3(2.8, 0.95, 1.8))
 			_child_box(holder, "Plinth", Vector3(size.x * 0.72, size.y * 0.72, size.z * 0.68), Vector3(0.0, size.y * 0.36, 0.0), "metal_dark")
 			_child_box(holder, "Rim", Vector3(size.x, 0.14, size.z), Vector3(0.0, size.y - 0.07, 0.0), "frame")
-			_child_box(holder, "DisplayCore", Vector3(size.x * 0.76, 0.03, size.z * 0.68), Vector3(0.0, size.y + 0.015, 0.0), "cyan_glow", false)
+			_child_dynamic_screen(holder, "DisplayCore", Vector3(size.x * 0.78, 0.03, size.z * 0.70), Vector3(0.0, size.y + 0.015, 0.0), "tactical_map")
 			_child_box(holder, "HoloPrism", Vector3(size.x * 0.44, 0.24, size.z * 0.38), Vector3(0.0, size.y + 0.22, 0.0), "holo_glass", false)
-			_child_box(holder, "TrimStripe", Vector3(size.x + 0.02, 0.04, size.z + 0.02), Vector3(0.0, size.y - 0.12, 0.0), "trim", false)
+			_child_alert_strip(holder, "TrimStripe", Vector3(size.x + 0.02, 0.04, size.z + 0.02), Vector3(0.0, size.y - 0.12, 0.0))
 			return Vector3(size.x, size.y + 0.35, size.z)
 		"pillar", "column":
 			var size: Vector3 = _vec3(cfg.get("size", null), Vector3(0.48, room_max.y, 0.48))
 			_child_box(holder, "BasePlinth", Vector3(size.x + 0.12, 0.22, size.z + 0.12), Vector3(0.0, 0.11, 0.0), "metal_dark")
 			_child_box(holder, "Shaft", Vector3(size.x, size.y, size.z), Vector3(0.0, size.y * 0.5, 0.0), "beam")
 			_child_box(holder, "Cap", Vector3(size.x + 0.12, 0.20, size.z + 0.12), Vector3(0.0, size.y - 0.10, 0.0), "metal_dark")
-			var accent: String = "teal_glow" if scene_type == "med_lab" else "cyan_glow"
-			_child_box(holder, "Strip", Vector3(size.x + 0.02, size.y * 0.65, 0.06), Vector3(0.0, size.y * 0.52, 0.0), accent, false)
+			_child_alert_strip(holder, "Strip", Vector3(size.x + 0.02, size.y * 0.65, 0.06), Vector3(0.0, size.y * 0.52, 0.0))
 			return size
 		"screen", "wall_screen", "bio_monitor":
 			var size: Vector3 = _vec3(cfg.get("size", null), Vector3(1.1, 1.75, 0.26))
-			var glow_key: String = "teal_glow" if kind == "bio_monitor" or scene_type == "med_lab" else "cyan_glow"
+			var ui_kind: String = "bio_vitals" if (kind == "bio_monitor" or scene_type == "med_lab") else ("corridor_status" if scene_type == "corridor" else "tactical_map")
 			_child_box(holder, "StandBase", Vector3(0.46, 0.06, 0.36), Vector3(0.0, 0.03, 0.0), "metal_dark")
 			_child_box(holder, "StandPost", Vector3(0.10, size.y * 0.65, 0.10), Vector3(0.0, size.y * 0.34, -0.02), "metal_light")
 			_child_box(holder, "Bezel", Vector3(size.x, 0.72, 0.08), Vector3(0.0, size.y - 0.36, 0.0), "frame")
-			_child_box(holder, "Display", Vector3(size.x - 0.10, 0.60, 0.02), Vector3(0.0, size.y - 0.36, 0.045), glow_key, false)
+			_child_dynamic_screen(holder, "Display", Vector3(size.x - 0.10, 0.60, 0.02), Vector3(0.0, size.y - 0.36, 0.045), ui_kind)
 			return size
 		"lab_bench", "workbench":
 			var size: Vector3 = _vec3(cfg.get("size", null), Vector3(2.0, 0.90, 0.78))
@@ -1419,3 +1438,339 @@ func _build_lighting(profile_name: String, cfg: Dictionary) -> void:
 		cfg,
 		backdrop_opts
 	)
+	if _has_front_window:
+		_build_storm_front_mesh()
+
+
+# ------------------------------------ cohesive PBR, dynamic screens & events (BUG-010/012/014/015/016)
+
+
+## Procedural brushed-panel PBR material (BUG-015): breaks up flat plastic surfaces
+## on walls, consoles, med beds, and cabinets with subtle architectural seam & grain detail.
+func _panel_material(base_col: Color, seam_col: Color, roughness: float = 0.72, metallic: float = 0.10) -> StandardMaterial3D:
+	var img := Image.create(128, 128, false, Image.FORMAT_RGB8)
+	for y in 128:
+		var edge_y: bool = y <= 2 or y >= 125 or (y >= 62 and y <= 64)
+		for x in 128:
+			var edge_x: bool = x <= 2 or x >= 125
+			if edge_x or edge_y:
+				img.set_pixel(x, y, seam_col)
+			else:
+				var h: int = (x * 73856093 ^ y * 19349663) & 255
+				var grain: float = (float(h) / 255.0 - 0.5) * 0.045
+				var bevel: float = 0.03 if (x == 3 or y == 3 or y == 65) else (-0.025 if (x == 124 or y == 124 or y == 61) else 0.0)
+				var c := Color(
+					clampf(base_col.r + grain + bevel, 0.0, 1.0),
+					clampf(base_col.g + grain + bevel, 0.0, 1.0),
+					clampf(base_col.b + grain + bevel, 0.0, 1.0),
+				)
+				img.set_pixel(x, y, c)
+	img.generate_mipmaps()
+	var tex := ImageTexture.create_from_image(img)
+	var mat := StandardMaterial3D.new()
+	mat.albedo_texture = tex
+	mat.roughness = roughness
+	mat.metallic = metallic
+	mat.uv1_triplanar = true
+	mat.uv1_scale = Vector3(0.75, 0.75, 0.75)
+	return mat
+
+
+## Live procedural sci-fi screen surface (BUG-016: NEVER a flat white glowing rectangle).
+func _child_dynamic_screen(parent: Node3D, node_name: String, size: Vector3, pos: Vector3, ui_kind: String) -> MeshInstance3D:
+	var mi := MeshInstance3D.new()
+	mi.name = node_name
+	var mesh := BoxMesh.new()
+	mesh.size = size
+	mi.mesh = mesh
+	mi.position = pos
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	var mat := StandardMaterial3D.new()
+	var tex: ImageTexture = _get_screen_texture(ui_kind, "nominal")
+	mat.albedo_texture = tex
+	mat.albedo_color = Color(0.95, 0.98, 1.0)
+	mat.roughness = 0.28
+	mat.metallic = 0.05
+	mat.emission_enabled = true
+	mat.emission_texture = tex
+	mat.emission = Color(1.0, 1.0, 1.0)
+	mat.emission_operator = BaseMaterial3D.EMISSION_OP_MULTIPLY
+	mat.emission_energy_multiplier = 0.92
+	mi.material_override = mat
+	parent.add_child(mi)
+	_dynamic_screens.append({"material": mat, "kind": ui_kind, "mesh": mi})
+	return mi
+
+
+func _child_alert_strip(parent: Node3D, node_name: String, size: Vector3, pos: Vector3) -> MeshInstance3D:
+	var mi := MeshInstance3D.new()
+	mi.name = node_name
+	var mesh := BoxMesh.new()
+	mesh.size = size
+	mi.mesh = mesh
+	mi.position = pos
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	var base_col: Color = Color("#2fd1c4") if scene_type == "med_lab" else Color("#38b8ea")
+	var mat := _mat(base_col, 0.38, 0.85)
+	mat.set_meta("base_color", base_col)
+	mi.material_override = mat
+	parent.add_child(mi)
+	_alert_strips.append(mat)
+	return mi
+
+
+func _get_screen_texture(ui_kind: String, mode: String) -> ImageTexture:
+	var key := "%s:%s" % [ui_kind, mode]
+	if _screen_textures.has(key):
+		return _screen_textures[key] as ImageTexture
+
+	var w := 256
+	var h := 160
+	var img := Image.create(w, h, false, Image.FORMAT_RGB8)
+
+	# Palette by event mode so red_alert / signal_lost / sensor_error / storm_approaching are unmistakable.
+	var bg := Color("#07131e")
+	var grid := Color("#102c40")
+	var primary := Color("#2ad8cc") if (ui_kind == "bio_vitals" or scene_type == "med_lab") else Color("#34b8f0")
+	var accent := Color("#78f2e8") if ui_kind == "bio_vitals" else Color("#ffae38")
+	var alert_col := primary
+	match mode:
+		"red_alert":
+			bg = Color("#1d070a")
+			grid = Color("#421218")
+			primary = Color("#ff3b28")
+			accent = Color("#ff9c38")
+			alert_col = Color("#ff2a1a")
+		"sensor_error":
+			bg = Color("#161108")
+			grid = Color("#342812")
+			primary = Color("#ff9c28")
+			accent = Color("#ff4634")
+			alert_col = Color("#ff8822")
+		"signal_lost":
+			bg = Color("#111018")
+			grid = Color("#27243a")
+			primary = Color("#f08c2e")
+			accent = Color("#ff3c38")
+			alert_col = Color("#f08c2e")
+		"storm_approaching":
+			bg = Color("#081622")
+			grid = Color("#17344a")
+			primary = Color("#4cc4f4")
+			accent = Color("#ffaa33")
+			alert_col = Color("#ffaa33")
+
+	img.fill(bg)
+
+	# Subtle coordinate grid.
+	for gx in range(0, w, 16):
+		for gy in h:
+			img.set_pixel(gx, gy, grid)
+	for gy in range(0, h, 16):
+		for gx in w:
+			img.set_pixel(gx, gy, grid)
+
+	# Outer bezel border & top status header bar.
+	for x in range(4, w - 4):
+		img.set_pixel(x, 4, primary)
+		img.set_pixel(x, h - 5, primary)
+		for hy in range(8, 22):
+			if x < w - 58:
+				img.set_pixel(x, hy, alert_col * 0.45)
+			elif x > w - 48 and x < w - 10:
+				img.set_pixel(x, hy, alert_col)
+	for y in range(4, h - 4):
+		img.set_pixel(4, y, primary)
+		img.set_pixel(w - 5, y, primary)
+
+	# Header faux-telemetry glyph blocks.
+	for seg in 6:
+		var sx: int = 12 + seg * 26
+		for dx in range(0, 18):
+			for dy in range(12, 18):
+				img.set_pixel(sx + dx, dy, primary * 1.1)
+
+	if ui_kind == "tactical_map":
+		# Concentric lunar sector radar + target blips + right sidebar bars.
+		var cx := 102
+		var cy := 90
+		for r in [18, 34, 50]:
+			for deg in range(0, 360, 2):
+				var rad: float = deg_to_rad(float(deg))
+				var px: int = clampi(cx + int(round(cos(rad) * r)), 6, w - 7)
+				var py: int = clampi(cy + int(round(sin(rad) * r)), 26, h - 7)
+				img.set_pixel(px, py, primary)
+		# Crosshair & sweep line.
+		for d in range(-50, 51):
+			img.set_pixel(cx + d, cy, grid * 1.6)
+			img.set_pixel(cx, cy + d, grid * 1.6)
+		for r2 in range(0, 50):
+			var px2: int = clampi(cx + int(round(r2 * 0.72)), 6, w - 7)
+			var py2: int = clampi(cy - int(round(r2 * 0.68)), 26, h - 7)
+			img.set_pixel(px2, py2, accent)
+		# Sector target markers.
+		for blip: Vector2i in [Vector2i(cx + 22, cy - 16), Vector2i(cx - 28, cy + 12), Vector2i(cx + 12, cy + 28)]:
+			for bx in range(-3, 4):
+				for by in range(-3, 4):
+					if bx * bx + by * by <= 9:
+						img.set_pixel(blip.x + bx, blip.y + by, accent)
+		# Right telemetry progress bars.
+		for b_idx in 5:
+			var by0: int = 38 + b_idx * 22
+			var fill_w: int = 24 + ((b_idx * 19 + (42 if mode == "red_alert" else 17)) % 56)
+			for bx2 in range(172, 242):
+				for by2 in range(by0, by0 + 10):
+					var col_b: Color = (accent if b_idx == 0 else primary) if (bx2 - 172) < fill_w else (grid * 0.9)
+					img.set_pixel(bx2, by2, col_b)
+	else:
+		# Dual live waveform traces (ECG / RF signal / sensor calibration) + diagnostic sidebar.
+		for x in range(12, 180):
+			var u: float = float(x - 12) / 168.0
+			var y_wave1: int = 62
+			var y_wave2: int = 114
+			if mode == "signal_lost":
+				var drop: float = 0.0 if (u > 0.52 and u < 0.86) else sin(u * TAU * 4.5) * 14.0
+				y_wave1 = clampi(62 + int(round(drop)), 30, 92)
+				y_wave2 = clampi(114 + int(round(((x * 13) % 7 - 3) * (2.0 if u > 0.52 else 0.5))), 96, 146)
+			elif mode == "sensor_error":
+				var spike: float = sin(u * TAU * 6.0) * 16.0 + (18.0 if (x % 29) < 4 else 0.0)
+				y_wave1 = clampi(62 - int(round(spike)), 28, 94)
+				y_wave2 = clampi(114 + int(round(cos(u * TAU * 3.0) * 12.0)), 96, 146)
+			else:
+				# Crisp ECG / telemetry waveform.
+				var cyc: float = fmod(u * 3.0, 1.0)
+				var ecg := 0.0
+				if cyc > 0.42 and cyc < 0.48:
+					ecg = 22.0 * sin(((cyc - 0.42) / 0.06) * PI)
+				elif cyc >= 0.48 and cyc < 0.53:
+					ecg = -10.0 * sin(((cyc - 0.48) / 0.05) * PI)
+				elif cyc > 0.65 and cyc < 0.78:
+					ecg = 7.0 * sin(((cyc - 0.65) / 0.13) * PI)
+				y_wave1 = clampi(66 - int(round(ecg)), 28, 94)
+				y_wave2 = clampi(118 - int(round(sin(u * TAU * 4.0) * 12.0 + cos(u * TAU * 9.0) * 4.0)), 96, 146)
+			for dy in range(-1, 2):
+				img.set_pixel(x, clampi(y_wave1 + dy, 26, h - 7), primary)
+				img.set_pixel(x, clampi(y_wave2 + dy, 26, h - 7), accent)
+		# Right status readout bars.
+		for b_idx in 4:
+			var by0: int = 34 + b_idx * 28
+			var fill_w: int = 20 + ((b_idx * 17 + 23) % 36)
+			for bx2 in range(192, 246):
+				for by2 in range(by0, by0 + 12):
+					var col_b: Color = (accent if (b_idx == 0 and mode != "nominal") else primary) if (bx2 - 192) < fill_w else grid
+					img.set_pixel(bx2, by2, col_b)
+
+	img.generate_mipmaps()
+	var tex := ImageTexture.create_from_image(img)
+	_screen_textures[key] = tex
+	return tex
+
+
+## Registers an interactive scene device anchor (BUG-010: InteractionAnchor, StandPoint, LookTarget).
+func _register_interactive_device(dev_id: String, kind: String, holder: Node3D, size: Vector3) -> void:
+	if not (kind in ["console", "workstation", "command_table", "bio_monitor", "medical_bed", "exam_bed", "screen", "wall_screen", "lab_bench"]):
+		return
+	var xf: Transform3D = holder.global_transform
+	var anchor_local := Vector3(0.0, clampf(size.y * 0.72, 0.86, 1.15), size.z * 0.36)
+	var look_local := Vector3(0.0, clampf(size.y * 0.92, 1.05, 1.48), 0.0)
+	var stand_local := Vector3(0.0, 0.0, size.z * 0.5 + 0.58)
+	if kind == "command_table":
+		anchor_local = Vector3(0.0, size.y * 0.96, size.z * 0.42)
+		look_local = Vector3(0.0, size.y + 0.12, 0.0)
+	_interactive_devices.append({
+		"id": dev_id,
+		"kind": kind,
+		"interaction_anchor": xf * anchor_local,
+		"look_target": xf * look_local,
+		"stand_point": xf * stand_local,
+	})
+
+
+func find_nearest_device(world_pos: Vector3) -> Dictionary:
+	var best: Dictionary = {}
+	var best_d := 999.0
+	for dev: Dictionary in _interactive_devices:
+		var anc: Vector3 = dev["interaction_anchor"] as Vector3
+		var d: float = Vector2(world_pos.x - anc.x, world_pos.z - anc.z).length()
+		if d < best_d:
+			best_d = d
+			best = dev.duplicate()
+			best["distance_m"] = d
+	return best
+
+
+func _build_storm_front_mesh() -> void:
+	# Translucent lunar dust/storm cloud band visible outside the panoramic window
+	# when `storm_approaching` fires (BUG-012).
+	var mi := MeshInstance3D.new()
+	mi.name = "StormFrontBand"
+	var quad := QuadMesh.new()
+	quad.size = Vector2(26.0, 5.2)
+	mi.mesh = quad
+	mi.position = Vector3(0.0, 2.2, room_min.z - 12.5)
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	var img := Image.create(128, 64, false, Image.FORMAT_RGBA8)
+	for y in 64:
+		var vy: float = float(y) / 63.0
+		var v_fade: float = sin(vy * PI)
+		for x in 128:
+			var vx: float = float(x) / 127.0
+			var cloud: float = 0.5 + 0.3 * sin(vx * TAU * 3.0 + vy * 5.0) + 0.2 * cos(vx * TAU * 7.0 - vy * 3.0)
+			var alpha: float = clampf(v_fade * cloud * 0.62, 0.0, 0.72)
+			img.set_pixel(x, y, Color(0.28, 0.38, 0.52, alpha))
+	var tex := ImageTexture.create_from_image(img)
+	var mat := StandardMaterial3D.new()
+	mat.albedo_texture = tex
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.albedo_color = Color(0.65, 0.78, 0.92, 0.0)
+	mi.material_override = mat
+	mi.visible = false
+	add_child(mi)
+	_storm_band = mi
+
+
+## SceneEventController hook updating dynamic screens, alert strips, and storm front (BUG-012/016).
+func apply_scene_events(state: Dictionary) -> void:
+	var screen_mode: String = str(state.get("screen_mode", "nominal"))
+	var alert_pulse: float = clampf(float(state.get("alert_pulse", 0.0)), 0.0, 1.0)
+	var storm_intensity: float = clampf(float(state.get("storm_intensity", 0.0)), 0.0, 1.0)
+	var t_s: float = float(state.get("time_s", 0.0))
+
+	if screen_mode != _last_event_screen_mode:
+		_last_event_screen_mode = screen_mode
+		for entry: Dictionary in _dynamic_screens:
+			var mat: StandardMaterial3D = entry["material"] as StandardMaterial3D
+			var kind: String = str(entry["kind"])
+			var tex: ImageTexture = _get_screen_texture(kind, screen_mode)
+			mat.albedo_texture = tex
+			mat.emission_texture = tex
+
+	# Subtle live screen pulse on active alert/error modes.
+	var scr_energy: float = 0.92 + (0.28 * alert_pulse if screen_mode == "red_alert" else 0.0)
+	for entry2: Dictionary in _dynamic_screens:
+		var mat2: StandardMaterial3D = entry2["material"] as StandardMaterial3D
+		mat2.emission_energy_multiplier = scr_energy
+
+	# Alert strips pulse unmistakable crimson during red_alert.
+	for smat: StandardMaterial3D in _alert_strips:
+		var base_c: Color = smat.get_meta("base_color", Color("#38b8ea")) as Color
+		if alert_pulse > 0.01:
+			var c: Color = base_c.lerp(Color("#ff2418"), clampf(0.55 + 0.45 * alert_pulse, 0.0, 1.0))
+			smat.albedo_color = c
+			smat.emission = c
+			smat.emission_energy_multiplier = 0.85 + 1.85 * alert_pulse
+		else:
+			smat.albedo_color = base_c
+			smat.emission = base_c
+			smat.emission_energy_multiplier = 0.75
+
+	# Storm front drifts outside panoramic windows when storm_approaching is active.
+	if _storm_band != null and is_instance_valid(_storm_band):
+		_storm_band.visible = storm_intensity > 0.02
+		if _storm_band.visible:
+			_storm_band.position.x = sin(t_s * 0.25) * 2.2
+			var sm: StandardMaterial3D = _storm_band.material_override as StandardMaterial3D
+			if sm != null:
+				sm.albedo_color = Color(0.58, 0.70, 0.84, clampf(storm_intensity * 0.75, 0.0, 0.78))
+

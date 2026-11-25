@@ -638,6 +638,21 @@ func _update_status_led() -> void:
 		_led_light.light_energy = clampf(energy * 0.18, 0.05, 0.65)
 
 
+## SceneEventController hook for robot voice feedback (BUG-011 / BUG-012).
+func set_speaking_feedback(speaking: bool, time_sec: float) -> void:
+	_is_speaking = speaking
+	if speaking:
+		status = "speaking"
+		_speech_energy = 0.55 + 0.45 * absf(sin(time_sec * 12.0))
+		if _turret != null:
+			# Subtle expressive camera-head tilt when acknowledging a line.
+			_turret.rotation.x = deg_to_rad(-3.0 + 3.0 * sin(time_sec * 4.5))
+	else:
+		_speech_energy = 0.0
+		if _turret != null:
+			_turret.rotation.x = lerpf(_turret.rotation.x, 0.0, 0.25)
+
+
 # --------------------------------------------------------- geometry & QC
 
 
