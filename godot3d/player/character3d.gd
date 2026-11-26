@@ -1424,11 +1424,41 @@ func _calm_arm_rotation(bone: int, local_q: Quaternion) -> Quaternion:
 	return (rest_q * swing).normalized()
 
 
-## Leaves the sprint, the walk, and a handoff reach alone. Only opens an elbow
-## that has folded far enough for the forearm mesh to pass through the upper arm.
+## The sprint swing stays. Roll around the arm bone is what makes the forearm
+## look like it is spinning, so that part is removed on every character.
 func _pose_safe_arms(_reach_side: String, _reach_weight: float) -> void:
 	_limit_elbow("r")
 	_limit_elbow("l")
+	for side in ["r", "l"]:
+		for part in ["upper_arm", "lower_arm", "hand"]:
+			var bone: int = int(_target.human.get("%s_%s" % [side, part], -1))
+			if bone >= 0:
+				_untwist_bone(bone)
+
+
+func _untwist_bone(bone: int) -> void:
+	var pose: Transform3D = _skeleton.get_bone_global_pose(bone)
+	var rest: Transform3D = _skeleton.get_bone_global_rest(bone)
+	var axis: Vector3 = pose.basis.y.normalized()
+	var rest_axis: Vector3 = rest.basis.y.normalized()
+	if axis.length_squared() < 0.5 or rest_axis.length_squared() < 0.5:
+		return
+	var carry := Quaternion(rest_axis, axis)
+	var desired_side: Vector3 = carry * rest.basis.x.normalized()
+	var current_side: Vector3 = pose.basis.x.normalized()
+	var current_flat: Vector3 = current_side - axis * current_side.dot(axis)
+	var desired_flat: Vector3 = desired_side - axis * desired_side.dot(axis)
+	if current_flat.length() < 0.001 or desired_flat.length() < 0.001:
+		return
+	var fix := Quaternion(current_flat.normalized(), desired_flat.normalized())
+	if absf(fix.get_angle()) < 0.01:
+		return
+	var new_global: Quaternion = (fix * pose.basis.get_rotation_quaternion()).normalized()
+	var parent: int = _skeleton.get_bone_parent(bone)
+	var parent_rot := Quaternion.IDENTITY
+	if parent >= 0:
+		parent_rot = _skeleton.get_bone_global_pose(parent).basis.get_rotation_quaternion()
+	_skeleton.set_bone_pose_rotation(bone, (parent_rot.inverse() * new_global).normalized())
 
 
 func _limit_elbow(side: String) -> void:
