@@ -461,6 +461,7 @@ class PerformancePlanner:
             "intensity": float(spec["intensity"]),
             "target": str(target or spec["target"]),
             "root_motion": bool(spec["root_motion"]),
+            "one_shot": bool(spec.get("one_shot", False)),
             "phases": phases,
         }
 

@@ -17,6 +17,9 @@ on top of ``Superhero_Female_FullBody.gltf`` or ``Superhero_Male_FullBody.gltf``
 - Injects 7 standard glTF Morph Targets (BlendShapes) on both body and eyebrows:
   ``jawOpen``, ``mouthFunnel``, ``mouthSmile``, ``mouthFrown``, ``eyeBlink``,
   ``browDown``, ``browUp``.
+- ``--ps2-layered`` adds separate skinned workwear shells (jacket, collar,
+  cuffs, pockets, trousers, boots, harness) plus layered hair cards. The
+  default builder and ``--ps2-profile`` are unchanged.
 """
 from __future__ import annotations
 
@@ -35,6 +38,7 @@ import numpy as np
 from PIL import Image
 from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import shortest_path
+from scipy.spatial import cKDTree
 
 ROOT = Path(__file__).resolve().parents[1]
 QUATERNIUS_DIR = (
@@ -1418,6 +1422,16 @@ def paint_outfit_textures(
             is_boot,
         )
 
+    if bool(outfit.get("ps2_layered", False)):
+        # Torso, arms and legs stay a dark undersuit. Face, neck and hands stay skin.
+        shirt = hex_to_rgb01(outfit.get("shirt_color", "#1c2226")).astype(np.float32)
+        covered = valid & (uv_maps["skin"] < 0.45)
+        cloth_mask = np.maximum(cloth_mask, covered.astype(np.float32))
+        cloth_rgb[:] = shirt * (0.92 + 0.08 * weave[:, :, None])
+        cloth_rough[:] = 0.90
+        cloth_metal[:] = 0.02
+        height_field *= 0.10
+
     # Add subtle fabric weave luminance variation
     cloth_rgb = np.clip(cloth_rgb + weave[:, :, None], 0.0, 1.0)
 
@@ -2158,9 +2172,48 @@ def normalize_recipe(recipe: dict[str, Any]) -> dict[str, Any]:
         "shirt_color": outfit.get("shirt_color", "#e8ecf2"),
     }
     r["ps2_profile"] = bool(r.get("ps2_profile", False))
-    if r["ps2_profile"]:
+    r["ps2_layered"] = bool(r.get("ps2_layered", False))
+    if r["ps2_profile"] and not r["ps2_layered"]:
         PS2CharacterArtProfile.apply_palette(r["outfit"], r["base"])
+    if r["ps2_layered"]:
+        r["skin_tint"] = "#dcb89e" if r["base"] == "female" else "#d4ae92"
+        r["hair"]["color"] = "#1d1a18"
+        r["outfit"]["ps2_layered"] = True
+        r["outfit"]["shirt_color"] = "#1c2226"
+        if r["base"] == "female":
+            r["outfit"].update(
+                {
+                    "jacket_color": "#4e6274",
+                    "accent_color": "#8a6a45",
+                    "collar_color": "#3c4c5c",
+                    "pants_color": "#3f4e46",
+                    "boots_color": "#2a2f34",
+                    "belt_color": "#2c3238",
+                }
+            )
+        else:
+            r["outfit"].update(
+                {
+                    "jacket_color": "#5a6874",
+                    "accent_color": "#8d7048",
+                    "collar_color": "#46525c",
+                    "pants_color": "#464e46",
+                    "boots_color": "#262b30",
+                    "belt_color": "#2a3036",
+                }
+            )
     return r
+
+
+def _layered_wear():
+    import importlib.util
+
+    path = Path(__file__).with_name("ps2_layered_wear.py")
+    spec = importlib.util.spec_from_file_location("ps2_layered_wear", path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
 
 
 def build_humanoid_rig(recipe: dict[str, Any], output_path: Path) -> dict[str, Any]:
@@ -2215,11 +2268,21 @@ def build_humanoid_rig(recipe: dict[str, Any], output_path: Path) -> dict[str, A
         body_pos, body_j0, body_w0, bgroups, lm, outfit["style"]
     )
 
-    # 2. Sculpt 3D clothing silhouette volume (zero delta on head/face/neck/hands)
-    sculpted_pos, sculpted_nrm = sculpt_clothing_geometry(
-        body_pos, body_nrm, body_faces, fields, lm, outfit["style"]
-    )
-    if cfg.get("ps2_profile"):
+    # 2. Sculpt 3D clothing silhouette volume (zero delta on head/face/neck/hands).
+    # Layered mode keeps the anatomical body and puts real shells on top of it.
+    layered_garments: list[dict] = []
+    layered_hair: list[dict] = []
+    wear = None
+    finger_delta = 0.0
+    garment_clearance = None
+    if cfg.get("ps2_layered"):
+        sculpted_pos = np.array(body_pos, dtype=np.float64, copy=True)
+        sculpted_nrm = np.array(body_nrm, dtype=np.float64, copy=True)
+    else:
+        sculpted_pos, sculpted_nrm = sculpt_clothing_geometry(
+            body_pos, body_nrm, body_faces, fields, lm, outfit["style"]
+        )
+    if cfg.get("ps2_profile") and not cfg.get("ps2_layered"):
         profile = PS2CharacterArtProfile(base_gender)
         sculpted_pos, sculpted_nrm = profile.apply_proportions(
             sculpted_pos,
@@ -2251,6 +2314,11 @@ def build_humanoid_rig(recipe: dict[str, Any], output_path: Path) -> dict[str, A
     body_albedo_im, body_normal_im, body_rough_im = paint_outfit_textures(
         skin_base_p, skin_nrm_p, skin_rgh_p, uv_maps, lm, cfg["skin_tint"], outfit
     )
+    if cfg.get("ps2_layered"):
+        wear = _layered_wear()
+        wear.set_normal_fn(compute_welded_normals)
+        body_albedo_im = wear.rebalance_skin(body_albedo_im, cfg["skin_tint"])
+        body_normal_im = wear.soften_face_normals(body_normal_im)
 
     # 4. Compute 7 BlendShape morph targets on raw head & eyebrows coordinates
     body_morphs, brow_morphs = compute_morph_targets(
@@ -2262,11 +2330,39 @@ def build_humanoid_rig(recipe: dict[str, Any], output_path: Path) -> dict[str, A
         eyes_pos,
         brows_pos,
     )
+    if cfg.get("ps2_layered"):
+        assert wear is not None
+        sculpted_pos, finger_delta = wear.soften_finger_rest(
+            sculpted_pos, body_j0, body_w0, jnames, joint_world_pos
+        )
+        layered_garments, garment_clearance = wear.build_garments(
+            sculpted_pos,
+            sculpted_nrm,
+            body_faces,
+            body_j0,
+            body_w0,
+            jnames,
+            joint_world_pos,
+            bgroups,
+            lm,
+            base_gender,
+        )
+        sculpted_pos = wear.deflate_covered_body(
+            sculpted_pos, sculpted_nrm, body_j0, body_w0, bgroups, lm
+        )
+        sculpted_nrm = compute_welded_normals(sculpted_pos, body_faces)
 
     # 5. Load sculpted 3D hair (+ optional beard) skinned rigidly to Head bone
     hair_pos, hair_nrm, hair_uv, hair_faces, hair_alb_p, hair_nrm_p = _load_hair_mesh(
         hair_cfg["style"], base_gender
     )
+    if cfg.get("ps2_layered"):
+        assert wear is not None
+        layered_hair = wear.layer_hair(
+            hair_pos, hair_nrm, hair_uv, hair_faces, joint_world_pos["Head"]
+        )
+        cap_center = np.median(hair_pos, axis=0)
+        hair_pos = cap_center + (hair_pos - cap_center) * 0.97
     hair_j0 = np.zeros((len(hair_pos), 4), dtype=np.uint8)
     hair_j0[:, 0] = head_joint_idx
     hair_w0 = np.zeros((len(hair_pos), 4), dtype=np.float64)
@@ -2288,7 +2384,10 @@ def build_humanoid_rig(recipe: dict[str, Any], output_path: Path) -> dict[str, A
     raw_y_max = float(sculpted_pos[:, 1].max())
     raw_height = max(raw_y_max - raw_y_min, 1e-4)
     scale = float(height_m) / raw_height
-    dy = -raw_y_min * scale
+    floor_y = raw_y_min
+    for garment in layered_garments:
+        floor_y = min(floor_y, float(np.min(garment["pos"][:, 1])))
+    dy = -floor_y * scale
 
     def _xform_pts(p: np.ndarray) -> np.ndarray:
         out = p * scale
@@ -2299,6 +2398,10 @@ def build_humanoid_rig(recipe: dict[str, Any], output_path: Path) -> dict[str, A
     eyes_pos = _xform_pts(eyes_pos)
     brows_pos = _xform_pts(brows_pos)
     hair_pos = _xform_pts(hair_pos)
+    for garment in layered_garments:
+        garment["pos"] = _xform_pts(garment["pos"])
+    for shell in layered_hair:
+        shell["pos"] = _xform_pts(shell["pos"])
     for k in BLEND_SHAPE_NAMES:
         body_morphs[k] = body_morphs[k] * scale
         brow_morphs[k] = brow_morphs[k] * scale
@@ -2366,11 +2469,16 @@ def build_humanoid_rig(recipe: dict[str, Any], output_path: Path) -> dict[str, A
             "roughness_max": PS2CharacterArtProfile.ROUGHNESS_MAX,
             "specular": PS2CharacterArtProfile.SPECULAR,
         }
+    if cfg.get("ps2_layered"):
+        body_material["extensions"] = {"KHR_materials_specular": {"specularFactor": 0.12}}
+        body_material["extras"] = {"ps2_layered": True, "skin_specular": 0.12}
     gb.materials.append(body_material)
 
-    tex_eye_alb = gb.add_image_png(
-        Image.open(QUATERNIUS_DIR / "T_Eye_Brown.png").convert("RGB"), "Eyes_BaseColor"
-    )
+    eye_im = Image.open(QUATERNIUS_DIR / "T_Eye_Brown.png").convert("RGB")
+    if cfg.get("ps2_layered"):
+        assert wear is not None
+        eye_im = wear.enhance_eyes(eye_im)
+    tex_eye_alb = gb.add_image_png(eye_im, "Eyes_BaseColor")
     tex_eye_nrm = gb.add_image_png(
         Image.open(QUATERNIUS_DIR / "T_Eye_Normal.png").convert("RGB"), "Eyes_Normal"
     )
@@ -2382,7 +2490,7 @@ def build_humanoid_rig(recipe: dict[str, Any], output_path: Path) -> dict[str, A
             "pbrMetallicRoughness": {
                 "baseColorTexture": {"index": tex_eye_alb},
                 "metallicFactor": 0.0,
-                "roughnessFactor": 0.28,
+                "roughnessFactor": 0.20 if cfg.get("ps2_layered") else 0.28,
             },
             "normalTexture": {"index": tex_eye_nrm},
         }
@@ -2405,6 +2513,9 @@ def build_humanoid_rig(recipe: dict[str, Any], output_path: Path) -> dict[str, A
             "normalTexture": {"index": tex_hair_nrm},
         }
     )
+    if cfg.get("ps2_layered"):
+        gb.materials[mat_hair]["pbrMetallicRoughness"]["roughnessFactor"] = 0.90
+        gb.materials[mat_hair]["extensions"] = {"KHR_materials_specular": {"specularFactor": 0.08}}
 
     # Eyebrows material matches hair tint
     brow_src_alb = QUATERNIUS_DIR / (
@@ -2494,6 +2605,102 @@ def build_humanoid_rig(recipe: dict[str, Any], output_path: Path) -> dict[str, A
     new_nodes.append({"name": "Hair", "mesh": m_hair, "skin": 0})
     new_nodes[armature_idx]["children"].append(hair_node_idx)
 
+    if cfg.get("ps2_layered"):
+        assert wear is not None
+        if base_gender == "female":
+            cloth_colors = {
+                "jacket": "#2e4052",
+                "trim": "#a8562e",
+                "pants": "#2f3430",
+                "boots": "#26211e",
+                "belt": "#1a1e22",
+            }
+        else:
+            cloth_colors = {
+                "jacket": "#363c35",
+                "trim": "#49525a",
+                "pants": "#282e36",
+                "boots": "#23201e",
+                "belt": "#1a1e22",
+            }
+
+        def _cloth_material(name: str, key: str) -> int:
+            tex = gb.add_image_png(wear.make_colored_cloth(cloth_colors[key]), f"{name}_BaseColor")
+            idx = len(gb.materials)
+            gb.materials.append(
+                {
+                    "name": name,
+                    "doubleSided": True,
+                    "pbrMetallicRoughness": {
+                        "baseColorFactor": [1.0, 1.0, 1.0, 1.0],
+                        "baseColorTexture": {"index": tex},
+                        "metallicFactor": 0.02,
+                        "roughnessFactor": 0.90,
+                    },
+                    "extensions": {"KHR_materials_specular": {"specularFactor": 0.10}},
+                }
+            )
+            return idx
+
+        layered_mat = {
+            "jacket": _cloth_material("MI_WorkJacket", "jacket"),
+            "trim": _cloth_material("MI_WorkTrim", "trim"),
+            "pants": _cloth_material("MI_WorkTrousers", "pants"),
+            "boots": _cloth_material("MI_WorkBoots", "boots"),
+            "belt": _cloth_material("MI_WorkBelt", "belt"),
+        }
+        for shell in layered_hair:
+            shell_j = np.zeros((len(shell["pos"]), 4), dtype=np.uint8)
+            shell_j[:, 0] = head_joint_idx
+            shell_w = np.zeros((len(shell["pos"]), 4), dtype=np.float64)
+            shell_w[:, 0] = 1.0
+            mat_shell = len(gb.materials)
+            gb.materials.append(
+                {
+                    "name": f"MI_{shell['name']}",
+                    "doubleSided": True,
+                    "pbrMetallicRoughness": {
+                        "baseColorFactor": [0.90, 0.88, 0.84, 1.0],
+                        "baseColorTexture": {"index": tex_hair_alb},
+                        "metallicFactor": 0.0,
+                        "roughnessFactor": float(shell.get("roughness", 0.7)),
+                    },
+                    "normalTexture": {"index": tex_hair_nrm},
+                    "extensions": {
+                        "KHR_materials_specular": {
+                            "specularFactor": 0.16 if shell["name"] == "HairCards" else 0.10
+                        }
+                    },
+                }
+            )
+            mesh_idx = gb.add_skinned_mesh(
+                shell["name"],
+                shell["pos"],
+                shell["nrm"],
+                shell["uv"],
+                shell["faces"],
+                shell_j,
+                shell_w,
+                mat_shell,
+            )
+            node_idx = len(new_nodes)
+            new_nodes.append({"name": shell["name"], "mesh": mesh_idx, "skin": 0})
+            new_nodes[armature_idx]["children"].append(node_idx)
+        for garment in layered_garments:
+            mesh_idx = gb.add_skinned_mesh(
+                garment["name"],
+                garment["pos"],
+                garment["nrm"],
+                garment["uv"],
+                garment["faces"],
+                garment["joints"],
+                garment["weights"],
+                layered_mat[garment["material"]],
+            )
+            node_idx = len(new_nodes)
+            new_nodes.append({"name": garment["name"], "mesh": mesh_idx, "skin": 0})
+            new_nodes[armature_idx]["children"].append(node_idx)
+
     if beard_data is not None:
         bd_pos, bd_nrm, bd_uv, bd_faces, bd_j0, bd_w0, bd_alb_p, bd_nrm_p = beard_data
         tex_bd_alb = gb.add_image_png(
@@ -2553,7 +2760,7 @@ def build_humanoid_rig(recipe: dict[str, Any], output_path: Path) -> dict[str, A
         "bufferViews": gb.buffer_views,
         "buffers": [{"byteLength": len(gb.blob)}],
     }
-    if cfg.get("ps2_profile"):
+    if cfg.get("ps2_profile") or cfg.get("ps2_layered"):
         out_doc["extensionsUsed"] = ["KHR_materials_specular"]
 
     output_path = Path(output_path)
@@ -2562,12 +2769,21 @@ def build_humanoid_rig(recipe: dict[str, Any], output_path: Path) -> dict[str, A
     total_tris = len(body_faces) + len(eyes_faces) + len(brows_faces) + len(hair_faces)
     if beard_data is not None:
         total_tris += len(beard_data[3])
+    for garment in layered_garments:
+        total_tris += len(garment["faces"])
+    for shell in layered_hair:
+        total_tris += len(shell["faces"])
+    y_min = float(sculpted_pos[:, 1].min())
+    for garment in layered_garments:
+        y_min = min(y_min, float(np.min(garment["pos"][:, 1])))
+    for shell in layered_hair:
+        y_min = min(y_min, float(np.min(shell["pos"][:, 1])))
 
     return {
         "output_path": str(output_path.resolve()),
         "base": base_gender,
         "height_m": round(float(sculpted_pos[:, 1].max() - sculpted_pos[:, 1].min()), 4),
-        "y_min": round(float(sculpted_pos[:, 1].min()), 5),
+        "y_min": round(y_min, 5),
         "y_max": round(float(sculpted_pos[:, 1].max()), 4),
         "bones": len(joint_node_indices),
         "blend_shapes": list(BLEND_SHAPE_NAMES),
@@ -2576,6 +2792,10 @@ def build_humanoid_rig(recipe: dict[str, Any], output_path: Path) -> dict[str, A
         "beard": bool(hair_cfg.get("beard", False)),
         "outfit_style": outfit["style"],
         "ps2_profile": bool(cfg.get("ps2_profile", False)),
+        "ps2_layered": bool(cfg.get("ps2_layered", False)),
+        "garment_meshes": [garment["name"] for garment in layered_garments],
+        "finger_curl_m": round(float(finger_delta), 4),
+        "garment_clearance_m": None if garment_clearance is None else round(float(garment_clearance), 4),
     }
 
 
@@ -2622,18 +2842,47 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Write linlan_ps2.glb and chen_ps2.glb. Never overwrites linlan.glb or chen.glb.",
     )
+    p.add_argument(
+        "--ps2-layered",
+        action="store_true",
+        help="Build separate skinned workwear shells, layered hair, and neutral skin. Leaves --ps2-profile output unchanged.",
+    )
+    p.add_argument(
+        "--build-ps2-layered-cast",
+        action="store_true",
+        help="Write linlan_ps2_v2.glb and chen_ps2_v2.glb. Does not overwrite linlan.glb, chen.glb, or the v1 ps2 files.",
+    )
     return p
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
-    if args.build_cast and args.ps2_profile:
+    if args.build_cast and (args.ps2_profile or args.ps2_layered):
         print(
-            "error: --ps2-profile cannot be combined with --build-cast "
-            "(that would overwrite linlan.glb / chen.glb). Use --build-ps2-cast.",
+            "error: --ps2-profile / --ps2-layered cannot be combined with --build-cast "
+            "(that would overwrite linlan.glb / chen.glb). Use --build-ps2-cast or --build-ps2-layered-cast.",
             file=sys.stderr,
         )
         return 2
+    if args.build_ps2_layered_cast:
+        out_dir = ROOT / "media" / "assets3d" / "characters"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        protected = {"linlan.glb", "chen.glb", "linlan_ps2.glb", "chen_ps2.glb"}
+        for cid in ("linlan", "chen"):
+            recipe = copy.deepcopy(DEFAULT_CAST_RECIPES[cid])
+            recipe["ps2_layered"] = True
+            destination = out_dir / f"{cid}_ps2_v2.glb"
+            if destination.name in protected:
+                print(f"error: refused to overwrite {destination}", file=sys.stderr)
+                return 2
+            rep = build_humanoid_rig(recipe, destination)
+            print(
+                f"BUILT {cid}_ps2_v2.glb: h={rep['height_m']}m y_min={rep['y_min']} "
+                f"bones={rep['bones']} tris={rep['triangles']} hair={rep['hair']} "
+                f"meshes={rep['garment_meshes']} curl={rep['finger_curl_m']} "
+                f"clearance={rep['garment_clearance_m']}"
+            )
+        return 0
     if args.build_ps2_cast:
         out_dir = ROOT / "media" / "assets3d" / "characters"
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -2685,6 +2934,7 @@ def main(argv: list[str] | None = None) -> int:
                 "beard": bool(args.beard),
             },
             "ps2_profile": bool(args.ps2_profile),
+            "ps2_layered": bool(args.ps2_layered),
             "outfit": {
                 "style": args.outfit_style,
                 "jacket_color": args.jacket_color,
@@ -2698,6 +2948,8 @@ def main(argv: list[str] | None = None) -> int:
         }
     if args.ps2_profile:
         recipe["ps2_profile"] = True
+    if args.ps2_layered:
+        recipe["ps2_layered"] = True
     rep = build_humanoid_rig(recipe, args.output)
     print(json.dumps(rep, indent=2))
     return 0

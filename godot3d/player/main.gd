@@ -76,6 +76,13 @@ var _sample_files: Array[String] = []
 var _result_json_path := ""
 var _telemetry_json_path := ""
 var _telemetry_frames: Array[Dictionary] = []
+var _prop_occlusion_frames := 0
+var _head_cropped_frames := 0
+var _empty_dwell := 0
+var _empty_dwell_max := 0
+var _empty_dwell_shot := ""
+var _array_online_latched := false
+var _last_framing: Dictionary = {}
 
 var _frame := 0
 var _presented_frame := -1
@@ -277,6 +284,8 @@ func _build_props() -> void:
 		if resolved.has("sensor") and resolved["sensor"] is Dictionary:
 			_sensor_spec = resolved["sensor"] as Dictionary
 		_prop_system.call("setup", resolved, _character_script)
+		if _bay != null:
+			_prop_system.call("set_scene_context", _bay)
 
 
 func _build_rover() -> void:
@@ -381,6 +390,8 @@ func _apply_frame(frame_index: int) -> void:
 	var prop_reach_requests: Dictionary = {}
 	var prop_gaze_requests: Dictionary = {}
 	if _prop_system != null:
+		if _camera != null:
+			_prop_system.call("set_view_context", _camera.global_position)
 		_prop_system.call("update_frame", frame_index, _fps, _actors, dt)
 		prop_reach_requests = _prop_system.call("get_actor_reach_requests")
 		prop_gaze_requests = _prop_system.call("get_actor_gaze_requests")
@@ -399,10 +410,16 @@ func _apply_frame(frame_index: int) -> void:
 			active_speaker
 		)
 
+	# 5b. Post-IK contact commit: atomic handoff / socket lock after the palms have moved.
+	if _prop_system != null:
+		_prop_system.call("finalize_frame", frame_index, _actors)
+		_apply_device_causal_gate()
+
 	# 6. Camera & DoF & Automatic Close-Up / Dark-Scene Face Fill (BUG-005 / BUG-013) & Captions.
 	_apply_camera(shot, shot_frame, frame_index)
 	_update_face_exposure_fill(shot)
 	_update_captions(frame_index)
+	_record_interaction_framing(frame_index, shot)
 
 	# 7. Deterministic QC telemetry snapshot (with full Shot Quality Verification metrics).
 	if _telemetry_json_path != "":
@@ -450,6 +467,7 @@ func _apply_actor_base(actor_id: String, frame_index: int, dt: float, active_spe
 		clip = "idle"
 		key = "idle"
 
+	var one_shot := bool(entry.get("one_shot", false)) and not moving
 	actor.call("update_dramatic_action", frame_index, _fps)
 	if bool(actor.call("is_dramatic_action_active")) and not moving:
 		var dramatic_clip: String = str(actor.call("dramatic_playback_clip"))
@@ -459,6 +477,9 @@ func _apply_actor_base(actor_id: String, frame_index: int, dt: float, active_spe
 			clip = "idle"
 		key = "dramatic:%s@%d" % [str(actor.call("dramatic_action_id")), int(actor.call("dramatic_action_from"))]
 		speed = 1.0
+		if bool(actor.call("dramatic_one_shot")):
+			one_shot = true
+	actor.call("set_clip_one_shot", one_shot)
 
 	actor.call("update_locomotion_state", clip, key, float(path.speed), speed, dt, 0.10 if moving else 0.24, moving)
 
@@ -610,6 +631,10 @@ func _apply_actor_overlays(
 			reach_target = Vector3(meet.x, float(reach.get("height", 1.05)), meet.z)
 
 	_apply_contact_target(actor_id, actor)
+	actor.call("set_hand_finger_pose", "right", "")
+	actor.call("set_hand_finger_pose", "left", "")
+	if reach_weight > 0.001 and prop_reach.has("finger_pose"):
+		actor.call("set_hand_finger_pose", reach_side, str(prop_reach.get("finger_pose", "")))
 	actor.call("apply_overlays", nod_phase, nod_weight, reach_target, reach_weight, reach_side)
 
 
@@ -1129,6 +1154,13 @@ func _capture_telemetry_frame(frame_index: int, shot: Dictionary) -> Dictionary:
 				"hand_gap_m": float(s.get("hand_gap_m", 0.0)),
 				"state": str(s.get("state", "")),
 				"min_y": float(s.get("min_y", 0.0)),
+				"causal_state": str(s.get("causal_state", "")),
+				"interaction_phase": str(s.get("interaction_phase", "")),
+				"device_state": str(s.get("device_state", "")),
+				"socket_err_m": float(s.get("socket_err_m", -1.0)),
+				"giver_hand_to_prop_m": float(s.get("giver_hand_to_prop_m", -1.0)),
+				"receiver_hand_to_prop_m": float(s.get("receiver_hand_to_prop_m", -1.0)),
+				"module_to_socket_m": float(s.get("module_to_socket_m", -1.0)),
 			}
 
 	var rover_row: Variant = null
@@ -1159,6 +1191,7 @@ func _capture_telemetry_frame(frame_index: int, shot: Dictionary) -> Dictionary:
 		"event_visible_entities": _event_visible_entities(),
 		"actors": actors_row,
 		"props": props_row,
+		"interaction_framing": _last_framing.duplicate(true),
 		"camera": {
 			"position": [snappedf(cam_pos.x, 0.001), snappedf(cam_pos.y, 0.001), snappedf(cam_pos.z, 0.001)],
 			"look_at": [snappedf(cam_look.x, 0.001), snappedf(cam_look.y, 0.001), snappedf(cam_look.z, 0.001)],
@@ -1327,6 +1360,195 @@ func _camera_wall_clearance(cam_pos: Vector3) -> float:
 			minf(minf(cam_pos.y - rmin.y, dh - cam_pos.y), minf(cam_pos.z - rmax.z, z_far - cam_pos.z))
 		)
 	return 0.0
+
+
+func _apply_device_causal_gate() -> void:
+	if _prop_system == null or _bay == null or not _bay.has_method("apply_scene_events"):
+		return
+	if not bool(_prop_system.call("has_install_interaction")):
+		return
+	var online := bool(_prop_system.call("is_device_online"))
+	var state: Dictionary = _last_event_state.duplicate(true)
+	if not online:
+		var mode := str(state.get("screen_mode", "nominal"))
+		if mode == "locked_carrier" or mode == "device_operating":
+			state["screen_mode"] = "nominal"
+		state["array_restore"] = 0.0
+		state["array_restore_u"] = 0.0
+		state["module_install"] = 0.0
+		state["module_install_u"] = 0.0
+		_bay.call("apply_scene_events", state)
+		_last_event_state = state
+		return
+	if str(state.get("screen_mode", "")) in ["nominal", "signal_lost", "sensor_error"]:
+		state["screen_mode"] = "locked_carrier"
+	state["module_install"] = maxf(float(state.get("module_install", 0.0)), 1.0)
+	state["module_install_u"] = maxf(float(state.get("module_install_u", 0.0)), 1.0)
+	state["module_install_age_s"] = maxf(float(state.get("module_install_age_s", 0.0)), 2.0)
+	if not _array_online_latched:
+		state["array_restore"] = maxf(float(state.get("array_restore", 0.0)), 1.0)
+		state["array_restore_u"] = 1.0
+		_array_online_latched = true
+	_bay.call("apply_scene_events", state)
+	_last_event_state = state
+
+
+func _record_interaction_framing(frame_index: int, shot: Dictionary) -> void:
+	var prop_occluded := false
+	var head_cropped := false
+	var cam_pos: Vector3 = _camera.global_position if _camera != null else Vector3.ZERO
+	if _prop_system != null:
+		var snaps: Dictionary = _prop_system.call("get_all_qc_snapshots")
+		for prop_key: Variant in snaps.keys():
+			var snap: Dictionary = snaps[prop_key]
+			var phase := str(snap.get("interaction_phase", snap.get("state", "")))
+			if phase != "transfer_contact" and phase != "align_socket" and phase != "insert_socket":
+				continue
+			var pos_v: Variant = snap.get("world_pos", [])
+			if not pos_v is Array or (pos_v as Array).size() < 3:
+				continue
+			var arr: Array = pos_v
+			var prop_pos := Vector3(float(arr[0]), float(arr[1]), float(arr[2]))
+			for actor_key: Variant in _actors.keys():
+				var actor := _actors[actor_key] as Node3D
+				if actor == null or not actor.visible:
+					continue
+				if _torso_blocks_ray(cam_pos, prop_pos, actor):
+					prop_occluded = true
+					break
+			if prop_occluded:
+				break
+	var primary_ids: Array[String] = []
+	var primary := str(shot.get("primary_subject", shot.get("subject", "")))
+	var secondary := str(shot.get("secondary_subject", ""))
+	if primary != "" and _actors.has(primary):
+		primary_ids.append(primary)
+	if secondary != "" and _actors.has(secondary) and secondary != primary:
+		primary_ids.append(secondary)
+	if primary_ids.is_empty():
+		for actor_key2: Variant in _actors.keys():
+			primary_ids.append(str(actor_key2))
+	for actor_id: String in primary_ids:
+		var actor2 := _actors[actor_id] as Node3D
+		if actor2 == null or not actor2.visible or bool(actor2.call("is_first_person_hidden")):
+			continue
+		if _head_is_cropped(actor2):
+			head_cropped = true
+			break
+	var shot_id := str(shot.get("id", ""))
+	if shot_id != _empty_dwell_shot:
+		_empty_dwell_shot = shot_id
+		_empty_dwell = 0
+	var subject_inside := true
+	if primary != "" and _actors.has(primary):
+		subject_inside = _actor_in_frustum(_actors[primary] as Node3D)
+	elif not primary_ids.is_empty() and _actors.has(primary_ids[0]):
+		subject_inside = _actor_in_frustum(_actors[primary_ids[0]] as Node3D)
+	if subject_inside:
+		_empty_dwell = 0
+	else:
+		_empty_dwell += 1
+		_empty_dwell_max = maxi(_empty_dwell_max, _empty_dwell)
+	if prop_occluded:
+		_prop_occlusion_frames += 1
+	if head_cropped:
+		_head_cropped_frames += 1
+	_last_framing = {
+		"frame": frame_index,
+		"prop_occluded": prop_occluded,
+		"head_cropped": head_cropped,
+		"empty_shot_dwell": _empty_dwell > 6,
+		"empty_dwell_frames": _empty_dwell,
+	}
+
+
+func _torso_blocks_ray(cam_pos: Vector3, target: Vector3, actor: Node3D) -> bool:
+	var radius := 0.24
+	var height_m := 1.7
+	if actor.get("height_m") != null:
+		height_m = float(actor.get("height_m"))
+	var y0 := actor.global_position.y + height_m * 0.42
+	var y1 := actor.global_position.y + height_m * 0.84
+	var delta := target - cam_pos
+	var length := delta.length()
+	if length < 0.08:
+		return false
+	var dir := delta / length
+	var ox := cam_pos.x - actor.global_position.x
+	var oz := cam_pos.z - actor.global_position.z
+	var a := dir.x * dir.x + dir.z * dir.z
+	var b := 2.0 * (ox * dir.x + oz * dir.z)
+	var c := ox * ox + oz * oz - radius * radius
+	if a < 1e-6:
+		return ox * ox + oz * oz <= radius * radius and cam_pos.y >= y0 and cam_pos.y <= y1
+	var disc := b * b - 4.0 * a * c
+	if disc < 0.0:
+		return false
+	var root := sqrt(disc)
+	for t: float in [(-b - root) / (2.0 * a), (-b + root) / (2.0 * a)]:
+		if t > 0.08 and t < length - 0.08:
+			var y := cam_pos.y + dir.y * t
+			if y >= y0 and y <= y1:
+				return true
+	return false
+
+
+func _head_is_cropped(actor: Node3D) -> bool:
+	var head: Vector3 = actor.call("head_world_position")
+	var top_lift := 0.12
+	if actor.get("height_m") != null:
+		top_lift = float(actor.get("height_m")) * 0.075
+	var top: Vector3 = head + Vector3(0.0, top_lift, 0.0)
+	var ndc := _project_world_ndc(top)
+	if ndc.z <= 0.05 or absf(ndc.x) > 1.02:
+		return false
+	var viewport_y := (1.0 - ndc.y) * 0.5
+	return viewport_y < 0.03
+
+
+func _actor_in_frustum(actor: Node3D) -> bool:
+	if actor == null or not actor.visible or bool(actor.call("is_first_person_hidden")):
+		return false
+	var head: Vector3 = actor.call("head_world_position")
+	var hips: Vector3 = actor.call("bone_world_position", "hips")
+	var ndc_head := _project_world_ndc(head)
+	var ndc_hips := _project_world_ndc(hips)
+	var head_in := ndc_head.z > 0.05 and absf(ndc_head.x) <= 1.02 and absf(ndc_head.y) <= 1.02
+	var hips_in := ndc_hips.z > 0.05 and absf(ndc_hips.x) <= 1.02 and absf(ndc_hips.y) <= 1.02
+	return head_in or hips_in
+
+
+func _interaction_audit_path() -> String:
+	if _telemetry_json_path != "":
+		return _telemetry_json_path.get_base_dir().path_join("interaction_audit.json")
+	if _result_json_path != "":
+		return _result_json_path.get_base_dir().path_join("interaction_audit.json")
+	return ""
+
+
+func _build_interaction_audit() -> Dictionary:
+	var audit := {
+		"version": 1,
+		"causal_chain_valid": true,
+		"handoff_contact_error_m": 0.0,
+		"socket_insert_error_m": 0.0,
+		"prop_occlusion_frames": _prop_occlusion_frames,
+		"head_cropped_frames": _head_cropped_frames,
+		"empty_doorway_dwell_frames": _empty_dwell_max,
+		"one_shot_loop_violations": 0,
+	}
+	if _prop_system != null and _prop_system.has_method("get_interaction_audit"):
+		var prop_audit: Dictionary = _prop_system.call("get_interaction_audit")
+		for key: Variant in prop_audit.keys():
+			audit[str(key)] = prop_audit[key]
+	var loops := 0
+	for actor_key: Variant in _actors.keys():
+		loops += int((_actors[actor_key] as Node).get("one_shot_loop_violations"))
+	audit["prop_occlusion_frames"] = _prop_occlusion_frames
+	audit["head_cropped_frames"] = _head_cropped_frames
+	audit["empty_doorway_dwell_frames"] = _empty_dwell_max
+	audit["one_shot_loop_violations"] = loops
+	return audit
 
 
 func _apply_contact_target(actor_id: String, actor: Node3D) -> void:
@@ -1576,6 +1798,9 @@ func _finish() -> void:
 			"lighting_profile": str(_bay.get("lighting_profile_name")),
 			"frames": _telemetry_frames,
 		})
+	var audit_path := _interaction_audit_path()
+	if audit_path != "":
+		_write_json(audit_path, _build_interaction_audit())
 	_write_result(result)
 	print("STAGE_RESULT %s" % JSON.stringify(result))
 	_character_script.call("clear_cache")

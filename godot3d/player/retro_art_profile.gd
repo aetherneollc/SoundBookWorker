@@ -93,25 +93,26 @@ const PRESETS: Dictionary = {
 		},
 	},
 	"retro_industrial_scifi": {
-		"grade_contrast": 1.12,
-		"grade_vignette": 0.28,
-		"grade_warmth": 0.05,
+		"grade_contrast": 1.08,
+		"grade_vignette": 0.26,
+		"grade_warmth": 0.0,
 		"lighting": {
-			"ambient_color": "#3e463f",
-			"ambient_energy": 0.36,
-			"sun_color": "#ffb347",
-			"sun_energy": 1.05,
+			"ambient_color": "#7d92a4",
+			"ambient_energy": 0.56,
+			"sun_color": "#f2e9dc",
+			"sun_energy": 0.82,
 			"sun_dir": [-0.36, -0.62, 0.70],
-			"rim_color": "#f4f7ff",
-			"rim_energy": 0.86,
+			"rim_color": "#b7c9d8",
+			"rim_energy": 0.52,
 			"rim_dir": [0.42, -0.22, -0.88],
-			"lamp_color": "#d7f2ff",
-			"lamp_energy": 0.58,
-			"exposure": 1.02,
-			"tonemap_white": 5.6,
-			"glow_intensity": 0.30,
-			"glow_strength": 0.62,
-			"glow_bloom": 0.06,
+			"lamp_color": "#d5e0ea",
+			"lamp_energy": 0.40,
+			"exposure": 0.98,
+			"tonemap_white": 6.2,
+			"glow_intensity": 0.16,
+			"glow_strength": 0.42,
+			"glow_bloom": 0.04,
+			"glow_hdr_threshold": 1.35,
 			"fog_enabled": false,
 			"adjustment_enabled": true,
 			"adjustment_brightness": 1.0,
@@ -473,14 +474,16 @@ static func _consume_lighting(resolved: Dictionary, src: Dictionary) -> void:
 	if spec.has("fog_density") and float(spec["fog_density"]) >= 0.03:
 		light["fog_enabled"] = true
 	if str(resolved.get("preset", "")) == "retro_industrial_scifi":
-		# Open the shadow floor and cap exposure so dark kit reads and faces stay unblown.
-		light["ambient_energy"] = maxf(float(light.get("ambient_energy", 0.55)), 0.66)
-		var amb := Color(str(light.get("ambient_color", "#3e463f")))
-		var mixed := amb.lerp(Color("#7f97a2"), 0.42)
-		light["ambient_color"] = "#" + mixed.to_html(false)
-		light["exposure"] = clampf(float(light.get("exposure", 1.02)), 0.96, 1.08)
-		light["sun_energy"] = clampf(float(light.get("sun_energy", 1.05)), 0.82, 1.12)
-		light["rim_energy"] = maxf(float(light.get("rim_energy", 0.7)), 0.72)
+		# Cool slate fill, a soft neutral key, and exposure that cannot blow skin out.
+		light["ambient_color"] = "#7d92a4"
+		light["ambient_energy"] = clampf(maxf(float(light.get("ambient_energy", 0.56)), 0.50), 0.50, 0.68)
+		light["sun_color"] = "#f2e9dc"
+		light["sun_energy"] = minf(float(light.get("sun_energy", 0.82)), 0.85)
+		light["lamp_color"] = "#d5e0ea"
+		light["rim_color"] = "#b7c9d8"
+		light["rim_energy"] = clampf(float(light.get("rim_energy", 0.52)), 0.35, 0.70)
+		light["exposure"] = minf(float(light.get("exposure", 0.98)), 1.0)
+		resolved["grade_warmth"] = minf(float(resolved.get("grade_warmth", 0.0)), 0.0)
 	resolved["lighting"] = light
 
 

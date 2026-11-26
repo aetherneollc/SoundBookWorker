@@ -13,6 +13,11 @@ extends Node3D
 ##   surface | held | handoff | pickup | inspect | use | put_down | hidden
 ## as well as legacy stage3d.json `owners` + `handoff_window` specs.
 ##
+## Causal prop chain (declarative `handoff` / `install_into_socket` timelines):
+##   held_by:<giver> -> transfer_contact -> held_by:<receiver>
+##   -> align_socket -> insert_socket -> locked -> device_online
+## The module has one owner per frame. `device_online` cannot precede `locked`.
+##
 ## Emits per-frame deterministic telemetry for the QC pipeline.
 
 const DEFAULT_HANDOFF_HEIGHT := 1.16
@@ -20,12 +25,29 @@ const TORSO_CLEARANCE_RADIUS := 0.34
 const DEFAULT_MAX_HANDOFF_GAP := 0.28
 const HAND_MIN_SEPARATION_M := 0.085
 const RECEIVER_HOLD_OVERLAP_FRAMES := 5
+const CONTACT_TARGET_M := 0.025
+const LOCK_ALIGN_TARGET_M := 0.015
+const POST_LOCK_DRIFT_M := 0.005
+const PRE_INSERT_OFFSET_M := 0.16
 
 var _character_script: Script
 var _props: Dictionary = {}        # prop_id -> Dictionary runtime state
 var _handoff_log: Array[Dictionary] = []
 var _reach_requests: Dictionary = {}  # actor_id -> {target: Vector3, weight: float, side: String, prop_id: String}
 var _gaze_requests: Dictionary = {}   # actor_id -> {point: Vector3, weight: float, prop_id: String}
+var _bay: Node = null
+var _camera_pos := Vector3(0.0, 1.6, 3.2)
+var _ownership_log: Array[Dictionary] = []
+var _device_timeline: Array[Dictionary] = []
+var _invariant_violations: Array[Dictionary] = []
+var _frame_metrics: Array[Dictionary] = []
+var _contact_samples: Array[float] = []
+var _contact_frame_errors: Array[float] = []
+var _lock_frame_errors: Array[float] = []
+var _sound_cues: Array[Dictionary] = []
+var _has_install := false
+var _device_online := false
+var _last_frame := 0
 
 
 func setup(props_cfg: Dictionary, character_script: Script = null) -> void:
@@ -50,6 +72,16 @@ func clear_props() -> void:
 	_handoff_log.clear()
 	_reach_requests.clear()
 	_gaze_requests.clear()
+	_ownership_log.clear()
+	_device_timeline.clear()
+	_invariant_violations.clear()
+	_frame_metrics.clear()
+	_contact_samples.clear()
+	_contact_frame_errors.clear()
+	_lock_frame_errors.clear()
+	_sound_cues.clear()
+	_has_install = false
+	_device_online = false
 
 
 func register_prop(prop_id: String, spec: Dictionary) -> Node3D:
@@ -134,8 +166,33 @@ func register_prop(prop_id: String, spec: Dictionary) -> Node3D:
 		"transfer_count": 0,
 		"blend_offset": Transform3D.IDENTITY,
 		"blend_alpha": 0.0,
+		"causal_state": "",
+		"causal_owner_logged": "",
+		"phase_this_frame": "",
+		"device_state": "offline",
+		"device_online": false,
+		"lock_done": false,
+		"online_done": false,
+		"contact_done": false,
+		"contact_pending": false,
+		"lock_pending": false,
+		"install_tracked": false,
+		"socket_err_m": -1.0,
+		"giver_hand_to_prop_m": -1.0,
+		"receiver_hand_to_prop_m": -1.0,
+		"module_to_socket_m": -1.0,
+		"desired_basis": Basis.IDENTITY,
+		"has_desired_basis": false,
+		"locked_transform": Transform3D.IDENTITY,
+		"drift_flagged": false,
+		"online_schedule_flagged": false,
+		"causal_giver": "",
+		"causal_receiver": "",
+		"giver_side": "right",
+		"receiver_side": "right",
 	}
 	_props[prop_id] = state
+	_prepare_causal_spec(state)
 
 	# Place at initial surface position if declared in spec.
 	if spec.has("surface") and spec["surface"] is Dictionary:
@@ -196,6 +253,22 @@ func get_actor_reach_requests() -> Dictionary:
 ## produced during the latest update_frame() call (e.g. inspect/use/handoff).
 func get_actor_gaze_requests() -> Dictionary:
 	return _gaze_requests.duplicate(true)
+
+
+func set_scene_context(bay: Node) -> void:
+	_bay = bay
+
+
+func set_view_context(camera_pos: Vector3) -> void:
+	_camera_pos = camera_pos
+
+
+func has_install_interaction() -> bool:
+	return _has_install
+
+
+func is_device_online() -> bool:
+	return _device_online
 
 
 # --------------------------------------------------------- manual actions
@@ -309,7 +382,10 @@ func update_frame(frame_index: int, fps: int, actors: Dictionary, dt: float = -1
 			_eval_legacy_owners(entry, _dict_array(spec.get("owners", [])), frame_index, actors)
 
 		# Smoothly decay any post-transfer residual local transform to identity.
-		if float(entry["blend_alpha"]) > 0.001 and str(entry["owner"]) != "":
+		# A locked module is parented to the console and must not be pulled by this blend.
+		var owner_now := str(entry["owner"])
+		var state_now := str(entry["state"])
+		if float(entry["blend_alpha"]) > 0.001 and owner_now != "" and owner_now != "console_socket" and state_now != "locked" and state_now != "device_online":
 			var next_alpha: float = maxf(0.0, float(entry["blend_alpha"]) - step_dt * 12.0)
 			entry["blend_alpha"] = next_alpha
 			var root: Node3D = entry["root"] as Node3D
@@ -345,9 +421,19 @@ func _eval_timeline(entry: Dictionary, timeline: Array[Dictionary], frame_index:
 			if actor_id != "" and actors.has(actor_id):
 				if str(entry["owner"]) != actor_id or str(entry["owner_side"]) != side:
 					attach_to_actor(prop_id, actor_id, actors, side, true)
-				entry["state"] = "held"
+				if _prop_uses_causal(entry):
+					_set_causal(entry, frame_index, "held_by:%s" % actor_id, actor_id)
+					entry["phase_this_frame"] = "held_by:%s" % actor_id
+				else:
+					entry["state"] = "held"
+					entry["phase_this_frame"] = "held"
 		"handoff":
-			_eval_handoff_action(entry, active, frame_index, fps, actors)
+			if _is_causal_handoff(active):
+				_eval_causal_handoff(entry, active, frame_index, fps, actors)
+			else:
+				_eval_handoff_action(entry, active, frame_index, fps, actors)
+		"install_into_socket", "install_module":
+			_eval_install_action(entry, active, frame_index, fps, actors)
 		"pickup":
 			_eval_pickup_action(entry, active, frame_index, fps, actors)
 		"put_down":
@@ -640,6 +726,825 @@ func _eval_legacy_owners(entry: Dictionary, owners: Array[Dictionary], frame_ind
 	entry["state"] = "held"
 
 
+# ------------------------------------------------------- causal chain
+
+
+func finalize_frame(frame_index: int, actors: Dictionary) -> void:
+	_last_frame = frame_index
+	for prop_key: Variant in _props.keys():
+		var entry: Dictionary = _props[str(prop_key)]
+		var phase := str(entry.get("phase_this_frame", ""))
+		if bool(entry.get("has_desired_basis", false)) and phase in ["transfer_contact", "align_socket", "insert_socket"]:
+			_set_world_basis_keep_origin(entry["root"] as Node3D, entry["desired_basis"] as Basis)
+		if bool(entry.get("contact_pending", false)) and not bool(entry.get("contact_done", false)):
+			_commit_contact(entry, frame_index, actors)
+		if bool(entry.get("lock_pending", false)) and not bool(entry.get("lock_done", false)):
+			_commit_lock(entry, frame_index, actors)
+		if str(entry.get("owner", "")) == "console_socket":
+			_reseat_locked(entry, frame_index)
+		_record_frame_metric(entry, frame_index, actors)
+	_refresh_device_online()
+
+
+func get_interaction_audit() -> Dictionary:
+	var contact_stats := _sample_stats(_contact_samples)
+	var contact_at := _sample_stats(_contact_frame_errors)
+	var lock_stats := _sample_stats(_lock_frame_errors)
+	var chain_errors := _chain_errors()
+	var contact_error := float(contact_at["max"]) if int(contact_at["count"]) > 0 else 0.0
+	var socket_error := float(lock_stats["max"]) if int(lock_stats["count"]) > 0 else 0.0
+	var valid := _invariant_violations.is_empty() and chain_errors.is_empty()
+	return {
+		"version": 1,
+		"causal_chain_valid": valid,
+		"handoff_contact_error_m": snappedf(contact_error, 0.0001),
+		"handoff_contact_min_m": float(contact_at["min"]) if int(contact_at["count"]) > 0 else float(contact_stats["min"]),
+		"handoff_contact_mean_m": float(contact_at["mean"]) if int(contact_at["count"]) > 0 else float(contact_stats["mean"]),
+		"socket_insert_error_m": snappedf(socket_error, 0.0001),
+		"socket_insert_min_m": float(lock_stats["min"]),
+		"socket_insert_mean_m": float(lock_stats["mean"]),
+		"ownership_log": _ownership_log.duplicate(true),
+		"device_timeline": _device_timeline.duplicate(true),
+		"invariant_violations": _invariant_violations.duplicate(true),
+		"chain_errors": chain_errors,
+		"sound_cues": _sound_cues.duplicate(true),
+		"frames": _frame_metrics.duplicate(true),
+		"has_install_interaction": _has_install,
+		"device_online": _device_online,
+	}
+
+
+func _prepare_causal_spec(entry: Dictionary) -> void:
+	var spec: Dictionary = entry["spec"]
+	var timeline: Array[Dictionary] = []
+	var src: Variant = spec.get("timeline", spec.get("actions", []))
+	if src is Array:
+		for item: Variant in src as Array:
+			if item is Dictionary:
+				timeline.append((item as Dictionary).duplicate(true))
+	var added := false
+	if spec.get("handoff") is Dictionary:
+		var handoff: Dictionary = (spec["handoff"] as Dictionary).duplicate(true)
+		if not _timeline_has(timeline, "handoff"):
+			handoff["action"] = "handoff"
+			_normalize_handoff_window(handoff)
+			timeline.append(handoff)
+			added = true
+	if spec.get("install_into_socket") is Dictionary:
+		var install: Dictionary = (spec["install_into_socket"] as Dictionary).duplicate(true)
+		if not _timeline_has(timeline, "install_into_socket"):
+			install["action"] = "install_into_socket"
+			_normalize_install_window(install)
+			timeline.append(install)
+			added = true
+	for item: Dictionary in timeline:
+		var action := str(item.get("action", item.get("state", ""))).to_lower()
+		if action == "handoff" and _is_causal_handoff(item):
+			_normalize_handoff_window(item)
+		elif action == "install_into_socket" or action == "install_module":
+			_normalize_install_window(item)
+			_has_install = true
+			entry["install_tracked"] = true
+	if spec.has("timeline") or spec.has("actions") or added:
+		if not timeline.is_empty():
+			spec["timeline"] = timeline
+	entry["spec"] = spec
+
+
+func _timeline_has(timeline: Array[Dictionary], action_name: String) -> bool:
+	for item: Dictionary in timeline:
+		if str(item.get("action", item.get("state", ""))).to_lower() == action_name:
+			return true
+	return false
+
+
+func _is_causal_handoff(active: Dictionary) -> bool:
+	return active.has("start_frame") or active.has("contact_frame") or active.has("release_frame") or active.has("end_frame")
+
+
+func _prop_uses_causal(entry: Dictionary) -> bool:
+	var spec: Dictionary = entry["spec"]
+	if spec.get("handoff") is Dictionary or spec.get("install_into_socket") is Dictionary:
+		return true
+	for item: Dictionary in _dict_array(spec.get("timeline", [])):
+		var action := str(item.get("action", item.get("state", ""))).to_lower()
+		if action == "install_into_socket" or action == "install_module":
+			return true
+		if action == "handoff" and _is_causal_handoff(item):
+			return true
+	return false
+
+
+func _normalize_handoff_window(item: Dictionary) -> void:
+	if not item.has("from"):
+		item["from"] = int(item.get("start_frame", 0))
+	if not item.has("to"):
+		var end_inclusive := int(item.get("end_frame", int(item.get("release_frame", int(item["from"]) + 16))))
+		item["to"] = end_inclusive + 1
+
+
+func _normalize_install_window(item: Dictionary) -> void:
+	if not item.has("from"):
+		item["from"] = int(item.get("start_frame", 0))
+	if not item.has("to"):
+		var end_inclusive := int(item.get("withdraw_end_frame", int(item.get("online_frame", int(item.get("lock_frame", int(item["from"]) + 24))))))
+		item["to"] = end_inclusive + 1
+
+
+func _eval_causal_handoff(entry: Dictionary, active: Dictionary, frame_index: int, fps: int, actors: Dictionary) -> void:
+	var prop_id := str(entry["id"])
+	var giver := str(active.get("from_actor", active.get("giver", "")))
+	var receiver := str(active.get("to_actor", active.get("receiver", "")))
+	if giver == "" or receiver == "" or not actors.has(giver) or not actors.has(receiver):
+		return
+	var start_f := int(active.get("start_frame", active.get("from", frame_index)))
+	var contact_f := int(active.get("contact_frame", active.get("transfer_frame", start_f + maxi(int((int(active.get("to", start_f + 16)) - start_f) / 2), 4))))
+	var release_f := int(active.get("release_frame", contact_f + 6))
+	var end_f := int(active.get("end_frame", int(active.get("to", release_f + 1)) - 1))
+	if contact_f < start_f:
+		contact_f = start_f
+	if release_f < contact_f:
+		release_f = contact_f
+	if end_f < release_f:
+		end_f = release_f
+	var giver_side := str(active.get("giver_side", active.get("side", "right")))
+	var recv_side := str(active.get("receiver_side", active.get("side", "right")))
+	entry["causal_giver"] = giver
+	entry["causal_receiver"] = receiver
+	entry["giver_side"] = giver_side
+	entry["receiver_side"] = recv_side
+	entry["resolved_contact_frame"] = contact_f
+
+	var giver_node := actors[giver] as Node3D
+	var recv_node := actors[receiver] as Node3D
+	var chest_h := (_actor_chest_y(giver_node) + _actor_chest_y(recv_node)) * 0.5
+	var transfer: Vector3 = _compute_transfer_point(giver_node, recv_node, chest_h)
+	var face := recv_node.global_position - giver_node.global_position
+	face.y = 0.0
+	var basis := Basis.IDENTITY
+	if face.length() > 0.02:
+		basis = Basis.looking_at(face.normalized(), Vector3.UP)
+	var receive_local: Vector3 = (entry["receive_socket"] as Node3D).position
+	var giver_target := transfer
+	var receiver_target := transfer + basis * receive_local
+	entry["desired_basis"] = basis
+	entry["has_desired_basis"] = true
+
+	var contact_done := bool(entry.get("contact_done", false))
+	if not contact_done:
+		if str(entry["owner"]) != giver:
+			attach_to_actor(prop_id, giver, actors, giver_side, false)
+		if str(entry.get("causal_state", "")) == "":
+			_set_causal(entry, frame_index, "held_by:%s" % giver, giver)
+		_set_causal(entry, frame_index, "transfer_contact", giver)
+		entry["phase_this_frame"] = "transfer_contact"
+		entry["contact_pending"] = frame_index >= contact_f
+	else:
+		if str(entry["owner"]) != receiver:
+			_transfer_owner_preserve(entry, receiver, actors, recv_side)
+		_set_causal(entry, frame_index, "held_by:%s" % receiver, receiver)
+		entry["phase_this_frame"] = "held_by:%s" % receiver
+		entry["has_desired_basis"] = false
+
+	var giver_w := 1.0
+	var recv_w := 1.0
+	var giver_fingers := "grip"
+	var recv_fingers := "grip"
+	if frame_index < contact_f:
+		var u := _frame_u(frame_index, start_f, contact_f)
+		giver_w = lerpf(0.45, 1.0, u)
+		recv_w = lerpf(0.45, 1.0, u)
+	elif frame_index < release_f:
+		var u_out := _frame_u(frame_index, contact_f, release_f)
+		giver_w = lerpf(1.0, 0.0, u_out)
+		recv_w = 1.0
+		giver_fingers = "release"
+	else:
+		var u_end := _frame_u(frame_index, release_f, maxi(end_f, release_f + 1))
+		giver_w = 0.0
+		recv_w = lerpf(0.85, 0.0, u_end)
+		giver_fingers = "open"
+	if giver_w > 0.02:
+		_queue_reach(giver, giver_target, giver_w, giver_side, prop_id, giver_fingers)
+		_gaze_requests[giver] = {"point": transfer, "weight": 0.7 * giver_w, "prop_id": prop_id}
+	if recv_w > 0.02 and not contact_done:
+		_queue_reach(receiver, receiver_target, recv_w, recv_side, prop_id, recv_fingers)
+		_gaze_requests[receiver] = {"point": transfer, "weight": 0.85 * recv_w, "prop_id": prop_id}
+	elif contact_done and recv_w > 0.02:
+		var held_grip: Vector3 = (entry["grip_socket"] as Node3D).global_position
+		_queue_reach(receiver, held_grip, recv_w, recv_side, prop_id, "grip")
+		_gaze_requests[receiver] = {"point": held_grip, "weight": 0.55, "prop_id": prop_id}
+	fps = maxi(fps, 1)
+
+
+func _eval_install_action(entry: Dictionary, active: Dictionary, frame_index: int, _fps: int, actors: Dictionary) -> void:
+	var prop_id := str(entry["id"])
+	var actor_id := str(active.get("actor", active.get("owner", entry.get("owner", ""))))
+	if actor_id == "" or not actors.has(actor_id):
+		return
+	_has_install = true
+	entry["install_tracked"] = true
+	var side := str(active.get("side", "right"))
+	var start_f := int(active.get("start_frame", active.get("from", frame_index)))
+	var align_f := int(active.get("align_frame", start_f + 8))
+	var insert_f := int(active.get("insert_frame", align_f))
+	var lock_f := int(active.get("lock_frame", insert_f + 8))
+	if align_f < start_f:
+		align_f = start_f
+	if insert_f < align_f:
+		insert_f = align_f
+	if lock_f <= insert_f:
+		lock_f = insert_f + 1
+	var authored_online := int(active.get("online_frame", lock_f + 4))
+	if active.has("online_frame") and authored_online < lock_f + 4 and not bool(entry.get("online_schedule_flagged", false)):
+		entry["online_schedule_flagged"] = true
+		_add_violation(entry, frame_index, "premature_online_schedule", "online_frame %d is earlier than lock_frame+4 (%d)" % [authored_online, lock_f + 4])
+	var online_f := maxi(authored_online, lock_f + 4)
+	var withdraw_f := int(active.get("withdraw_end_frame", online_f))
+	if withdraw_f < lock_f:
+		withdraw_f = lock_f
+	entry["resolved_lock_frame"] = lock_f
+	entry["resolved_online_frame"] = online_f
+	entry["install_side"] = side
+	entry["causal_receiver"] = actor_id
+
+	var socket := _query_socket(active)
+	var socket_pos: Vector3 = socket["pos"]
+	var socket_normal: Vector3 = socket["normal"]
+	var socket_basis: Basis = socket["basis"]
+	entry["socket_pos"] = socket_pos
+	entry["socket_normal"] = socket_normal
+	entry["socket_basis"] = socket_basis
+	var pre_insert: Vector3 = socket_pos + socket_normal * PRE_INSERT_OFFSET_M
+
+	if not bool(entry.get("lock_done", false)):
+		if str(entry["owner"]) != actor_id:
+			attach_to_actor(prop_id, actor_id, actors, side, true)
+		var hand_target := pre_insert
+		if frame_index < align_f:
+			var prior := str(entry.get("causal_state", ""))
+			if prior == "" or prior.begins_with("held_by:"):
+				_set_causal(entry, frame_index, "held_by:%s" % actor_id, actor_id)
+			_set_causal(entry, frame_index, "align_socket", actor_id)
+			entry["phase_this_frame"] = "align_socket"
+			if not entry.has("align_from"):
+				entry["align_from"] = (entry["root"] as Node3D).global_position
+			hand_target = (entry["align_from"] as Vector3).lerp(pre_insert, _frame_u(frame_index, start_f, align_f))
+		elif frame_index < lock_f:
+			_set_causal(entry, frame_index, "insert_socket", actor_id)
+			entry["phase_this_frame"] = "insert_socket"
+			var slide := 0.0 if frame_index < insert_f else _frame_u(frame_index, insert_f, lock_f)
+			hand_target = pre_insert.lerp(socket_pos, slide)
+		else:
+			_set_causal(entry, frame_index, "insert_socket", actor_id)
+			entry["phase_this_frame"] = "insert_socket"
+			entry["lock_pending"] = true
+			hand_target = socket_pos
+		entry["desired_basis"] = socket_basis
+		entry["has_desired_basis"] = true
+		var palm_target := _palm_target_for_module(entry, actors[actor_id], side, hand_target)
+		_queue_reach(actor_id, palm_target, 1.0, side, prop_id, "grip")
+		_gaze_requests[actor_id] = {"point": hand_target, "weight": 0.8, "prop_id": prop_id}
+		return
+
+	if frame_index >= online_f and not bool(entry.get("online_done", false)):
+		_go_online(entry, frame_index)
+	elif not bool(entry.get("online_done", false)):
+		_set_causal(entry, frame_index, "locked", "console_socket")
+	entry["phase_this_frame"] = "device_online" if bool(entry.get("online_done", false)) else "locked"
+	entry["has_desired_basis"] = false
+	if frame_index <= withdraw_f:
+		var u_back := _frame_u(frame_index, lock_f, maxi(withdraw_f, lock_f + 1))
+		var back: Vector3 = socket_pos + socket_normal * 0.34
+		var fingers := "release" if u_back < 0.35 else "open"
+		_queue_reach(actor_id, socket_pos.lerp(back, u_back), lerpf(1.0, 0.0, u_back), side, prop_id, fingers)
+		_gaze_requests[actor_id] = {"point": socket_pos, "weight": lerpf(0.7, 0.25, u_back), "prop_id": prop_id}
+
+
+func _commit_contact(entry: Dictionary, frame_index: int, actors: Dictionary) -> void:
+	var giver := str(entry.get("causal_giver", ""))
+	var receiver := str(entry.get("causal_receiver", ""))
+	var recv_side := str(entry.get("receiver_side", "right"))
+	var receive_pos: Vector3 = (entry["receive_socket"] as Node3D).global_position
+	if receiver != "" and actors.has(receiver) and (actors[receiver] as Node).has_method("reach_hand_world"):
+		var recv_node := actors[receiver] as Node
+		if bool(entry.get("has_desired_basis", false)):
+			_set_world_basis_keep_origin(entry["root"] as Node3D, entry["desired_basis"] as Basis)
+		for _pass in 3:
+			receive_pos = (entry["receive_socket"] as Node3D).global_position
+			recv_node.call("reach_hand_world", recv_side, receive_pos, 1.0)
+	var gaps := _measure_hand_gaps(entry, actors)
+	var giver_gap: float = float(gaps["giver"])
+	var recv_gap: float = float(gaps["receiver"])
+	entry["giver_hand_to_prop_m"] = giver_gap
+	entry["receiver_hand_to_prop_m"] = recv_gap
+	var worst := _worst_gap(giver_gap, recv_gap)
+	if worst >= 0.0:
+		_contact_samples.append(worst)
+		_contact_frame_errors.append(worst)
+	entry["contact_done"] = true
+	entry["contact_pending"] = false
+	if receiver != "" and actors.has(receiver):
+		_transfer_owner_preserve(entry, receiver, actors, recv_side)
+	entry["hand_gap_m"] = worst if worst >= 0.0 else 0.0
+	_set_causal(entry, frame_index, "held_by:%s" % receiver, receiver)
+	var meet: Vector3 = (entry["receive_socket"] as Node3D).global_position
+	_handoff_log.append({
+		"prop_id": str(entry["id"]),
+		"entity_role": str(entry.get("entity_role", "")),
+		"frame": frame_index,
+		"from": giver,
+		"to": receiver,
+		"hand_gap_m": snappedf(maxf(worst, 0.0), 0.001),
+		"contact_verified": worst >= 0.0 and worst <= CONTACT_TARGET_M,
+		"meet_pos": [snappedf(meet.x, 0.001), snappedf(meet.y, 0.001), snappedf(meet.z, 0.001)],
+	})
+
+
+func _commit_lock(entry: Dictionary, frame_index: int, actors: Dictionary) -> void:
+	var actor_id := str(entry.get("causal_receiver", entry.get("owner", "")))
+	var side := str(entry.get("install_side", "right"))
+	var socket_pos: Vector3 = entry.get("socket_pos", Vector3.ZERO)
+	var socket_basis: Basis = entry.get("socket_basis", Basis.IDENTITY)
+	if actor_id != "" and actors.has(actor_id) and str(entry.get("owner", "")) == actor_id:
+		var actor := actors[actor_id] as Node
+		if actor.has_method("reach_hand_world"):
+			for _seat in 3:
+				if bool(entry.get("has_desired_basis", false)):
+					_set_world_basis_keep_origin(entry["root"] as Node3D, socket_basis)
+				var palm: Vector3 = _palm_target_for_module(entry, actor, side, socket_pos)
+				actor.call("reach_hand_world", side, palm, 1.0)
+	var root := entry["root"] as Node3D
+	var before: float = root.global_position.distance_to(socket_pos)
+	entry["socket_err_m"] = before
+	entry["module_to_socket_m"] = before
+	_lock_frame_errors.append(before)
+	_lock_module(entry, socket_pos, socket_basis, actors)
+	entry["lock_pending"] = false
+	entry["device_state"] = "locked"
+	_set_causal(entry, frame_index, "locked", "console_socket")
+	if _bay != null and _bay.has_method("set_module_slot_state"):
+		_bay.call("set_module_slot_state", "locked")
+	_emit_lock_cue(socket_pos, frame_index)
+	_device_timeline.append({
+		"prop_id": str(entry["id"]),
+		"frame": frame_index,
+		"state": "locked",
+		"device_state": "locked",
+	})
+
+
+func _lock_module(entry: Dictionary, socket_pos: Vector3, socket_basis: Basis, actors: Dictionary) -> void:
+	var prev_owner := str(entry.get("owner", ""))
+	var prev_side := str(entry.get("owner_side", "right"))
+	if prev_owner != "" and prev_owner != "console_socket" and actors.has(prev_owner):
+		_set_actor_holding(actors[prev_owner], prev_side, false)
+	var root := entry["root"] as Node3D
+	if root.get_parent() != self:
+		if root.get_parent() != null:
+			root.get_parent().remove_child(root)
+		add_child(root)
+	var seated := Transform3D(socket_basis.orthonormalized(), socket_pos)
+	root.global_transform = seated
+	entry["owner"] = "console_socket"
+	entry["owner_side"] = ""
+	entry["locked_transform"] = seated
+	entry["blend_alpha"] = 0.0
+	entry["blend_offset"] = Transform3D.IDENTITY
+	entry["lock_done"] = true
+	entry["state"] = "locked"
+	entry["module_to_socket_m"] = 0.0
+
+
+func _go_online(entry: Dictionary, frame_index: int) -> void:
+	if bool(entry.get("online_done", false)):
+		return
+	if not bool(entry.get("lock_done", false)):
+		_add_violation(entry, frame_index, "premature_online", "device_online requested before locked")
+		return
+	var lock_f := int(entry.get("resolved_lock_frame", frame_index))
+	if frame_index < lock_f + 4:
+		_add_violation(entry, frame_index, "premature_online", "device_online at frame %d is before lock+4 (%d)" % [frame_index, lock_f + 4])
+		return
+	entry["online_done"] = true
+	entry["device_online"] = true
+	entry["device_state"] = "online"
+	_set_causal(entry, frame_index, "device_online", "console_socket")
+	_device_timeline.append({
+		"prop_id": str(entry["id"]),
+		"frame": frame_index,
+		"state": "device_online",
+		"device_state": "online",
+	})
+	if _bay != null and _bay.has_method("set_module_slot_state"):
+		_bay.call("set_module_slot_state", "online")
+	if _bay != null and _bay.has_method("set_device_online"):
+		_bay.call("set_device_online", true)
+	_refresh_device_online()
+
+
+func _reseat_locked(entry: Dictionary, frame_index: int) -> void:
+	var root := entry["root"] as Node3D
+	var seated: Transform3D = entry.get("locked_transform", root.global_transform)
+	var drift: float = root.global_position.distance_to(seated.origin)
+	if drift > POST_LOCK_DRIFT_M and not bool(entry.get("drift_flagged", false)):
+		entry["drift_flagged"] = true
+		_add_violation(entry, frame_index, "post_lock_drift", "module drifted %.4f m after lock" % drift)
+	root.global_transform = seated
+	entry["module_to_socket_m"] = 0.0
+	entry["socket_err_m"] = 0.0
+	if str(entry.get("owner", "")) != "console_socket":
+		_add_violation(entry, frame_index, "dual_ownership", "locked module owner is %s" % str(entry.get("owner", "")))
+		entry["owner"] = "console_socket"
+
+
+func _record_frame_metric(entry: Dictionary, frame_index: int, actors: Dictionary) -> void:
+	var gaps := _measure_hand_gaps(entry, actors)
+	var giver_gap: float = float(gaps["giver"])
+	var recv_gap: float = float(gaps["receiver"])
+	entry["giver_hand_to_prop_m"] = giver_gap
+	entry["receiver_hand_to_prop_m"] = recv_gap
+	var phase := str(entry.get("phase_this_frame", ""))
+	if phase == "transfer_contact":
+		var worst := _worst_gap(giver_gap, recv_gap)
+		if worst >= 0.0:
+			_contact_samples.append(worst)
+	var socket_pos: Vector3 = entry.get("socket_pos", Vector3.INF)
+	var module_err := -1.0
+	if socket_pos != Vector3.INF and (bool(entry.get("install_tracked", false)) or str(entry.get("owner", "")) == "console_socket"):
+		module_err = (entry["root"] as Node3D).global_position.distance_to(socket_pos)
+		entry["module_to_socket_m"] = module_err
+	var owner_gap := float(entry.get("hand_gap_m", 0.0))
+	if str(entry.get("owner", "")) != "" and str(entry.get("owner", "")) != "console_socket":
+		owner_gap = giver_gap if str(entry.get("owner", "")) == str(entry.get("causal_giver", "")) and giver_gap >= 0.0 else recv_gap
+		if owner_gap < 0.0:
+			owner_gap = float(entry.get("hand_gap_m", 0.0))
+		entry["hand_gap_m"] = owner_gap
+	_frame_metrics.append({
+		"frame": frame_index,
+		"prop_id": str(entry["id"]),
+		"state": str(entry.get("causal_state", entry.get("state", ""))),
+		"phase": phase,
+		"owner": str(entry.get("owner", "")),
+		"giver_hand_to_prop_m": snappedf(giver_gap, 0.001) if giver_gap >= 0.0 else -1.0,
+		"receiver_hand_to_prop_m": snappedf(recv_gap, 0.001) if recv_gap >= 0.0 else -1.0,
+		"module_to_socket_m": snappedf(module_err, 0.001) if module_err >= 0.0 else -1.0,
+		"device_state": str(entry.get("device_state", "offline")),
+		"hand_gap_m": snappedf(float(entry.get("hand_gap_m", 0.0)), 0.001),
+		"socket_err_m": snappedf(float(entry.get("socket_err_m", -1.0)), 0.001),
+	})
+
+
+func _measure_hand_gaps(entry: Dictionary, actors: Dictionary) -> Dictionary:
+	var giver := str(entry.get("causal_giver", ""))
+	var receiver := str(entry.get("causal_receiver", ""))
+	var grip: Vector3 = (entry["grip_socket"] as Node3D).global_position
+	var receive: Vector3 = (entry["receive_socket"] as Node3D).global_position
+	var giver_gap := -1.0
+	var recv_gap := -1.0
+	if giver != "" and actors.has(giver):
+		giver_gap = _actor_hand_world(actors[giver], str(entry.get("giver_side", "right"))).distance_to(grip)
+	if receiver != "" and actors.has(receiver):
+		recv_gap = _actor_hand_world(actors[receiver], str(entry.get("receiver_side", "right"))).distance_to(receive)
+	return {"giver": giver_gap, "receiver": recv_gap}
+
+
+func _worst_gap(a: float, b: float) -> float:
+	if a < 0.0 and b < 0.0:
+		return -1.0
+	if a < 0.0:
+		return b
+	if b < 0.0:
+		return a
+	return maxf(a, b)
+
+
+func _palm_target_for_module(entry: Dictionary, actor: Variant, side: String, module_pos: Vector3) -> Vector3:
+	var hand: Vector3 = _actor_hand_world(actor, side)
+	var origin: Vector3 = (entry["root"] as Node3D).global_position
+	return hand + (module_pos - origin)
+
+
+func _queue_reach(actor_id: String, target: Vector3, weight: float, side: String, prop_id: String, fingers: String) -> void:
+	_reach_requests[actor_id] = {
+		"target": target,
+		"weight": clampf(weight, 0.0, 1.0),
+		"side": side,
+		"prop_id": prop_id,
+		"finger_pose": fingers,
+	}
+
+
+func _transfer_owner_preserve(entry: Dictionary, actor_id: String, actors: Dictionary, side: String) -> void:
+	if not actors.has(actor_id):
+		return
+	var root := entry["root"] as Node3D
+	var prev_world := root.global_transform
+	var prev_owner := str(entry.get("owner", ""))
+	var prev_side := str(entry.get("owner_side", "right"))
+	if prev_owner != "" and prev_owner != actor_id and prev_owner != "console_socket" and actors.has(prev_owner):
+		_set_actor_holding(actors[prev_owner], prev_side, false)
+	var socket := _actor_hand_socket(actors[actor_id], side)
+	if socket == null:
+		return
+	if root.get_parent() != socket:
+		if root.get_parent() != null:
+			root.get_parent().remove_child(root)
+		socket.add_child(root)
+	root.global_transform = prev_world
+	# Keep the captured local offset. Blending it back to identity would slide the
+	# module into the palm after the hands have already met.
+	entry["blend_offset"] = Transform3D.IDENTITY
+	entry["blend_alpha"] = 0.0
+	if prev_owner != actor_id and prev_owner != "":
+		entry["transfer_count"] = int(entry["transfer_count"]) + 1
+	entry["owner"] = actor_id
+	entry["owner_side"] = side
+	root.visible = true
+	_set_actor_holding(actors[actor_id], side, true)
+
+
+func _set_world_basis_keep_origin(root: Node3D, basis: Basis) -> void:
+	if root == null:
+		return
+	var origin := root.global_position
+	root.global_transform = Transform3D(basis.orthonormalized(), origin)
+
+
+func _set_causal(entry: Dictionary, frame_index: int, state: String, owner: String) -> void:
+	var prev_state := str(entry.get("causal_state", ""))
+	var prev_owner := str(entry.get("causal_owner_logged", ""))
+	entry["state"] = state
+	entry["causal_state"] = state
+	if prev_state == state and prev_owner == owner:
+		return
+	if prev_owner != "" and owner != "" and prev_owner != owner and prev_state == state:
+		_add_violation(entry, frame_index, "dual_ownership", "owner changed %s -> %s without a state change" % [prev_owner, owner])
+	entry["causal_owner_logged"] = owner
+	var sock := float(entry.get("socket_err_m", -1.0))
+	_ownership_log.append({
+		"prop_id": str(entry.get("id", "")),
+		"frame": frame_index,
+		"state": state,
+		"owner": owner,
+		"hand_gap_m": snappedf(float(entry.get("hand_gap_m", 0.0)), 0.001),
+		"socket_err_m": snappedf(sock, 0.001) if sock >= 0.0 else -1.0,
+	})
+
+
+func _add_violation(entry: Dictionary, frame_index: int, code: String, detail: String) -> void:
+	_invariant_violations.append({
+		"prop_id": str(entry.get("id", "")),
+		"frame": frame_index,
+		"code": code,
+		"detail": detail,
+	})
+
+
+func _refresh_device_online() -> void:
+	var any_install := false
+	var all_online := true
+	for prop_key: Variant in _props.keys():
+		var entry: Dictionary = _props[str(prop_key)]
+		if not bool(entry.get("install_tracked", false)):
+			continue
+		any_install = true
+		if not bool(entry.get("online_done", false)):
+			all_online = false
+	_device_online = any_install and all_online
+
+
+func _query_socket(active: Dictionary) -> Dictionary:
+	var configured_normal := _vec3(active.get("socket_normal", null), Vector3.ZERO)
+	var configured_pos := _vec3(active.get("socket_pos", null), Vector3.INF)
+	if _bay != null and _bay.has_method("get_module_socket_transform"):
+		var result: Variant = _bay.call("get_module_socket_transform")
+		var parsed := _socket_from_variant(result)
+		if not parsed.is_empty():
+			return parsed
+	if _bay != null:
+		var target_name := str(active.get("socket_target", "")).strip_edges()
+		var named: Node = _bay.find_child(target_name, true, false) if target_name != "" else null
+		var slot: Node = named if named is Node3D else _bay.find_child("ModuleSlot", true, false)
+		if slot is Node3D:
+			var node := slot as Node3D
+			var facing := (-node.global_transform.basis.z).normalized()
+			if facing.length_squared() < 0.5:
+				facing = Vector3.FORWARD
+			return {"pos": node.global_position, "normal": facing, "basis": node.global_transform.basis}
+	if configured_pos != Vector3.INF:
+		var normal := configured_normal.normalized() if configured_normal.length() > 0.01 else Vector3(0.0, 0.0, 1.0)
+		return {"pos": configured_pos, "normal": normal, "basis": _basis_from_normal(normal)}
+	if _bay != null and _bay.has_method("get_event_focus_point"):
+		var focus: Dictionary = _bay.call("get_event_focus_point", "module_install")
+		var pos: Vector3 = focus.get("position", Vector3(0.0, 1.0, 0.0))
+		var view: Vector3 = focus.get("view_direction", Vector3(0.0, 0.0, 1.0))
+		var flat := Vector3(view.x, 0.0, view.z)
+		var normal := (-flat.normalized()) if flat.length() > 0.01 else Vector3(0.0, 0.0, 1.0)
+		return {"pos": pos, "normal": normal, "basis": _basis_from_normal(normal)}
+	var fallback_normal := configured_normal.normalized() if configured_normal.length() > 0.01 else Vector3(0.0, 0.0, 1.0)
+	return {"pos": Vector3(0.0, 1.0, 0.0), "normal": fallback_normal, "basis": _basis_from_normal(fallback_normal)}
+
+
+func _socket_from_variant(result: Variant) -> Dictionary:
+	if result is Transform3D:
+		var xf := result as Transform3D
+		var facing := (-xf.basis.z).normalized()
+		if facing.length_squared() < 0.5:
+			facing = Vector3.FORWARD
+		return {"pos": xf.origin, "normal": facing, "basis": xf.basis}
+	if result is Dictionary:
+		var data := result as Dictionary
+		var pos := _vec3(data.get("origin", data.get("position", data.get("pos", null))), Vector3.INF)
+		if pos == Vector3.INF:
+			return {}
+		var normal := _vec3(data.get("normal", null), Vector3.ZERO)
+		var basis := Basis.IDENTITY
+		if data.get("basis") is Basis:
+			basis = data["basis"] as Basis
+			if normal.length() < 0.01:
+				normal = (-basis.z).normalized()
+		if normal.length() < 0.01:
+			normal = Vector3(0.0, 0.0, 1.0)
+		else:
+			normal = normal.normalized()
+		if not (data.get("basis") is Basis):
+			basis = _basis_from_normal(normal)
+		return {"pos": pos, "normal": normal, "basis": basis}
+	return {}
+
+
+func _basis_from_normal(normal: Vector3) -> Basis:
+	var n := normal.normalized()
+	if n.length_squared() < 0.5:
+		n = Vector3(0.0, 0.0, 1.0)
+	var up := Vector3.UP
+	if absf(n.dot(up)) > 0.92:
+		up = Vector3.FORWARD
+	var x := up.cross(n).normalized()
+	var y := n.cross(x).normalized()
+	return Basis(x, y, -n).orthonormalized()
+
+
+func _compute_transfer_point(giver: Node3D, receiver: Node3D, height: float) -> Vector3:
+	var mid := (giver.global_position + receiver.global_position) * 0.5
+	mid.y = height
+	var across := receiver.global_position - giver.global_position
+	across.y = 0.0
+	if across.length() < 0.001:
+		across = Vector3(0.0, 0.0, 1.0)
+	across = across.normalized()
+	var side := Vector3(-across.z, 0.0, across.x)
+	var to_cam := _camera_pos - mid
+	to_cam.y = 0.0
+	if to_cam.length() > 0.05 and side.dot(to_cam) < 0.0:
+		side = -side
+	mid += side * 0.12
+	for actor_node: Node3D in [giver, receiver]:
+		var delta := Vector2(mid.x - actor_node.global_position.x, mid.z - actor_node.global_position.z)
+		if delta.length() < TORSO_CLEARANCE_RADIUS:
+			mid += side * (TORSO_CLEARANCE_RADIUS - delta.length() + 0.04)
+	return mid
+
+
+func _actor_chest_y(actor: Node3D) -> float:
+	var h := 1.7
+	if actor.get("height_m") != null:
+		h = float(actor.get("height_m"))
+	return actor.global_position.y + h * 0.66
+
+
+func _frame_u(frame_index: int, start_frame: int, end_frame: int) -> float:
+	if end_frame <= start_frame:
+		return 1.0 if frame_index >= end_frame else 0.0
+	var u := clampf(float(frame_index - start_frame) / float(end_frame - start_frame), 0.0, 1.0)
+	return u * u * (3.0 - 2.0 * u)
+
+
+func _emit_lock_cue(at: Vector3, frame_index: int) -> void:
+	_sound_cues.append({
+		"frame": frame_index,
+		"id": "module_lock",
+		"pos": [snappedf(at.x, 0.001), snappedf(at.y, 0.001), snappedf(at.z, 0.001)],
+	})
+	var rate := 22050
+	var count := int(float(rate) * 0.045)
+	var samples := PackedByteArray()
+	samples.resize(count * 2)
+	for i in count:
+		var t := float(i) / float(rate)
+		var env := exp(-t * 90.0)
+		var sample := sin(t * TAU * 1400.0) * env * 0.85
+		var value := int(clampf(sample, -1.0, 1.0) * 32767.0)
+		samples[i * 2] = value & 255
+		samples[i * 2 + 1] = (value >> 8) & 255
+	var wav := AudioStreamWAV.new()
+	wav.format = AudioStreamWAV.FORMAT_16_BITS
+	wav.mix_rate = rate
+	wav.stereo = false
+	wav.data = samples
+	var player := AudioStreamPlayer3D.new()
+	player.stream = wav
+	player.volume_db = -6.0
+	add_child(player)
+	player.global_position = at
+	player.play()
+
+
+func _sample_stats(samples: Array[float]) -> Dictionary:
+	if samples.is_empty():
+		return {"min": 0.0, "mean": 0.0, "max": 0.0, "count": 0}
+	var low := samples[0]
+	var high := samples[0]
+	var sum := 0.0
+	for value: float in samples:
+		low = minf(low, value)
+		high = maxf(high, value)
+		sum += value
+	return {
+		"min": snappedf(low, 0.0001),
+		"mean": snappedf(sum / float(samples.size()), 0.0001),
+		"max": snappedf(high, 0.0001),
+		"count": samples.size(),
+	}
+
+
+func _causal_rank(state: String, seen_transfer: bool) -> int:
+	if state == "transfer_contact":
+		return 2
+	if state.begins_with("held_by:"):
+		return 3 if seen_transfer else 1
+	match state:
+		"align_socket":
+			return 4
+		"insert_socket":
+			return 5
+		"locked":
+			return 6
+		"device_online":
+			return 7
+		_:
+			return 0
+
+
+func _chain_errors() -> Array[String]:
+	var errors: Array[String] = []
+	var grouped := {}
+	for rec: Dictionary in _ownership_log:
+		var prop_id := str(rec.get("prop_id", ""))
+		if not grouped.has(prop_id):
+			grouped[prop_id] = []
+		(grouped[prop_id] as Array).append(rec)
+	for prop_key: Variant in grouped.keys():
+		var prop_id := str(prop_key)
+		var rows: Array = grouped[prop_id]
+		var seen_transfer := false
+		var seen_lock := false
+		var lock_frame := -1
+		var prev_rank := 0
+		for rec_v: Variant in rows:
+			var rec: Dictionary = rec_v
+			var state := str(rec.get("state", ""))
+			var owner := str(rec.get("owner", ""))
+			var rank := _causal_rank(state, seen_transfer)
+			if rank > 0 and prev_rank > 0 and rank < prev_rank:
+				errors.append("%s regressed to %s" % [prop_id, state])
+			if state == "transfer_contact":
+				if seen_transfer:
+					errors.append("%s repeated transfer_contact" % prop_id)
+				seen_transfer = true
+			if state.begins_with("held_by:") and owner == "":
+				errors.append("%s held_by has an empty owner" % prop_id)
+			if state == "locked":
+				seen_lock = true
+				lock_frame = int(rec.get("frame", -1))
+				if owner != "console_socket":
+					errors.append("%s locked with owner %s" % [prop_id, owner])
+			if state == "device_online":
+				if not seen_lock:
+					errors.append("%s device_online before locked" % prop_id)
+				elif int(rec.get("frame", 0)) < lock_frame + 4:
+					errors.append("%s device_online is not at least 4 frames after lock" % prop_id)
+			if seen_lock and state != "locked" and state != "device_online":
+				errors.append("%s left the socket via %s" % [prop_id, state])
+			if seen_lock and owner != "console_socket":
+				errors.append("%s owner %s after lock" % [prop_id, owner])
+			if rank > 0:
+				prev_rank = rank
+	for prop_key2: Variant in _props.keys():
+		var entry: Dictionary = _props[str(prop_key2)]
+		var contact_f := int(entry.get("resolved_contact_frame", 1 << 30))
+		if str(entry.get("causal_giver", "")) != "" and contact_f <= _last_frame and not bool(entry.get("contact_done", false)):
+			errors.append("%s never completed transfer_contact" % str(prop_key2))
+		var lock_f := int(entry.get("resolved_lock_frame", 1 << 30))
+		if bool(entry.get("install_tracked", false)) and lock_f <= _last_frame and not bool(entry.get("lock_done", false)):
+			errors.append("%s never locked into the socket" % str(prop_key2))
+		var online_f := int(entry.get("resolved_online_frame", 1 << 30))
+		if bool(entry.get("install_tracked", false)) and bool(entry.get("lock_done", false)) and online_f <= _last_frame and not bool(entry.get("online_done", false)):
+			errors.append("%s stayed offline after the online frame" % str(prop_key2))
+	return errors
+
+
 # --------------------------------------------------------- helpers & QC
 
 
@@ -844,15 +1749,29 @@ func _active_timeline_entry(list: Array[Dictionary], frame_index: int) -> Dictio
 	var best: Dictionary = {}
 	var best_from := -1
 	for item: Dictionary in list:
-		var a: int = int(item.get("from", 0))
-		var has_to: bool = item.has("to")
-		var b: int = int(item.get("to", 0))
-		if frame_index < a or (has_to and frame_index >= b):
+		var window := _entry_window(item)
+		if frame_index < window.x or frame_index >= window.y:
 			continue
-		if a >= best_from:
+		if window.x >= best_from:
 			best = item
-			best_from = a
+			best_from = window.x
 	return best
+
+
+func _entry_window(item: Dictionary) -> Vector2i:
+	var start := int(item.get("from", item.get("start_frame", 0)))
+	if item.has("to"):
+		return Vector2i(start, int(item["to"]))
+	if item.has("end_frame") or item.has("withdraw_end_frame") or item.has("release_frame") or item.has("lock_frame") or item.has("online_frame"):
+		var action := str(item.get("action", item.get("state", ""))).to_lower()
+		var end_inclusive := start
+		if action == "install_into_socket" or action == "install_module":
+			end_inclusive = int(item.get("withdraw_end_frame", item.get("online_frame", item.get("lock_frame", start))))
+		else:
+			end_inclusive = int(item.get("end_frame", item.get("release_frame", start)))
+		return Vector2i(start, end_inclusive + 1)
+	# Legacy open-ended timeline rows stay active until a later row takes over.
+	return Vector2i(start, 1 << 30)
 
 
 func _dict_array(value: Variant) -> Array[Dictionary]:
@@ -894,6 +1813,13 @@ func get_qc_snapshot(prop_id: String) -> Dictionary:
 		"receive_world_pos": [snappedf(rp.x, 0.001), snappedf(rp.y, 0.001), snappedf(rp.z, 0.001)],
 		"operate_world_pos": [snappedf(op.x, 0.001), snappedf(op.y, 0.001), snappedf(op.z, 0.001)],
 		"transfer_count": int(entry["transfer_count"]),
+		"causal_state": str(entry.get("causal_state", "")),
+		"interaction_phase": str(entry.get("phase_this_frame", "")),
+		"device_state": str(entry.get("device_state", "offline")),
+		"socket_err_m": snappedf(float(entry.get("socket_err_m", -1.0)), 0.001),
+		"giver_hand_to_prop_m": snappedf(float(entry.get("giver_hand_to_prop_m", -1.0)), 0.001),
+		"receiver_hand_to_prop_m": snappedf(float(entry.get("receiver_hand_to_prop_m", -1.0)), 0.001),
+		"module_to_socket_m": snappedf(float(entry.get("module_to_socket_m", -1.0)), 0.001),
 	}
 
 

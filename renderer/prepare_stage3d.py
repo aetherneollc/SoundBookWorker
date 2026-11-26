@@ -1112,6 +1112,71 @@ def prepare(manifest_path: Path, output_path: Path, check_files: bool = True) ->
 # ------------------------------------------------------- generic multi-scene
 
 
+_ONE_SHOT_CLIPS = {
+    'handoff_offer', 'handoff_receive', 'insert_module', 'button_press',
+    'slam_table', 'abrupt_halt', 'turn_around', 'exhale_relief',
+    'pick_up', 'pickup', 'interact', 'panel_open',
+}
+
+
+def _copy_clip(entry: dict) -> dict:
+    """Keep timeline clip fields, including an explicit one-shot flag."""
+    out = dict(entry)
+    if 'one_shot' in entry:
+        out['one_shot'] = bool(entry['one_shot'])
+    elif str(entry.get('clip') or '').strip().lower() in _ONE_SHOT_CLIPS:
+        out['one_shot'] = True
+    return out
+
+
+def _normalize_interactive_prop(pspec: dict) -> dict:
+    """Pass handoff / install timelines through without dropping legacy prop keys."""
+    copied = dict(pspec)
+    timeline = []
+    source = copied.get('timeline', copied.get('actions', []))
+    if isinstance(source, list):
+        timeline = [dict(item) if isinstance(item, dict) else item for item in source]
+
+    def _has(action_name: str) -> bool:
+        return any(
+            isinstance(item, dict) and str(item.get('action') or item.get('state') or '').lower() == action_name
+            for item in timeline
+        )
+
+    handoff = copied.get('handoff')
+    if isinstance(handoff, dict):
+        copied['handoff'] = dict(handoff)
+        if not _has('handoff'):
+            row = dict(handoff)
+            row['action'] = 'handoff'
+            if 'from' not in row:
+                row['from'] = int(row.get('start_frame', 0))
+            if 'to' not in row:
+                end_frame = int(row.get('end_frame', row.get('release_frame', row['from'])))
+                row['to'] = end_frame + 1
+            timeline.append(row)
+    install = copied.get('install_into_socket')
+    if isinstance(install, dict):
+        copied['install_into_socket'] = dict(install)
+        if not _has('install_into_socket'):
+            row = dict(install)
+            row['action'] = 'install_into_socket'
+            if 'from' not in row:
+                row['from'] = int(row.get('start_frame', 0))
+            if 'to' not in row:
+                end_frame = int(row.get('withdraw_end_frame', row.get('online_frame', row.get('lock_frame', row['from']))))
+                row['to'] = end_frame + 1
+            timeline.append(row)
+    if timeline and (
+        isinstance(copied.get('timeline'), list)
+        or isinstance(copied.get('actions'), list)
+        or isinstance(handoff, dict)
+        or isinstance(install, dict)
+    ):
+        copied['timeline'] = timeline
+    return copied
+
+
 def _passthrough_events(raw_events) -> list[dict]:
     """Normalize manifest events into the stage3d event contract."""
     out: list[dict] = []
@@ -1330,7 +1395,7 @@ def prepare_generic(doc: dict, manifest_path: Path, output_path: Path, check_fil
             'moves': moves,
             'facing': list(raw_spec.get('facing') or []),
             'emotions': list(raw_spec.get('emotions') or []),
-            'clips': list(raw_spec.get('clips') or []),
+            'clips': [_copy_clip(c) for c in (raw_spec.get('clips') or []) if isinstance(c, dict)],
             'reaches': list(raw_spec.get('reaches') or []),
             'nods': list(raw_spec.get('nods') or []),
         })
@@ -1543,7 +1608,7 @@ def prepare_generic(doc: dict, manifest_path: Path, output_path: Path, check_fil
     for pid, pspec in (doc.get('props') or {}).items():
         if not isinstance(pspec, dict):
             continue
-        p_copy = dict(pspec)
+        p_copy = _normalize_interactive_prop(pspec)
         resolved_m = _resolve_file(p_copy.get('model'), manifest_dir)
         if resolved_m is not None:
             p_copy['model'] = resolved_m.as_posix()
@@ -1579,6 +1644,9 @@ def prepare_generic(doc: dict, manifest_path: Path, output_path: Path, check_fil
             'review_frames': review,
         },
     }
+    if isinstance(doc.get('interaction_audit'), dict):
+        stage['interaction_audit'] = dict(doc['interaction_audit'])
+
     if isinstance(doc.get('rover'), dict):
         r_copy = dict(doc['rover'])
         rm = _resolve_file(r_copy.get('model'), manifest_dir)

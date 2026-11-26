@@ -86,6 +86,23 @@ const LOOPING_CLIPS := {
 	"grip": true,
 }
 
+## Interaction beats play once and hold the end pose. They must never wrap to frame 0.
+const ONE_SHOT_CLIPS := {
+	"handoff_offer": true,
+	"handoff_receive": true,
+	"insert_module": true,
+	"button_press": true,
+	"slam_table": true,
+	"abrupt_halt": true,
+	"abrupt_halt_skid": true,
+	"turn_around": true,
+	"exhale_relief": true,
+	"pick_up": true,
+	"pickup": true,
+	"interact": true,
+	"panel_open": true,
+}
+
 const LOCOMOTION_CLIPS := {
 	"walk": true,
 	"walk_formal": true,
@@ -307,6 +324,7 @@ var _palette: Dictionary = {}
 var holding := false
 var holding_left := false
 var face_state := "neutral"
+var one_shot_loop_violations := 0
 
 var _facial: Node
 var _face_materials: Array[ShaderMaterial] = []
@@ -319,6 +337,11 @@ var _foot_rest: Dictionary = {}
 var _side_foot_bones: Dictionary = {"left": [], "right": []}
 var _eye_rest := Vector3.INF
 var _elapsed_s := 0.0
+var _requested_one_shot := false
+var _one_shot_time := 0.0
+var _finger_pose_r := ""
+var _finger_pose_l := ""
+var _exhale_relief := false
 var _loco_phase := 0.0
 var _is_moving := false
 var _last_speed_mps := 0.0
@@ -326,6 +349,7 @@ var loco_state := "idle"          # idle | walk | run | decelerate | stop
 var idle_style := "professional_idle"  # relaxed_idle | professional_idle | alert_idle | combat_idle | conversation_idle
 var _dramatic_actions: Array[Dictionary] = []
 var _dramatic_active := false
+var _dramatic_one_shot := false
 var _dramatic_id := ""
 var _dramatic_phase := ""
 var _dramatic_clip := ""
@@ -1133,16 +1157,25 @@ func _collect_extra_library_paths(anim_cfg: Dictionary) -> Array[String]:
 			continue
 		seen[path] = true
 		paths.append(path)
-	if not paths.is_empty():
-		return paths
 	var repo := ProjectSettings.globalize_path("res://").simplify_path().get_base_dir()
-	var defaults: Array[String] = [
-		repo.path_join("media/assets3d/animations/ps2_dramatic_pack.glb"),
-		repo.path_join("media/assets3d/cc0/quaternius_universal_animation_library_2/UAL2_Standard.glb"),
-	]
-	for path: String in defaults:
-		if FileAccess.file_exists(path):
-			paths.append(path)
+	var mocap := repo.path_join("media/assets3d/animations/mocap_core10_pack.glb")
+	var ual2 := repo.path_join("media/assets3d/cc0/quaternius_universal_animation_library_2/UAL2_Standard.glb")
+	var ps2 := repo.path_join("media/assets3d/animations/ps2_dramatic_pack.glb")
+	# UAL1 is the primary library. Extra packs follow as UAL2, mocap, then the dramatic pack
+	# so a present mocap_core10_pack.glb loads with no per-character wiring.
+	if paths.is_empty():
+		for extra_path: String in [ual2, mocap, ps2]:
+			if FileAccess.file_exists(extra_path) and not seen.has(extra_path):
+				seen[extra_path] = true
+				paths.append(extra_path)
+		return paths
+	if FileAccess.file_exists(mocap) and not seen.has(mocap):
+		var insert_at := paths.size()
+		for i in paths.size():
+			if str(paths[i]).ends_with("ps2_dramatic_pack.glb"):
+				insert_at = i
+				break
+		paths.insert(insert_at, mocap)
 	return paths
 
 
@@ -1819,6 +1852,50 @@ func set_hand_holding(side: String, is_holding: bool) -> void:
 		holding = is_holding
 
 
+## World-space palm reach used by the prop state machine after the clip pass,
+## so a one-frame-late target can be corrected before contact is measured.
+func reach_hand_world(side: String, world_pos: Vector3, weight: float) -> void:
+	if _skeleton == null or weight <= 0.001:
+		return
+	var prefix := "l" if side == "left" else "r"
+	_reach_arm(prefix, _skeleton.global_transform.affine_inverse() * world_pos, clampf(weight, 0.0, 1.0))
+	sync_pose_attachments()
+
+
+## BoneAttachment nodes lag behind pose writes until the skeleton updates.
+## Snap them now so props parented to the palm and QC gaps see this frame's IK.
+func sync_pose_attachments() -> void:
+	if _skeleton == null:
+		return
+	if _skeleton.has_method("force_update_all_dirty_bones"):
+		_skeleton.call("force_update_all_dirty_bones")
+	_place_hand_attachment(_hand_socket, "r")
+	_place_hand_attachment(_left_hand_socket, "l")
+
+
+func _place_hand_attachment(socket: Node3D, side: String) -> void:
+	if socket == null:
+		return
+	var attach := socket.get_parent()
+	if not attach is Node3D:
+		return
+	var hand: int = int(_target.human.get("%s_hand" % side, -1))
+	if hand < 0:
+		return
+	(attach as Node3D).transform = _skeleton.get_bone_global_pose(hand)
+
+
+func grip_world_position(side: String) -> Vector3:
+	if _skeleton == null:
+		return global_position
+	var prefix := "l" if side == "left" else "r"
+	var hand: int = int(_target.human.get("%s_hand" % prefix, -1))
+	if hand < 0:
+		return hand_world_position()
+	var pose: Transform3D = _skeleton.get_bone_global_pose(hand)
+	return _skeleton.global_transform * (pose * _hand_grip_local(prefix))
+
+
 func get_hand_socket() -> Node3D:
 	return _hand_socket
 
@@ -1832,8 +1909,39 @@ func get_facial_controller() -> Node:
 
 
 func set_emotion(emotion: String, intensity: float = 1.0, transition_s: float = 0.35) -> void:
+	var key := emotion.strip_edges().to_lower()
+	if key == "exhale_relief":
+		# Gentle smile and a slightly lifted, relaxed brow. The glance itself is applied
+		# in apply_look_at so the eyes do not freeze on a single point.
+		_exhale_relief = true
+		if _facial != null:
+			_facial.call("set_emotion", "happy", clampf(intensity * 0.48, 0.22, 0.55), transition_s)
+		return
+	_exhale_relief = false
 	if _facial != null:
 		_facial.call("set_emotion", emotion, intensity, transition_s)
+
+
+func set_clip_one_shot(enabled: bool) -> void:
+	_requested_one_shot = enabled
+
+
+func set_hand_finger_pose(side: String, pose: String) -> void:
+	var key := pose.strip_edges().to_lower()
+	if side == "left":
+		_finger_pose_l = key
+	else:
+		_finger_pose_r = key
+
+
+func _clip_is_one_shot(clip: String) -> bool:
+	if _requested_one_shot:
+		return true
+	var key := clip.strip_edges().to_lower()
+	if ONE_SHOT_CLIPS.has(key):
+		return true
+	var action := _dramatic_id.strip_edges().to_lower()
+	return _dramatic_active and action != "" and ONE_SHOT_CLIPS.has(action)
 
 
 func set_listening(is_listening: bool, speaker_world_pos: Vector3 = Vector3.ZERO, listener_emotion: String = "", speaker_energy: float = 0.0) -> void:
@@ -2000,10 +2108,16 @@ func update_animation(clip: String, clip_key: String, speed: float, delta: float
 		_last_clip_status = "missing"
 		return
 	var scrub := -1.0
+	var clip_len: float = float(_clip_lengths.get(resolved, 0.05))
 	if resolved == "Abrupt_Halt_Skid":
-		scrub = clampf(_halt_u, 0.0, 1.0) * maxf(float(_clip_lengths.get(resolved, 0.05)) - 0.001, 0.0)
+		scrub = clampf(_halt_u, 0.0, 1.0) * maxf(clip_len - 0.001, 0.0)
 	elif _dramatic_faithful and _dramatic_active and resolved == _dramatic_clip and not _halt_hold and resolved != "Sprint_Urgent_Upright":
-		scrub = clampf(_dramatic_u, 0.0, 1.0) * maxf(float(_clip_lengths.get(resolved, 0.05)) - 0.001, 0.0)
+		scrub = clampf(_dramatic_u, 0.0, 1.0) * maxf(clip_len - 0.001, 0.0)
+	if _clip_is_one_shot(resolved) and scrub >= 0.0:
+		scrub = minf(scrub, maxf(clip_len - 0.02, 0.0))
+	if _clip_is_one_shot(resolved) and scrub < 0.0:
+		_play_one_shot(resolved, clip_key, speed, delta, blend)
+		return
 	if scrub >= 0.0:
 		var entering_scrub: bool = resolved != _current_clip or clip_key != _current_key
 		if entering_scrub:
@@ -2045,6 +2159,28 @@ func update_animation(clip: String, clip_key: String, speed: float, delta: float
 		_loco_phase += delta * float(prof.get("stride_freq", 1.8)) * clamped_speed * TAU
 
 
+func _play_one_shot(resolved: String, clip_key: String, speed: float, delta: float, blend: float) -> void:
+	var length: float = maxf(float(_clip_lengths.get(resolved, 0.0)), 0.0)
+	var cap: float = maxf(length - 0.02, 0.0)
+	var entering: bool = resolved != _current_clip or clip_key != _current_key
+	if entering:
+		var eff_blend: float = blend if _current_clip != "" else 0.0
+		_player.play(StringName(resolved), eff_blend)
+		_one_shot_time = 0.0
+		_current_clip = resolved
+		_current_key = clip_key
+	var before: float = _player.current_animation_position
+	_one_shot_time = minf(_one_shot_time + maxf(delta, 0.0) * clampf(speed, 0.05, 3.0), cap)
+	_player.speed_scale = 0.0
+	_player.seek(_one_shot_time, true)
+	var after: float = _player.current_animation_position
+	# A wrap back toward frame 0 while the held time is still advancing is a loop violation.
+	if before > 0.08 and after + 0.015 < before * 0.35 and _one_shot_time > 0.08:
+		one_shot_loop_violations += 1
+	_is_moving = false
+	_active_clip_name = resolved
+
+
 ## Updates facial BlendShapes, emotions, TTS lip-sync, and blinking.
 func update_face(frame_index: int, fps: int, is_speaking: bool, speech_energy: float = -1.0, viseme_hint: String = "", dt: float = -1.0) -> void:
 	if _facial != null:
@@ -2074,9 +2210,13 @@ func has_face_atlas() -> bool:
 func apply_look_at(world_target: Vector3, weight: float, dt: float = 1.0 / 24.0) -> void:
 	if _skeleton == null or _head_bone < 0:
 		return
+	if _exhale_relief:
+		var glance := sin(_elapsed_s * 0.65) * 0.05
+		world_target += global_transform.basis * Vector3(0.14 + glance, -0.03, 0.06)
+		weight = clampf(weight * 0.7, 0.28, 0.64)
 	# Dedicated clips already key the head. A second gaze twist fights Snap_Look,
 	# the upright sprint, and the skid halt.
-	if _suppress_procedural_body():
+	if _suppress_procedural_body() and not _exhale_relief:
 		return
 	if _facial != null:
 		_facial.call("set_gaze_target", world_target, weight)
@@ -2095,17 +2235,27 @@ func apply_overlays(
 ) -> void:
 	if _skeleton == null:
 		return
+	_apply_overlay_body(nod_phase, nod_weight, reach_target, reach_weight, reach_side)
+	sync_pose_attachments()
 
+
+func _apply_overlay_body(
+	nod_phase: float,
+	nod_weight: float,
+	reach_target: Vector3,
+	reach_weight: float,
+	reach_side: String
+) -> void:
 	# Real GLB clips own the body. Do not stack idle reaches, gait hunch, or a
 	# two-arm box carry on top of Sprint_Urgent_Upright / Abrupt_Halt_Skid /
 	# a dedicated dramatic clip. Contact IK and grounding still run.
 	if _suppress_procedural_body():
 		_apply_contact_align()
-		if _dramatic_active and _dramatic_id in ["pass_prop", "receive_prop", "pass_sensor", "receive_sensor", "pass_tool", "receive_tool", "offer_hand"] and reach_weight > 0.08:
+		if reach_weight > 0.08:
 			var side_prefix: String = "l" if reach_side == "left" else "r"
-			_reach_arm(side_prefix, _skeleton.global_transform.affine_inverse() * reach_target, minf(reach_weight, 0.9))
+			_reach_arm(side_prefix, _skeleton.global_transform.affine_inverse() * reach_target, clampf(reach_weight, 0.0, 1.0))
 		# One arm carries the handheld forward. The other arm keeps the sprint pump.
-		if _current_clip == "Sprint_Urgent_Upright" and (holding or holding_left):
+		if _current_clip == "Sprint_Urgent_Upright" and (holding or holding_left) and reach_weight <= 0.08:
 			_sprint_carry_u = minf(1.0, _sprint_carry_u + 0.12)
 			var carry_side := "r" if holding else "l"
 			var carry_local := Vector3(-0.16 if carry_side == "r" else 0.16, height_m * 0.58, 0.36)
@@ -2126,6 +2276,9 @@ func apply_overlays(
 		if not _dramatic_faithful:
 			_apply_dramatic_pose()
 		_apply_contact_align()
+		if reach_weight > 0.05:
+			var side_prefix: String = "l" if reach_side == "left" else "r"
+			_reach_arm(side_prefix, _skeleton.global_transform.affine_inverse() * reach_target, clampf(reach_weight, 0.0, 1.0))
 		_apply_hand_fingers("r", holding)
 		_apply_hand_fingers("l", holding_left)
 		_ground_feet()
@@ -2295,10 +2448,56 @@ func _apply_carry_arm_bias(side: String) -> void:
 	_reach_arm(side, _skeleton.global_transform.affine_inverse() * carry_world, 0.38)
 
 
+func _resolved_finger_mode(side: String, is_holding: bool) -> String:
+	var posed: String = _finger_pose_l if side == "l" else _finger_pose_r
+	if posed == "grip" or posed == "point" or posed == "open" or posed == "release":
+		return posed
+	if posed == "relaxed":
+		return "relaxed"
+	if is_holding:
+		return "grip"
+	if _dramatic_id in ["button_press", "press_button", "panel_open"]:
+		return "point"
+	return "relaxed"
+
+
+func _apply_open_fingers(side: String, mode: String) -> void:
+	var human: Dictionary = _target.human
+	for finger: String in GRIP_FINGERS:
+		for digit in [1, 2, 3]:
+			var key := "%s_%s%d" % [side, finger, digit]
+			if not human.has(key):
+				continue
+			var b: int = int(human[key])
+			if not _finger_curl_axes.has(b):
+				continue
+			var axis: Vector3 = _finger_curl_axes[b] as Vector3
+			var rest_q: Quaternion = _skeleton.get_bone_rest(b).basis.get_rotation_quaternion()
+			var deg := 8.0
+			if mode == "point":
+				if finger == "index":
+					deg = 4.0 if digit == 1 else 2.0
+				elif finger == "thumb":
+					deg = 14.0
+				else:
+					deg = 34.0 if digit == 2 else 26.0
+			elif mode == "release":
+				deg = 10.0 if finger == "thumb" else 8.0
+			else:
+				deg = 6.0 if finger == "thumb" else 3.0
+			var posed_q: Quaternion = (rest_q * Quaternion(axis, deg_to_rad(deg))).normalized()
+			var q_now: Quaternion = _skeleton.get_bone_pose_rotation(b)
+			_skeleton.set_bone_pose_rotation(b, q_now.slerp(posed_q, 0.9))
+
+
 func _apply_hand_fingers(side: String, is_holding: bool) -> void:
+	var mode := _resolved_finger_mode(side, is_holding)
+	if mode == "point" or mode == "open" or mode == "release":
+		_apply_open_fingers(side, mode)
+		return
 	var human: Dictionary = _target.human
 	var grip_map: Dictionary = _grip_pose_r if side == "r" else _grip_pose_l
-	if is_holding:
+	if mode == "grip":
 		for finger: String in GRIP_FINGERS:
 			for digit in [1, 2, 3]:
 				var key := "%s_%s%d" % [side, finger, digit]
@@ -2338,13 +2537,142 @@ func _apply_hand_fingers(side: String, is_holding: bool) -> void:
 				_skeleton.set_bone_pose_rotation(b, q_now.slerp(relaxed_q, open_blend))
 
 
+func _hand_grip_local(side: String) -> Vector3:
+	var socket: Node3D = _left_hand_socket if side == "l" else _hand_socket
+	if socket == null:
+		return Vector3.ZERO
+	return socket.position
+
+
 func _reach_arm(side: String, target: Vector3, weight: float) -> void:
 	var human: Dictionary = _target.human
 	var upper: int = int(human.get("%s_upper_arm" % side, -1))
 	var lower: int = int(human.get("%s_lower_arm" % side, -1))
 	var hand: int = int(human.get("%s_hand" % side, -1))
-	if upper < 0 or lower < 0 or hand < 0:
+	if upper < 0 or lower < 0 or hand < 0 or weight <= 0.001:
 		return
+	# High-weight reaches solve the palm/grip, not the wrist. The grip socket sits
+	# several centimetres off the wrist joint; aiming the wrist leaves a 10–15 cm miss.
+	if weight >= 0.95:
+		_apply_reach_torso_assist(side, target, upper, lower, hand)
+		var grip_local: Vector3 = _hand_grip_local(side)
+		for _iter in 6:
+			var gh_now: Transform3D = _skeleton.get_bone_global_pose(hand)
+			var grip_now: Vector3 = gh_now * grip_local
+			var miss: Vector3 = target - grip_now
+			if miss.length() <= 0.008:
+				break
+			if _iter == 4 and miss.length() > 0.012:
+				_lean_toward_residual(side, miss)
+			# Shift the wrist by the palm error so the grip, not the wrist joint, lands on target.
+			_solve_two_bone(side, upper, lower, hand, gh_now.origin + miss, 1.0)
+		return
+	_solve_two_bone(side, upper, lower, hand, target, weight)
+
+
+func _apply_reach_torso_assist(side: String, target: Vector3, upper: int, lower: int, hand: int) -> void:
+	var gu: Transform3D = _skeleton.get_bone_global_pose(upper)
+	var gl: Transform3D = _skeleton.get_bone_global_pose(lower)
+	var gh: Transform3D = _skeleton.get_bone_global_pose(hand)
+	var reach: float = gu.origin.distance_to(target)
+	var max_reach: float = gu.origin.distance_to(gl.origin) + gl.origin.distance_to(gh.origin)
+	if max_reach < 0.05 or reach <= max_reach * 0.82:
+		return
+	var budget: float = deg_to_rad(12.0)
+	var deficit: float = clampf((reach - max_reach * 0.90) / 0.18, 0.0, 1.0)
+	var clav: int = int(_target.human.get("%s_shoulder" % side, -1))
+	var used := 0.0
+	if clav >= 0:
+		used = _assist_clavicle(clav, upper, target, budget * deficit)
+	var remain: float = maxf(budget - used, 0.0) * deficit
+	if remain < 0.01:
+		return
+	var shoulder: Vector3 = _skeleton.get_bone_global_pose(upper).origin
+	var to_target: Vector3 = target - shoulder
+	if to_target.length_squared() < 1e-6:
+		return
+	var fwd: Vector3 = ((_target.skel_xform as Transform3D).basis.inverse() * Vector3(0.0, 0.0, 1.0)).normalized()
+	var up: Vector3 = ((_target.skel_xform as Transform3D).basis.inverse() * Vector3.UP).normalized()
+	var side_axis: Vector3 = up.cross(fwd).normalized()
+	var flat: Vector3 = to_target - up * to_target.dot(up)
+	if flat.length_squared() < 1e-6:
+		return
+	flat = flat.normalized()
+	var pitch: float = clampf(flat.dot(fwd), -1.0, 1.0) * remain
+	var yaw: float = clampf(flat.dot(side_axis), -1.0, 1.0) * remain
+	var mag: float = Vector2(pitch, yaw).length()
+	if mag > remain and mag > 0.0001:
+		var scale: float = remain / mag
+		pitch *= scale
+		yaw *= scale
+	var spine_count: int = int(_target.human.get("spine_count", 0))
+	if spine_count <= 0:
+		return
+	var chest: int = int(_target.human.get("spine%d" % (spine_count - 1), -1))
+	if chest >= 0:
+		_pitch_bone(chest, pitch)
+		_yaw_bone(chest, yaw)
+
+
+func _lean_toward_residual(side: String, miss: Vector3) -> void:
+	if miss.length() < 0.008 or miss.length() > 0.16:
+		return
+	var human: Dictionary = _target.human
+	var spine_count: int = int(human.get("spine_count", 0))
+	if spine_count <= 0:
+		return
+	var chest: int = int(human.get("spine%d" % (spine_count - 1), -1))
+	if chest < 0:
+		return
+	var fwd: Vector3 = ((_target.skel_xform as Transform3D).basis.inverse() * Vector3(0.0, 0.0, 1.0)).normalized()
+	var up: Vector3 = ((_target.skel_xform as Transform3D).basis.inverse() * Vector3.UP).normalized()
+	var side_axis: Vector3 = up.cross(fwd).normalized()
+	var flat: Vector3 = miss - up * miss.dot(up)
+	var reach: float = maxf(miss.length(), 0.05)
+	var budget: float = clampf(reach / 0.28, 0.0, 1.0) * deg_to_rad(8.0)
+	var pitch: float = clampf(flat.normalized().dot(fwd), -1.0, 1.0) * budget if flat.length() > 0.001 else 0.0
+	var yaw: float = clampf(flat.normalized().dot(side_axis), -1.0, 1.0) * budget if flat.length() > 0.001 else 0.0
+	var vertical: float = clampf(miss.dot(up) / 0.28, -1.0, 1.0) * deg_to_rad(6.0)
+	_pitch_bone(chest, pitch + vertical)
+	_yaw_bone(chest, yaw)
+	var clav: int = int(human.get("%s_shoulder" % side, -1))
+	if clav >= 0:
+		_pitch_bone(clav, vertical * 0.35)
+
+
+func _assist_clavicle(clav: int, upper: int, target: Vector3, max_rad: float) -> float:
+	if clav < 0 or upper < 0 or max_rad <= 0.0:
+		return 0.0
+	var clav_xf: Transform3D = _skeleton.get_bone_global_pose(clav)
+	var shoulder: Vector3 = _skeleton.get_bone_global_pose(upper).origin
+	var current_dir: Vector3 = shoulder - clav_xf.origin
+	var reach_dir: Vector3 = target - shoulder
+	if current_dir.length() < 0.01 or reach_dir.length() < 0.01:
+		return 0.0
+	var wanted_dir: Vector3 = (shoulder + reach_dir.normalized() * 0.05) - clav_xf.origin
+	if wanted_dir.length() < 0.01:
+		return 0.0
+	var delta := Quaternion(current_dir.normalized(), wanted_dir.normalized())
+	var ang: float = absf(delta.get_angle())
+	if ang < 0.001:
+		return 0.0
+	var applied: float = minf(ang, max_rad)
+	if ang > max_rad:
+		var axis: Vector3 = delta.get_axis()
+		if axis.length_squared() < 0.5:
+			return 0.0
+		delta = Quaternion(axis.normalized(), applied)
+	var parent: int = _skeleton.get_bone_parent(clav)
+	var parent_rot := Quaternion.IDENTITY
+	if parent >= 0:
+		parent_rot = _skeleton.get_bone_global_pose(parent).basis.get_rotation_quaternion()
+	var new_global: Quaternion = (delta * clav_xf.basis.get_rotation_quaternion()).normalized()
+	var local_q: Quaternion = (parent_rot.inverse() * new_global).normalized()
+	_skeleton.set_bone_pose_rotation(clav, local_q)
+	return applied
+
+
+func _solve_two_bone(side: String, upper: int, lower: int, hand: int, target: Vector3, weight: float) -> void:
 	var gu: Transform3D = _skeleton.get_bone_global_pose(upper)
 	var gl: Transform3D = _skeleton.get_bone_global_pose(lower)
 	var gh: Transform3D = _skeleton.get_bone_global_pose(hand)
@@ -2603,12 +2931,15 @@ func get_qc_snapshot() -> Dictionary:
 		"active_clip_name": _active_clip_name if _active_clip_name != "" else _current_clip,
 		"hand_contact_dist_m": snappedf(_hand_contact_dist, 0.001) if _hand_contact_dist >= 0.0 else -1.0,
 		"dramatic_phase": _dramatic_phase,
+		"one_shot_loop_violations": one_shot_loop_violations,
+		"exhale_relief": _exhale_relief,
 	}
 
 
 func set_dramatic_actions(value: Variant) -> void:
 	_dramatic_actions.clear()
 	_dramatic_active = false
+	_dramatic_one_shot = false
 	_dramatic_id = ""
 	_dramatic_phase = ""
 	_dramatic_clip = ""
@@ -2649,12 +2980,14 @@ func set_dramatic_actions(value: Variant) -> void:
 			"dedicated_clip": str(source.get("dedicated_clip", "")).strip_edges(),
 			"intensity": clampf(float(source.get("intensity", 1.0)), 0.0, 1.5),
 			"target": str(source.get("target", "")),
+			"one_shot": bool(source.get("one_shot", false)),
 			"phases": phases,
 		})
 
 
 func update_dramatic_action(frame_index: int, fps: int) -> void:
 	_dramatic_active = false
+	_dramatic_one_shot = false
 	_dramatic_phase = ""
 	_dramatic_clip = ""
 	_dramatic_faithful = false
@@ -2675,6 +3008,7 @@ func update_dramatic_action(frame_index: int, fps: int) -> void:
 	if chosen.is_empty():
 		return
 	_dramatic_active = true
+	_dramatic_one_shot = bool(chosen.get("one_shot", false))
 	_dramatic_id = str(chosen["action_id"])
 	_dramatic_from = int(chosen["from"])
 	_dramatic_intensity = float(chosen["intensity"])
@@ -2720,6 +3054,10 @@ func dramatic_action_id() -> String:
 
 func dramatic_action_from() -> int:
 	return _dramatic_from
+
+
+func dramatic_one_shot() -> bool:
+	return _dramatic_active and _dramatic_one_shot
 
 
 func get_dramatic_state() -> Dictionary:
@@ -2834,16 +3172,26 @@ func _resolve_dramatic_clip(action: Dictionary) -> String:
 		return ""
 	if _clip_names.has(key):
 		return key
+	# Prefer the alias whose primary source name is the request. Fallback lists
+	# share names (PickUp_Table is also a handoff fallback) and must not win.
+	var fallback := ""
 	for clip_key_v: Variant in CLIP_CANDIDATES.keys():
 		var clip_key := str(clip_key_v)
 		if LOCOMOTION_CLIPS.has(clip_key) or not _clip_names.has(clip_key):
 			continue
 		if clip_key == key:
 			return clip_key
-		for cand_v: Variant in (CLIP_CANDIDATES[clip_key] as Array):
-			if str(cand_v).to_lower() == key:
+		var candidates: Array = CLIP_CANDIDATES[clip_key]
+		for index in candidates.size():
+			var cand := str(candidates[index]).to_lower().replace(" ", "_")
+			if cand != key:
+				continue
+			if index == 0:
 				return clip_key
-	return ""
+			if fallback == "":
+				fallback = clip_key
+			break
+	return fallback
 
 
 func _dramatic_portions(action: Dictionary) -> Array[float]:

@@ -266,6 +266,14 @@ _ROWS: tuple[tuple[Any, ...], ...] = (
     ("wade_forward", "Swim_Fwd_Loop", "loco", 0, 0.80, "weary", "wade,forward", "tense", 0.35, 0.70, "industrial", "none", "locomotion", (8, 0, 0, 0.30, 0.25, 0.20, 0.22, 0.18, 4, 0)),
     ("tread_water", "Swim_Idle_Loop", "sustain", 0, 0.60, "weary", "tread,idle", "fear,weary", 0.25, 0.55, "horror", "none", "idle", (4, 2, 0, 0.05, 0.15, 0.10, 0.15, 0.10, 2, 2)),
     ("drive_wait", "Driving_Loop", "sustain", 0, 0.55, "focused", "drive,wait", "tense,focused", 0.20, 0.50, "corridor,observation_bay", "console", "idle", (2, 0, 0, 0.0, 0.20, 0.25, 0.20, 0.25, 2, 0)),
+    ("idle_natural", "Idle_Loop", "sustain", 0, 0.35, "calm", "natural,stand,idle", "neutral", 0.05, 0.30, "dialogue", "none", "idle", (1, 0, 0, 0.02, 0.0, 0.0, 0.0, 0.0, 0, 0)),
+    ("sprint_carry", "Walk_Carry_Loop", "loco", 0, 1.00, "focused,urgent", "carry,sprint,run", "focused,urgent", 0.55, 0.95, "corridor,action,industrial", "prop", "locomotion", (10, 2, 0, 0.40, 0.45, 0.40, 0.45, 0.40, 2, 0)),
+    ("turn_around", "Walk_Loop", "gesture", 1, 1.00, "alert", "turn,around", "tense", 0.40, 0.85, "corridor,dialogue", "none", "reaction", (4, 40, 0, 0.15, 0.08, 0.05, 0.08, 0.05, 2, 30)),
+    ("angry_confront", "Idle_Talking_Loop", "gesture", 1, 1.00, "aggressive", "question,angry,confront", "angry", 0.55, 1.00, "confrontation,dialogue", "person", "confrontation", (6, 8, 0, 0.25, 0.45, 0.35, 0.20, 0.15, 2, 6)),
+    ("handoff_offer", "PickUp_Table", "gesture", 1, 0.90, "calm,precise", "handoff,offer,give", "neutral,focused", 0.25, 0.70, "dialogue", "prop", "interaction", (4, 8, 0, 0.15, 0.35, 0.70, 0.10, 0.15, 2, 6)),
+    ("handoff_receive", "Interact", "gesture", 1, 0.90, "precise", "receive,take,handoff", "focused", 0.25, 0.70, "dialogue", "prop", "interaction", (4, -6, 0, 0.0, 0.30, 0.55, 0.18, 0.25, 2, -4)),
+    ("insert_module", "PickUp_Table", "impact", 1, 1.00, "precise,urgent", "insert,module,seat", "focused,urgent", 0.40, 0.90, "console,industrial", "module", "interaction", (10, 2, 0, 0.20, 0.25, 0.75, 0.22, 0.55, 8, 0)),
+    ("exhale_relief", "Idle_Loop", "sustain", 1, 0.75, "calm", "exhale,relief,relax", "relieved", 0.15, 0.55, "dialogue", "none", "emotion", (-8, 0, 0, 0.0, -0.12, 0.0, -0.12, 0.0, -6, 0)),
 )
 
 _CLIP_CACHE: tuple[Any, dict[str, "ClipRecord"]] | None = None
@@ -284,6 +292,7 @@ def extra_library_paths() -> dict[str, Path]:
     ual2 = root / "media" / "assets3d" / "cc0" / "quaternius_universal_animation_library_2"
     return {
         "ps2_dramatic_pack": root / "media" / "assets3d" / "animations" / "ps2_dramatic_pack.glb",
+        "mocap_core10": root / "media" / "assets3d" / "animations" / "mocap_core10_pack.glb",
         "ual2": ual2 / "UAL2_Standard.glb",
         "ual2_root_motion": ual2 / "UAL2_Standard_RM.glb",
     }
@@ -322,6 +331,7 @@ class ActionEntry:
     family: str = "gesture"
     dedicated_clip: str = ""
     clip_source: str = "ual1"
+    one_shot: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         """JSON-ready description, including the four-phase envelope."""
@@ -339,6 +349,7 @@ class ActionEntry:
             "category": self.category,
             "clip_source": self.clip_source,
             "dedicated_clip": self.dedicated_clip,
+            "one_shot": self.one_shot,
             "phases": self.phases,
         }
 
@@ -443,7 +454,7 @@ def load_clip_index(standard: Path | None = None, root_motion: Path | None = Non
         raise FileNotFoundError(f"UAL libraries missing: {standard} / {root_motion}")
     extras = extra_library_paths()
     stamp = [str(standard.resolve()), str(root_motion.resolve()), standard.stat().st_mtime_ns, root_motion.stat().st_mtime_ns]
-    for label in ("ps2_dramatic_pack", "ual2", "ual2_root_motion"):
+    for label in ("ps2_dramatic_pack", "mocap_core10", "ual2", "ual2_root_motion"):
         path = extras[label]
         stamp.append(str(path))
         stamp.append(path.stat().st_mtime_ns if path.is_file() else 0)
@@ -495,9 +506,10 @@ def load_clip_index(standard: Path | None = None, root_motion: Path | None = Non
             "names": dramatic_names,
             "root_motion": sorted(name for name, pair in dramatic_map.items() if pair[1] > ROOT_MOTION_MIN_M),
             "path": dramatic_path.as_posix(),
+            "tier": "procedural_fallback",
         }
     else:
-        provenance["ps2_dramatic_pack"] = {"count": 0, "names": [], "root_motion": [], "path": ""}
+        provenance["ps2_dramatic_pack"] = {"count": 0, "names": [], "root_motion": [], "path": "", "tier": "procedural_fallback"}
 
     ual2_path = extras["ual2"]
     ual2_rm_path = extras["ual2_root_motion"]
@@ -522,6 +534,23 @@ def load_clip_index(standard: Path | None = None, root_motion: Path | None = Non
         }
     else:
         provenance["ual2"] = {"count": 0, "names": [], "root_motion": [], "path": ""}
+
+    mocap_path = extras["mocap_core10"]
+    if mocap_path.is_file():
+        mocap_map = _measure_animations(mocap_path)
+        mocap_names = sorted(mocap_map)
+        for name in mocap_names:
+            duration, travel = mocap_map[name]
+            _add(name, duration, travel, True, travel > ROOT_MOTION_MIN_M, "mocap_core10", False)
+        provenance["mocap_core10"] = {
+            "count": len(mocap_names),
+            "names": mocap_names,
+            "root_motion": sorted(name for name, pair in mocap_map.items() if pair[1] > ROOT_MOTION_MIN_M),
+            "path": mocap_path.as_posix(),
+            "tier": "real_mocap_retargeted",
+        }
+    else:
+        provenance["mocap_core10"] = {"count": 0, "names": [], "root_motion": [], "path": "", "tier": "real_mocap_retargeted"}
     provenance["independent_names"] = sorted(records)
     load_clip_index.provenance = provenance
     _CLIP_CACHE = (key, records)
@@ -669,6 +698,44 @@ DRAMATIC_BINDINGS = {
     "catch_breath_stand": "Catch_Breath_Brace",
     "look_up_array": "Look_Up_Array_Track",
 }
+# Real mocap / real pro clips. These win over the procedural dramatic pack.
+# insert_module stays on the authored table-height pickup: the optical lifts
+# in the commercial sets are floor pickups or overhead lifts, not a module insert.
+CORE10_BINDINGS = {
+    "idle_natural": "Mocap_Idle_Sway_Loop",
+    "sprint_carry": "Mocap_Sprint_Carry",
+    "abrupt_halt": "Mocap_Abrupt_Halt",
+    "confront_halt": "Mocap_Abrupt_Halt",
+    "stop_at_threshold": "Mocap_Abrupt_Halt",
+    "turn_around": "Mocap_Turn_Around",
+    "angry_confront": "Mocap_Angry_Confront",
+    "handoff_offer": "Mocap_Handoff_Offer",
+    "pass_prop": "Mocap_Handoff_Offer",
+    "pass_tool": "Mocap_Handoff_Offer",
+    "pass_sensor": "Mocap_Handoff_Offer",
+    "offer_hand": "Mocap_Handoff_Offer",
+    "handoff_receive": "Mocap_Handoff_Receive",
+    "receive_prop": "Mocap_Handoff_Receive",
+    "receive_tool": "Mocap_Handoff_Receive",
+    "receive_sensor": "Mocap_Handoff_Receive",
+    "operate_console": "Mocap_Operate_Console",
+    "insert_module": "PickUp_Table",
+    "install_module": "PickUp_Table",
+    "mount_sensor": "PickUp_Table",
+    "seat_module": "PickUp_Table",
+    "exhale_relief": "Mocap_Exhale_Relief",
+    "exhale_relax": "Mocap_Exhale_Relief",
+    "relieved_drop": "Mocap_Exhale_Relief",
+}
+ONE_SHOT_ACTIONS = {
+    "handoff_offer", "handoff_receive", "insert_module", "abrupt_halt",
+    "turn_around", "exhale_relief", "slam_table",
+    "confront_halt", "stop_at_threshold", "angry_confront",
+    "pass_prop", "pass_tool", "pass_sensor", "offer_hand",
+    "receive_prop", "receive_tool", "receive_sensor",
+    "install_module", "mount_sensor", "seat_module",
+    "exhale_relax", "relieved_drop",
+}
 UAL2_BINDINGS = {
     "head_shake_no": "Idle_No_Loop",
     "shake_head_hard": "Idle_No_Loop",
@@ -683,11 +750,18 @@ _LOOK_UP_ROW = (
 
 
 def resolve_base_clip(action_id: str, original: str, clips: dict[str, ClipRecord]) -> tuple[str, str]:
-    """Return the clip the entry plays, and the dedicated asset name if one exists."""
+    """Return the clip the entry plays, and the dedicated asset name if one exists.
+
+    Core-10 bindings are real mocap or real pro clips and outrank the
+    procedural dramatic pack. ``slam_table`` stays pinned to its contract clip.
+    """
     dramatic = DRAMATIC_BINDINGS.get(action_id, "")
+    core = CORE10_BINDINGS.get(action_id, "")
     if action_id in PINNED_BASE_CLIPS:
         dedicated = dramatic if dramatic in clips else ""
         return original, dedicated
+    if core and core in clips:
+        return core, core
     if dramatic and dramatic in clips:
         return dramatic, dramatic
     ual2 = UAL2_BINDINGS.get(action_id, "")
@@ -722,6 +796,7 @@ def _row_to_entry(row: tuple[Any, ...], clips: dict[str, ClipRecord]) -> ActionE
         family=str(family),
         dedicated_clip=dedicated,
         clip_source=clip.source,
+        one_shot=str(action_id) in ONE_SHOT_ACTIONS,
     )
 
 
@@ -894,6 +969,7 @@ class SemanticAnimationLibrary:
             "target": str(target or ""),
             "root_motion": entry.root_motion,
             "duration_s": entry.duration_s,
+            "one_shot": entry.one_shot,
             "phases": phases,
         }
 
@@ -911,8 +987,12 @@ class SemanticAnimationLibrary:
         file_counts = {
             "ual1": int((provenance.get("ual1") or {}).get("count") or by_source.get("ual1", 0)),
             "ual2": int((provenance.get("ual2") or {}).get("count") or 0),
+            "mocap_core10": int((provenance.get("mocap_core10") or {}).get("count") or by_source.get("mocap_core10", 0)),
             "ps2_dramatic_pack": int((provenance.get("ps2_dramatic_pack") or {}).get("count") or by_source.get("ps2_dramatic_pack", 0)),
         }
+        pro_authored = sorted(name for name, clip in self.clips.items() if clip.source in {"ual1", "ual2"})
+        real_mocap = sorted(name for name, clip in self.clips.items() if clip.source == "mocap_core10")
+        procedural_names = sorted(name for name, clip in self.clips.items() if clip.source == "ps2_dramatic_pack")
         usage: dict[str, list[str]] = {}
         envelopes: dict[str, list[tuple[str, str, float, tuple]]] = {}
         for entry in self.entries:
@@ -962,14 +1042,43 @@ class SemanticAnimationLibrary:
             source_of_entries[entry.clip_source] = source_of_entries.get(entry.clip_source, 0) + 1
             if entry.base_clip in {"Idle_Talking_Loop", "Interact"}:
                 generic_playback += 1
-            if entry.clip_source in {"ps2_dramatic_pack", "ual2"} or (
+            if entry.clip_source in {"ps2_dramatic_pack", "ual2", "mocap_core10"} or (
                 entry.dedicated_clip and entry.base_clip == entry.dedicated_clip
             ):
                 dedicated_playback += 1
+        core10 = []
+        for action_id in (
+            "idle_natural", "sprint_carry", "abrupt_halt", "turn_around", "angry_confront",
+            "handoff_offer", "handoff_receive", "operate_console", "insert_module", "exhale_relief",
+        ):
+            entry = self.by_id.get(action_id)
+            if entry is None:
+                continue
+            core10.append({
+                "action_id": action_id,
+                "base_clip": entry.base_clip,
+                "clip_source": entry.clip_source,
+                "one_shot": entry.one_shot,
+                "tier": "procedural_fallback" if entry.clip_source == "ps2_dramatic_pack" else (
+                    "real_mocap_retargeted" if entry.clip_source == "mocap_core10" else "pro_authored"
+                ),
+            })
         report = {
             "independent_source_clips": len(self.clips),
             "file_clip_counts": file_counts,
             "indexed_by_source": by_source,
+            "pro_authored_clips": pro_authored,
+            "real_mocap_retargeted_clips": real_mocap,
+            "procedural_fallback_clips": {
+                "tier": "procedural_fallback",
+                "names": procedural_names,
+                "note": "ps2_dramatic_pack.glb is an emergency procedural fallback, not primary acting.",
+            },
+            "semantic_aliases": {
+                "count": alias_extra,
+                "collapsed_onto_same_base_clip": collapsed,
+            },
+            "core10": core10,
             "shared_names_not_double_counted": list(provenance.get("shared_names") or []),
             "semantic_entries": len(self.entries),
             "unique_base_clips_used": len(usage),
@@ -1031,6 +1140,13 @@ def _stage_clip_usage(stage: dict[str, Any]) -> dict[str, int]:
 def _print_audit(report: dict[str, Any]) -> None:
     print("independent source clips", report["independent_source_clips"])
     print("file counts", json.dumps(report["file_clip_counts"], sort_keys=True))
+    print("pro authored", len(report["pro_authored_clips"]))
+    print("real mocap retargeted", len(report["real_mocap_retargeted_clips"]), ", ".join(report["real_mocap_retargeted_clips"]))
+    print("procedural fallback", report["procedural_fallback_clips"]["tier"], len(report["procedural_fallback_clips"]["names"]))
+    print("semantic aliases", report["semantic_aliases"]["count"])
+    print("core-10")
+    for row in report["core10"]:
+        print(f"  {row['action_id']}: {row['base_clip']} [{row['tier']}] one_shot={row['one_shot']}")
     print("indexed by source", json.dumps(report["indexed_by_source"], sort_keys=True))
     print("shared names", ", ".join(report["shared_names_not_double_counted"]) or "(none)")
     print("semantic entries", report["semantic_entries"])

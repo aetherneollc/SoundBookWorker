@@ -144,6 +144,12 @@ var _dressing_count := 0
 var _sky_backdrop_mats: Array[StandardMaterial3D] = []
 var _planet_mat: ShaderMaterial
 var _module_slot: Node3D
+var _device_online := false
+var _module_slot_state := "empty_offline"
+var _slot_latch: MeshInstance3D
+var _storm_exterior := false
+var _rain_streaks: Array[MeshInstance3D] = []
+var _beacon_lamps: Dictionary = {}
 
 
 func build(set_cfg: Dictionary, character_script: Script) -> void:
@@ -189,6 +195,12 @@ func build(set_cfg: Dictionary, character_script: Script) -> void:
 	_sky_backdrop_mats.clear()
 	_planet_mat = null
 	_module_slot = null
+	_device_online = false
+	_module_slot_state = "empty_offline"
+	_slot_latch = null
+	_storm_exterior = false
+	_rain_streaks.clear()
+	_beacon_lamps.clear()
 	_light_bar_mat = null
 	props_loaded = 0
 	props_failed = 0
@@ -235,6 +247,8 @@ func build(set_cfg: Dictionary, character_script: Script) -> void:
 		_build_environment_dressing()
 	if _wants_modular_scene():
 		_build_modular_industrial_bay()
+	if _wants_hero_industrial():
+		_build_hero_industrial_set()
 	_build_emergency_power_strips()
 	if _has_front_window and scene_type in ["observation_bay", "command_deck"]:
 		_build_exterior_array()
@@ -942,10 +956,14 @@ func _build_outside(backdrop: Dictionary, outside_props: Variant) -> void:
 	var palette_value: Variant = backdrop.get("palette", {})
 	_palette = palette_value as Dictionary if palette_value is Dictionary else {}
 	_setup_noise(int(backdrop.get("seed", 7)))
-	_cyclorama = str(backdrop.get("mode", "procedural")) == "cyclorama" and _build_cyclorama(backdrop)
-	if not _cyclorama and str(backdrop.get("mode", "procedural")) != "none":
-		_build_terrain()
-		_build_planet(backdrop.get("planet", {}) as Dictionary if backdrop.get("planet", {}) is Dictionary else {})
+	if _wants_storm_surface(backdrop):
+		_storm_exterior = true
+		_build_planetary_storm()
+	else:
+		_cyclorama = str(backdrop.get("mode", "procedural")) == "cyclorama" and _build_cyclorama(backdrop)
+		if not _cyclorama and str(backdrop.get("mode", "procedural")) != "none":
+			_build_terrain()
+			_build_planet(backdrop.get("planet", {}) as Dictionary if backdrop.get("planet", {}) is Dictionary else {})
 	if outside_props is Array:
 		for item: Variant in outside_props as Array:
 			if item is Dictionary:
@@ -1414,6 +1432,9 @@ func _build_procedural_prop(holder: Node3D, kind: String, cfg: Dictionary) -> Ve
 		"crate":
 			var size: Vector3 = _vec3(cfg.get("size", null), Vector3(0.9, 0.9, 0.9))
 			var mat_main: String = "crate" if str(cfg.get("color", "orange")) == "orange" else "crate_dark"
+			if _wants_hero_industrial():
+				_ensure_hero_materials()
+				mat_main = "hero_gun"
 			var mat_band: String = "crate_dark" if mat_main == "crate" else "trim"
 			_child_box(holder, "Body", size, Vector3(0.0, size.y * 0.5, 0.0), mat_main)
 			for band_y: float in [0.12, size.y - 0.12]:
@@ -1421,6 +1442,9 @@ func _build_procedural_prop(holder: Node3D, kind: String, cfg: Dictionary) -> Ve
 			return size
 		"console", "workstation":
 			var size: Vector3 = _vec3(cfg.get("size", null), Vector3(1.6, 0.92, 0.72))
+			if _wants_hero_industrial():
+				_build_hero_console(holder, size)
+				return Vector3(size.x, size.y + 0.62, size.z)
 			if _wants_modular_scene() and _build_modular_console(holder, size):
 				return Vector3(size.x, size.y + 0.62, size.z)
 			var glow_key: String = "teal_glow" if scene_type == "med_lab" else "cyan_glow"
@@ -1534,8 +1558,12 @@ func _build_lighting(profile_name: String, cfg: Dictionary) -> void:
 				merged[key] = over[key_v]
 	var backdrop_opts := {
 		"cyclorama": _cyclorama,
-		"sky_color": _sky_color,
-		"palette": _palette,
+		"sky_color": Color("#1a222c") if _storm_exterior else _sky_color,
+		"palette": {
+			"sky_top": "#1a222c",
+			"horizon": "#3a4652",
+			"rock": "#141a16",
+		} if _storm_exterior else _palette,
 	}
 	_lighting_rig = LightingProfileScript.apply_profile(
 		self,
@@ -1857,16 +1885,16 @@ func _build_storm_front_mesh() -> void:
 	var flash := MeshInstance3D.new()
 	flash.name = "StormLightningSheet"
 	var flash_quad := QuadMesh.new()
-	flash_quad.size = Vector2(18.0, 8.0)
+	flash_quad.size = Vector2(9.0, 4.2)
 	flash.mesh = flash_quad
-	flash.position = Vector3(0.0, 3.1, room_min.z - 7.5)
+	flash.position = Vector3(-2.4, 3.4, room_min.z - 9.5)
 	flash.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	var flash_mat := StandardMaterial3D.new()
 	flash_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	flash_mat.albedo_color = Color(0.85, 0.92, 1.0, 1.0)
+	flash_mat.albedo_color = Color(0.72, 0.8, 0.9, 1.0)
 	flash_mat.emission_enabled = true
-	flash_mat.emission = Color(0.85, 0.93, 1.0)
-	flash_mat.emission_energy_multiplier = 2.4
+	flash_mat.emission = Color(0.72, 0.82, 0.95)
+	flash_mat.emission_energy_multiplier = 1.15
 	flash.material_override = flash_mat
 	flash.visible = false
 	add_child(flash)
@@ -1926,7 +1954,10 @@ func apply_scene_events(state: Dictionary) -> void:
 		_light_bar_mat.emission_energy_multiplier = _light_bar_base * stutter
 	for emerg: StandardMaterial3D in _emergency_mats:
 		if flicker > 0.01:
-			emerg.emission_energy_multiplier = lerpf(0.2, 1.85, 1.0 - clampf(stutter, 0.0, 1.0)) * flicker
+			var dip := clampf(stutter, 0.15, 0.35)
+			emerg.emission = Color("#8e2414").lerp(Color("#c45a18"), 0.45 if dip < 0.24 else 0.75)
+			emerg.albedo_color = emerg.emission
+			emerg.emission_energy_multiplier = lerpf(0.9, 1.05, 1.0 - dip) * flicker
 		else:
 			emerg.emission_energy_multiplier = 0.0
 	for entry3: Dictionary in _dynamic_screens:
@@ -2163,7 +2194,9 @@ func _build_emergency_power_strips() -> void:
 	var z1: float = room_max.z - 0.35
 	if z1 <= z0 + 0.4:
 		return
-	var mat := _mat(Color("#ff5a16"), 0.42, 1.0)
+	var mat := _mat(Color("#8e2414"), 0.48, 0.0)
+	mat.emission_enabled = true
+	mat.emission = Color("#8e2414")
 	mat.emission_energy_multiplier = 0.0
 	var y: float = room_max.y - 0.05
 	for side: float in [-1.0, 1.0]:
@@ -2187,7 +2220,7 @@ func _build_exterior_array() -> void:
 	add_child(root)
 	_array_root = root
 	var modular_mast := false
-	if _wants_modular_scene():
+	if _wants_modular_scene() and not _wants_hero_industrial():
 		modular_mast = _spawn_kenney(root, "supports_high.glb", Vector3.ZERO, 0.0, 2.2, false) != null
 		_spawn_kenney(root, "satelliteDish_detailed.glb", Vector3(1.25, 0.0, 0.35), 25.0, 1.15, false)
 	if not modular_mast:
@@ -2203,7 +2236,7 @@ func _build_exterior_array() -> void:
 	yaw.add_child(pitch)
 	_array_pitch_pivot = pitch
 	var dish_glb: Node3D = null
-	if _wants_modular_scene():
+	if _wants_modular_scene() and not _wants_hero_industrial():
 		dish_glb = _spawn_kenney(pitch, "satelliteDish_large.glb", Vector3.ZERO, 0.0, 1.85, false, false)
 		if dish_glb != null:
 			# Bowl faces the bay so the window camera sees the reflector, not the housing.
@@ -2212,15 +2245,33 @@ func _build_exterior_array() -> void:
 	if dish_glb == null:
 		var dish := MeshInstance3D.new()
 		dish.name = "Dish"
+		_ensure_hero_materials()
 		var cyl := CylinderMesh.new()
-		cyl.top_radius = 0.62
-		cyl.bottom_radius = 0.18
-		cyl.height = 0.1
-		cyl.radial_segments = 16
+		cyl.top_radius = 0.92
+		cyl.bottom_radius = 0.16
+		cyl.height = 0.22
+		cyl.radial_segments = 24
 		dish.mesh = cyl
-		dish.rotation_degrees = Vector3(90.0, 0.0, 0.0)
-		dish.material_override = _materials["metal_light"] if _materials.has("metal_light") else _materials["frame"]
+		dish.rotation_degrees = Vector3(-76.0, 180.0, 0.0)
+		dish.material_override = _materials["hero_steel"] if _materials.has("hero_steel") else _materials["frame"]
 		pitch.add_child(dish)
+		for rib in 6:
+			var rib_mi := MeshInstance3D.new()
+			rib_mi.name = "DishRib%d" % rib
+			var rib_mesh := BoxMesh.new()
+			rib_mesh.size = Vector3(0.025, 0.86, 0.02)
+			rib_mi.mesh = rib_mesh
+			rib_mi.position = Vector3(0.0, 0.02, 0.04)
+			rib_mi.rotation_degrees = Vector3(0.0, 0.0, rib * 30.0)
+			rib_mi.material_override = _materials["hero_gun"] if _materials.has("hero_gun") else _materials["metal_dark"]
+			dish.add_child(rib_mi)
+		_child_box(pitch, "FeedBoom", Vector3(0.04, 0.04, 0.34), Vector3(0.0, 0.0, 0.2), "hero_gun" if _materials.has("hero_gun") else "frame", false)
+		_child_box(pitch, "FeedHorn", Vector3(0.1, 0.1, 0.08), Vector3(0.0, 0.0, 0.36), "hero_olive" if _materials.has("hero_olive") else "frame", false)
+		_child_box(root, "TrussA", Vector3(0.06, 2.2, 0.06), Vector3(-0.28, 1.15, -0.18), "hero_steel" if _materials.has("hero_steel") else "metal_dark")
+		_child_box(root, "TrussB", Vector3(0.06, 2.2, 0.06), Vector3(0.28, 1.15, -0.18), "hero_steel" if _materials.has("hero_steel") else "metal_dark")
+		_child_box(root, "TrussC", Vector3(0.06, 2.2, 0.06), Vector3(0.0, 1.15, 0.26), "hero_steel" if _materials.has("hero_steel") else "metal_dark")
+		_child_box(root, "TrussBrace", Vector3(0.62, 0.04, 0.04), Vector3(0.0, 1.35, 0.0), "hero_gun" if _materials.has("hero_gun") else "frame")
+		_child_box(root, "ElevationPiston", Vector3(0.07, 0.9, 0.07), Vector3(0.16, 1.55, 0.08), "hero_olive" if _materials.has("hero_olive") else "metal_dark")
 	var feed := MeshInstance3D.new()
 	feed.name = "Feed"
 	var feed_mesh := BoxMesh.new()
@@ -2231,31 +2282,25 @@ func _build_exterior_array() -> void:
 	pitch.add_child(feed)
 	var beam := MeshInstance3D.new()
 	beam.name = "UplinkBeam"
-	var beam_mesh := BoxMesh.new()
-	beam_mesh.size = Vector3(0.06, 0.06, 2.8)
+	var beam_mesh := TorusMesh.new()
+	beam_mesh.inner_radius = 0.08
+	beam_mesh.outer_radius = 0.13
+	beam_mesh.rings = 8
+	beam_mesh.ring_segments = 16
 	beam.mesh = beam_mesh
-	beam.position = Vector3(0.0, 0.0, 1.55)
+	beam.position = Vector3(0.0, 0.0, 0.36)
 	beam.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	var beam_mat := _mat(Color("#39ffc0"), 0.25, 1.5)
+	var beam_mat := _mat(Color("#8fd8c4"), 0.4, 0.12)
 	beam_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	beam_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	beam_mat.albedo_color = Color(0.25, 1.0, 0.78, 0.2)
+	beam_mat.albedo_color = Color(0.55, 0.82, 0.72, 0.06)
+	beam_mat.emission_energy_multiplier = 0.0
 	beam.material_override = beam_mat
 	beam.visible = false
 	pitch.add_child(beam)
 	_array_beam = beam
 	_array_beam_mat = beam_mat
-	var beacon := MeshInstance3D.new()
-	beacon.name = "Beacon"
-	var beacon_mesh := BoxMesh.new()
-	beacon_mesh.size = Vector3(0.12, 0.12, 0.12)
-	beacon.mesh = beacon_mesh
-	beacon.position = Vector3(0.38, 2.15, 0.0)
-	beacon.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	var beacon_mat := _mat(Color("#c45520"), 0.35, 0.55)
-	beacon.material_override = beacon_mat
-	root.add_child(beacon)
-	_array_beacon_mat = beacon_mat
+	_beacon_lamps = _add_array_beacons(root)
 	var sparks := Node3D.new()
 	sparks.name = "ArraySparks"
 	sparks.position = Vector3(0.2, 2.2, 0.1)
@@ -2314,28 +2359,15 @@ func _advance_array(state: Dictionary, t_s: float) -> void:
 		_array_yaw_deg = 8.0
 		_array_lock = 0.0
 	_apply_array_pose()
-	if _array_beacon_mat != null:
-		var col := Color("#c45520")
-		if _array_fault_now:
-			var blink: float = 0.45 + 0.55 * (0.5 + 0.5 * sin(t_s * 18.0))
-			col = Color("#ff2a18")
-			_array_beacon_mat.emission_energy_multiplier = 0.4 + 1.8 * blink
-		elif _array_lock > 0.05 or _array_held_lock:
-			var lock_u: float = _array_lock if _array_lock > 0.05 else 1.0
-			col = Color("#ff2a18").lerp(Color("#14ffd0"), lock_u)
-			_array_beacon_mat.emission_energy_multiplier = 0.6 + 2.3 * lock_u
-		else:
-			_array_beacon_mat.emission_energy_multiplier = 0.45
-		_array_beacon_mat.albedo_color = col
-		_array_beacon_mat.emission = col
+	_sync_array_beacons(t_s)
 	if _array_beam != null:
-		var show_beam: bool = _array_lock > 0.35 or (_array_held_lock and not _array_fault_now)
+		var show_beam: bool = _array_lock > 0.72 or (_array_held_lock and not _array_fault_now)
 		_array_beam.visible = show_beam
 		if show_beam and _array_beam_mat != null:
 			var alpha_u: float = _array_lock if _array_lock > 0.05 else 0.9
-			_array_beam_mat.albedo_color = Color(0.3, 1.0, 0.78, 0.18 + 0.45 * alpha_u)
-			_array_beam_mat.emission = Color("#39ffc0")
-			_array_beam_mat.emission_energy_multiplier = 0.4 + 1.8 * alpha_u
+			_array_beam_mat.albedo_color = Color(0.62, 0.86, 0.74, 0.05 + 0.07 * alpha_u)
+			_array_beam_mat.emission = Color("#8fd8c4")
+			_array_beam_mat.emission_energy_multiplier = 0.08 + 0.16 * alpha_u
 	if _array_sparks != null:
 		_array_sparks.visible = _array_fault_now and sin(t_s * 36.0) > 0.0
 
@@ -2355,29 +2387,35 @@ func _advance_impact(state: Dictionary) -> void:
 		else:
 			node.position = home
 	var install_u: float = float(state.get("module_install_u", 0.0))
-	for led: StandardMaterial3D in _module_leds:
-		var rest: Color = led.get_meta("rest_color", Color("#1c6e78")) as Color
-		var rest_e: float = float(led.get_meta("rest_energy", 0.45))
-		if mod_i > 0.05:
-			var col: Color = Color("#ff9a1f") if install_u < 0.62 else Color("#3dff6a")
-			led.albedo_color = col
-			led.emission = col
-			led.emission_energy_multiplier = 1.5 if install_u >= 0.62 else 0.9
-		elif table_i > 0.05:
+	if mod_i > 0.05:
+		if install_u < 0.35:
+			set_module_slot_state("aligning")
+		elif install_u < 0.62:
+			set_module_slot_state("locked")
+		else:
+			set_device_online(true)
+	elif table_i > 0.05:
+		for led: StandardMaterial3D in _module_leds:
 			led.albedo_color = Color("#ffb03a")
 			led.emission = Color("#ffb03a")
-			led.emission_energy_multiplier = 1.45
-		else:
-			led.albedo_color = rest
-			led.emission = rest
-			led.emission_energy_multiplier = rest_e
+			led.emission_energy_multiplier = 1.15
+	else:
+		_apply_module_leds()
 
 
 func _advance_storm(storm_intensity: float, t_s: float) -> void:
 	var flash: float = LightingProfileScript.storm_flash_amount(t_s, storm_intensity)
 	_lightning_energy = flash
 	if _lightning_light != null and is_instance_valid(_lightning_light):
-		_lightning_light.light_energy = flash * 7.5
+		# Interior spill stays off. The rig's window directional owns the bolt.
+		_lightning_light.light_energy = 0.0
+		_lightning_light.position = Vector3((window_x.x + window_x.y) * 0.5, 2.1, room_min.z - 1.4)
+		_lightning_light.omni_range = 4.5
+	for streak: MeshInstance3D in _rain_streaks:
+		if streak != null and is_instance_valid(streak):
+			var mat: StandardMaterial3D = streak.material_override as StandardMaterial3D
+			if mat != null:
+				mat.uv1_offset.y = -fmod(t_s * 1.35 + float(streak.get_meta("rain_phase", 0.0)), 1.0)
 	if _lightning_flash != null and is_instance_valid(_lightning_flash):
 		_lightning_flash.visible = flash > 0.08
 	var index := 0
@@ -2628,6 +2666,8 @@ func _place_modular_walls() -> void:
 
 
 func _place_modular_pipes() -> void:
+	if _wants_hero_industrial():
+		return
 	var y := room_max.y - 0.46
 	var z := room_min.z + 0.7
 	var use_ring := false
@@ -2642,6 +2682,8 @@ func _place_modular_pipes() -> void:
 
 
 func _place_modular_machinery() -> void:
+	if _wants_hero_industrial():
+		return
 	var spots: Array[Dictionary] = [
 		{"file": "machine_generatorLarge.glb", "pos": Vector3(room_max.x - 0.9, 0.0, room_max.z - 1.05), "yaw": -90.0, "h": 1.3},
 		{"file": "machine_wirelessCable.glb", "pos": Vector3(room_max.x - 0.75, 0.0, room_max.z - 2.35), "yaw": -80.0, "h": 1.1},
@@ -2693,6 +2735,15 @@ func _ensure_modular_console() -> void:
 	host.name = "MainConsoleStation"
 	host.position = origin
 	add_child(host)
+	if _wants_hero_industrial():
+		_build_hero_console(host, Vector3(1.72, 0.96, 0.78))
+		_register_obstacle(origin + Vector3(-0.95, 0.0, -0.5), origin + Vector3(1.15, 1.5, 0.55))
+		_jolt_targets.append(host)
+		_jolt_home[host.get_instance_id()] = host.position
+		if existing == null:
+			_register_interactive_device("main_console", "console", host, Vector3(1.8, 1.45, 0.9))
+		_point_console_anchor_at_slot()
+		return
 	if existing == null:
 		if _spawn_kenney(host, "desk_computer.glb", Vector3.ZERO, 0.0, 1.05, false) == null:
 			_build_modular_console(host, Vector3(1.7, 0.92, 0.78))
@@ -2786,4 +2837,420 @@ func _apply_storm_sky(storm_intensity: float, flash: float) -> void:
 		_planet_mat.set_shader_parameter("light_color", Color("#eef4fb").lerp(Color("#6d7688"), u))
 		_planet_mat.set_shader_parameter("sea_color", Color("#7fb0d8").lerp(Color("#243044"), u))
 		_planet_mat.set_shader_parameter("shadow_color", Color("#4f7fb5").lerp(Color("#141a28"), u))
+
+
+func _wants_hero_industrial() -> bool:
+	return str(_art_profile.get("preset", "")) == "retro_industrial_scifi" or _wants_modular_scene()
+
+
+func _wants_storm_surface(backdrop: Dictionary) -> bool:
+	var mode := str(backdrop.get("mode", "")).strip_edges().to_lower()
+	if mode == "storm_surface" or bool(backdrop.get("storm_surface", false)):
+		return true
+	return str(_art_profile.get("preset", "")) == "retro_industrial_scifi"
+
+
+func _hash2(x: int, y: int) -> float:
+	var n := (x * 374761393) ^ (y * 668265263)
+	n = (n ^ (n >> 13)) * 1274126177
+	return float(absi(n) % 1000) / 999.0
+
+
+func _weathered_metal(base: Color, seam: Color, rough: float, metal: float) -> StandardMaterial3D:
+	var img := Image.create(256, 256, false, Image.FORMAT_RGB8)
+	for y in 256:
+		for x in 256:
+			var h := _hash2(x, y)
+			var c := base.lightened((h - 0.5) * 0.08)
+			if x % 64 <= 1 or y % 72 <= 1:
+				c = seam
+			var rx := x % 52
+			var ry := y % 52
+			if rx > 2 and rx < 7 and ry > 2 and ry < 7:
+				c = c.lightened(0.16)
+			if h > 0.86:
+				c = c.lerp(Color("#3a342c"), 0.4)
+			if y > 210 and h > 0.55:
+				c = c.lerp(Color("#2a2620"), 0.35)
+			img.set_pixel(x, y, c)
+	img.generate_mipmaps()
+	var mat := StandardMaterial3D.new()
+	mat.albedo_texture = ImageTexture.create_from_image(img)
+	mat.roughness = rough
+	mat.metallic = metal
+	mat.metallic_specular = 0.18
+	mat.uv1_triplanar = true
+	mat.uv1_scale = Vector3(0.85, 0.85, 0.85)
+	return mat
+
+
+func _ensure_hero_materials() -> void:
+	if _materials.has("hero_steel"):
+		return
+	_materials["hero_steel"] = _weathered_metal(Color("#5a6268"), Color("#343a40"), 0.62, 0.42)
+	_materials["hero_gun"] = _weathered_metal(Color("#3b434b"), Color("#262c32"), 0.74, 0.30)
+	_materials["hero_olive"] = _weathered_metal(Color("#4b514a"), Color("#2e332c"), 0.78, 0.2)
+	_materials["hero_cable"] = _weathered_metal(Color("#1c2126"), Color("#101316"), 0.94, 0.05)
+	_materials["hero_socket"] = _mat(Color("#12161a"), 0.9, 0.0, 0.06)
+
+
+func _build_hero_industrial_set() -> void:
+	_ensure_hero_materials()
+	var names: Array[String] = ["BAY-04", "COMM-A", "PWR-2", "AUX-1"]
+	var z := room_min.z + 1.15
+	var index := 0
+	while z < room_max.z - 1.35 and index < names.size():
+		var span := 1.2 if index % 2 == 0 else 0.78
+		for side in [-1.0, 1.0]:
+			var x0 := room_min.x if side < 0.0 else room_max.x - 0.18
+			var x1 := room_min.x + 0.18 if side < 0.0 else room_max.x
+			var probe := Vector3((x0 + x1) * 0.5, 1.2, z)
+			if not _clear_of_door(probe, 0.55):
+				continue
+			var mat_key := "hero_gun" if index % 2 == 0 else "hero_olive"
+			_box_between(
+				"WallBay_%d_%d" % [index, int(side)],
+				Vector3(x0, 0.12, z - span * 0.5),
+				Vector3(x1, room_max.y - 0.42, z + span * 0.5),
+				mat_key,
+				false
+			)
+			for slat in 4:
+				var vy := 1.55 + float(slat) * 0.07
+				_box_between(
+					"Vent_%d_%d_%d" % [index, int(side), slat],
+					Vector3(x0 - side * 0.012, vy, z - 0.2),
+					Vector3(x1 - side * 0.012, vy + 0.016, z + 0.2),
+					"hero_socket",
+					false
+				)
+			_add_bay_stencil(names[index], Vector3(x1 if side < 0.0 else x0, 2.05, z), side)
+		z += span + 0.62
+		index += 1
+	if _clear_of_door(Vector3(room_min.x + 0.2, 1.2, room_max.z - 1.3), 0.4):
+		_box_between("BreakerL", Vector3(room_min.x + 0.02, 0.95, room_max.z - 1.7), Vector3(room_min.x + 0.22, 1.85, room_max.z - 0.95), "hero_steel", false)
+	if _clear_of_door(Vector3(room_max.x - 0.2, 1.2, room_min.z + 1.6), 0.4):
+		_box_between("BreakerR", Vector3(room_max.x - 0.22, 0.85, room_min.z + 1.25), Vector3(room_max.x - 0.02, 1.75, room_min.z + 1.95), "hero_olive", false)
+	var tray_y := room_max.y - 0.22
+	_box_between("CableTray", Vector3(room_min.x + 0.45, tray_y, room_min.z + 0.35), Vector3(room_max.x - 0.45, tray_y + 0.05, room_max.z - 0.35), "hero_gun", false)
+	_box_between("CableRun", Vector3(-0.06, tray_y - 0.06, room_min.z + 0.4), Vector3(0.06, tray_y, room_max.z - 0.4), "hero_cable", false)
+	var drop_z := room_min.z + 1.4
+	while drop_z < room_max.z - 1.0:
+		_box_between("CableDrop_%d" % int(drop_z * 10.0), Vector3(room_max.x - 0.55, 1.3, drop_z), Vector3(room_max.x - 0.48, tray_y, drop_z + 0.04), "hero_cable", false)
+		drop_z += 2.2
+	var seam_z := room_min.z + 0.55
+	while seam_z < room_max.z - 0.3:
+		_box_between("FloorSeam_%d" % int(seam_z * 10.0), Vector3(room_min.x + 0.35, 0.003, seam_z), Vector3(room_max.x - 0.35, 0.01, seam_z + 0.02), "hero_socket", false)
+		seam_z += 1.65
+	_dressing_count += 6
+
+
+func _add_bay_stencil(text: String, pos: Vector3, side: float) -> void:
+	var label := Label3D.new()
+	label.name = "Stencil_%s" % text
+	label.text = text
+	label.font_size = 48
+	label.pixel_size = 0.002
+	label.modulate = Color("#d7dbd4")
+	label.outline_size = 8
+	label.outline_modulate = Color(0.05, 0.06, 0.05, 0.85)
+	label.position = pos
+	label.rotation.y = -PI * 0.5 if side < 0.0 else PI * 0.5
+	add_child(label)
+	_dressing_count += 1
+
+
+func _build_hero_console(holder: Node3D, size: Vector3) -> void:
+	_ensure_hero_materials()
+	_child_box(holder, "FrameL", Vector3(0.08, size.y, size.z * 0.9), Vector3(-size.x * 0.46, size.y * 0.5, 0.0), "hero_steel")
+	_child_box(holder, "FrameR", Vector3(0.08, size.y, size.z * 0.9), Vector3(size.x * 0.46, size.y * 0.5, 0.0), "hero_steel")
+	_child_box(holder, "FootL", Vector3(0.18, 0.05, size.z), Vector3(-size.x * 0.4, 0.025, 0.0), "hero_gun")
+	_child_box(holder, "FootR", Vector3(0.18, 0.05, size.z), Vector3(size.x * 0.4, 0.025, 0.0), "hero_gun")
+	_child_box(holder, "Plinth", Vector3(size.x * 0.82, size.y * 0.7, size.z * 0.72), Vector3(0.0, size.y * 0.36, 0.0), "hero_gun")
+	_child_box(holder, "Desktop", Vector3(size.x, 0.06, size.z), Vector3(0.0, size.y - 0.01, 0.02), "hero_steel")
+	_child_box(holder, "RearLip", Vector3(size.x * 0.96, 0.1, 0.07), Vector3(0.0, size.y + 0.05, -size.z * 0.4), "hero_olive")
+	var hood := _child_box(holder, "MonitorHood", Vector3(size.x * 0.58, 0.36, 0.14), Vector3(0.0, size.y + 0.26, -size.z * 0.2), "hero_steel")
+	hood.rotation.x = deg_to_rad(-16.0)
+	_child_dynamic_screen(holder, "ScreenPanel", Vector3(size.x * 0.46, 0.26, 0.018), Vector3(0.0, size.y + 0.22, -size.z * 0.12), "console")
+	for row in 2:
+		for i in 8:
+			var key_mat := "hero_olive" if (i + row) % 5 == 0 else "hero_gun"
+			_child_box(
+				holder,
+				"Key_%d_%d" % [row, i],
+				Vector3(0.042, 0.018, 0.038),
+				Vector3(-size.x * 0.22 + float(i) * 0.052, size.y + 0.045, size.z * 0.22 - float(row) * 0.055),
+				key_mat,
+				false
+			)
+	var slot := Node3D.new()
+	slot.name = "ModuleSlot"
+	slot.position = Vector3(size.x * 0.18, size.y + 0.015, 0.02)
+	holder.add_child(slot)
+	_module_slot = slot
+	_child_box(slot, "SocketWell", Vector3(0.36, 0.075, 0.22), Vector3(0.0, -0.02, 0.0), "hero_socket", false)
+	_child_box(slot, "GuideL", Vector3(0.018, 0.028, 0.16), Vector3(-0.15, 0.025, -0.01), "hero_steel", false)
+	_child_box(slot, "GuideR", Vector3(0.018, 0.028, 0.16), Vector3(0.15, 0.025, -0.01), "hero_steel", false)
+	_slot_latch = _child_box(slot, "ClampLatch", Vector3(0.3, 0.018, 0.05), Vector3(0.0, 0.05, 0.1), "hero_olive", false)
+	_slot_latch.rotation.x = deg_to_rad(-68.0)
+	for i in 3:
+		_child_module_led(slot, Vector3(-0.08 + float(i) * 0.08, 0.055, 0.12))
+	_module_slot_state = "empty_offline"
+	_device_online = false
+
+
+func _child_module_led(parent: Node3D, pos: Vector3) -> void:
+	var mi := MeshInstance3D.new()
+	mi.name = "ModuleLED"
+	var mesh := BoxMesh.new()
+	mesh.size = Vector3(0.045, 0.028, 0.02)
+	mi.mesh = mesh
+	mi.position = pos
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	var mat := _mat(Color("#6a1814"), 0.42, 0.28)
+	mat.set_meta("rest_color", Color("#6a1814"))
+	mat.set_meta("rest_energy", 0.28)
+	mat.set_meta("led_role", "module")
+	mi.material_override = mat
+	parent.add_child(mi)
+	_module_leds.append(mat)
+
+
+func get_module_socket_transform() -> Transform3D:
+	var slot := _module_slot
+	if slot == null or not is_instance_valid(slot):
+		var found := find_child("ModuleSlot", true, false)
+		if found is Node3D:
+			slot = found as Node3D
+			_module_slot = slot
+	if slot == null:
+		return Transform3D(Basis.IDENTITY, _console_focus_position())
+	if is_inside_tree() and slot.is_inside_tree():
+		return slot.global_transform
+	var xf := slot.transform
+	var current: Node = slot.get_parent()
+	while current is Node3D:
+		xf = (current as Node3D).transform * xf
+		if current == self:
+			break
+		current = current.get_parent()
+	return xf
+
+
+func set_device_online(online: bool) -> void:
+	if online:
+		set_module_slot_state("online")
+	else:
+		_device_online = false
+		if _module_slot_state == "online":
+			set_module_slot_state("empty_offline")
+		else:
+			_apply_module_leds()
+
+
+func set_module_slot_state(state: String) -> void:
+	if state not in ["empty_offline", "aligning", "locked", "online"]:
+		state = "empty_offline"
+	_module_slot_state = state
+	_device_online = state == "online"
+	_apply_slot_latch()
+	_apply_module_leds()
+
+
+func _apply_slot_latch() -> void:
+	if _slot_latch == null or not is_instance_valid(_slot_latch):
+		return
+	match _module_slot_state:
+		"empty_offline":
+			_slot_latch.rotation.x = deg_to_rad(-68.0)
+		"aligning":
+			_slot_latch.rotation.x = deg_to_rad(-30.0)
+		_:
+			_slot_latch.rotation.x = 0.0
+
+
+func _apply_module_leds() -> void:
+	var tagged := false
+	for led: StandardMaterial3D in _module_leds:
+		if str(led.get_meta("led_role", "")) == "module":
+			tagged = true
+			break
+	var col := Color("#6a1814")
+	var energy := 0.28
+	if _device_online or _module_slot_state == "online":
+		col = Color("#1f8f45")
+		energy = 1.15
+	elif _module_slot_state == "locked":
+		col = Color("#c47a18")
+		energy = 0.72
+	elif _module_slot_state == "aligning":
+		col = Color("#a84818")
+		energy = 0.55
+	for led: StandardMaterial3D in _module_leds:
+		var role := str(led.get_meta("led_role", ""))
+		if tagged and role != "module":
+			var rest: Color = led.get_meta("rest_color", Color("#1c6e78")) as Color
+			led.albedo_color = rest
+			led.emission = rest
+			led.emission_energy_multiplier = float(led.get_meta("rest_energy", 0.45))
+			continue
+		led.albedo_color = col
+		led.emission = col
+		led.emission_enabled = true
+		led.emission_energy_multiplier = energy
+		if _device_online:
+			led.set_meta("rest_color", col)
+			led.set_meta("rest_energy", energy)
+
+
+func _add_array_beacons(root: Node3D) -> Dictionary:
+	var lamps := {}
+	var specs: Array[Dictionary] = [
+		{"id": "red", "pos": Vector3(-0.24, 1.92, 0.16), "rest": Color("#4a1210")},
+		{"id": "amber", "pos": Vector3(0.0, 2.08, 0.18), "rest": Color("#4a3410")},
+		{"id": "green", "pos": Vector3(0.24, 1.92, 0.16), "rest": Color("#12301c")},
+	]
+	for spec: Dictionary in specs:
+		var mi := MeshInstance3D.new()
+		mi.name = "Beacon%s" % str(spec["id"]).capitalize()
+		var mesh := SphereMesh.new()
+		mesh.radius = 0.045
+		mesh.height = 0.09
+		mesh.radial_segments = 10
+		mesh.rings = 6
+		mi.mesh = mesh
+		mi.position = spec["pos"] as Vector3
+		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		var mat := _mat(spec["rest"] as Color, 0.38, 0.12)
+		mi.material_override = mat
+		root.add_child(mi)
+		lamps[str(spec["id"])] = mat
+	_array_beacon_mat = lamps["red"] as StandardMaterial3D
+	return lamps
+
+
+func _sync_array_beacons(t_s: float) -> void:
+	if _beacon_lamps.is_empty() or _array_beacon_mat == null:
+		return
+	var active := "red"
+	var energy := 0.4
+	if _array_fault_now:
+		active = "red"
+		energy = 0.4 + 1.05 * (0.5 + 0.5 * sin(t_s * 16.0))
+	elif _array_lock > 0.72 or (_array_held_lock and not _array_fault_now):
+		active = "green"
+		var lock_u: float = _array_lock if _array_lock > 0.05 else 1.0
+		energy = 0.65 + 0.7 * lock_u
+	elif _array_lock > 0.18:
+		active = "amber"
+		energy = 0.5 + 0.55 * _array_lock
+	var cols := {
+		"red": Color("#ff2a18"),
+		"amber": Color("#ff9a1f"),
+		"green": Color("#3dff6a"),
+	}
+	for key: String in ["red", "amber", "green"]:
+		var mat: StandardMaterial3D = _beacon_lamps.get(key, null) as StandardMaterial3D
+		if mat == null:
+			continue
+		var on := key == active
+		var col: Color = cols[key] if on else Color("#16120e")
+		mat.albedo_color = col
+		mat.emission = col
+		mat.emission_enabled = true
+		mat.emission_energy_multiplier = energy if on else 0.02
+	_array_beacon_mat = _beacon_lamps[active] as StandardMaterial3D
+
+
+func _build_planetary_storm() -> void:
+	_ensure_hero_materials()
+	var ground := _mat(Color("#1c2420"), 0.94, 0.0, 0.02)
+	var deck := MeshInstance3D.new()
+	deck.name = "StormTerrain"
+	var deck_mesh := BoxMesh.new()
+	deck_mesh.size = Vector3(90.0, 0.6, 64.0)
+	deck.mesh = deck_mesh
+	deck.position = Vector3(0.0, _ground_y - 0.3, room_min.z - 34.0)
+	deck.material_override = ground
+	deck.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(deck)
+	var ridge := SurfaceTool.new()
+	ridge.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var heights: Array[float] = [0.6, 1.8, 0.9, 2.6, 1.2, 2.1, 0.7, 1.5, 0.8, 1.9, 0.5]
+	var x_cursor := -42.0
+	for i in heights.size() - 1:
+		var x0 := x_cursor
+		var x1 := x_cursor + 8.4
+		var y0 := _ground_y + heights[i]
+		var y1 := _ground_y + heights[i + 1]
+		var z := room_min.z - 46.0
+		ridge.set_color(Color("#12181c"))
+		ridge.add_vertex(Vector3(x0, _ground_y, z))
+		ridge.add_vertex(Vector3(x1, _ground_y, z))
+		ridge.add_vertex(Vector3(x0, y0, z - 1.5))
+		ridge.add_vertex(Vector3(x1, _ground_y, z))
+		ridge.add_vertex(Vector3(x1, y1, z - 1.5))
+		ridge.add_vertex(Vector3(x0, y0, z - 1.5))
+		x_cursor = x1
+	var ridge_mi := MeshInstance3D.new()
+	ridge_mi.name = "StormRidge"
+	ridge_mi.mesh = ridge.commit()
+	var ridge_mat := StandardMaterial3D.new()
+	ridge_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	ridge_mat.vertex_color_use_as_albedo = true
+	ridge_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	ridge_mi.material_override = ridge_mat
+	ridge_mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(ridge_mi)
+	for gantry in 2:
+		var gx := -16.0 if gantry == 0 else 18.0
+		var gz := room_min.z - 22.0 - float(gantry) * 6.0
+		_box_between("GantryMast_%d" % gantry, Vector3(gx - 0.18, _ground_y, gz - 0.18), Vector3(gx + 0.18, _ground_y + 7.5, gz + 0.18), "hero_gun", false)
+		_box_between("GantryArm_%d" % gantry, Vector3(gx - 2.4, _ground_y + 6.6, gz - 0.08), Vector3(gx + 2.4, _ground_y + 6.85, gz + 0.08), "hero_steel", false)
+		_box_between("GantryDish_%d" % gantry, Vector3(gx + 1.6, _ground_y + 6.2, gz - 0.7), Vector3(gx + 2.5, _ground_y + 7.1, gz - 0.15), "hero_olive", false)
+	var cloud_specs: Array[Dictionary] = [
+		{"pos": Vector3(0.0, 6.5, room_min.z - 18.0), "size": Vector2(46.0, 8.0), "col": Color(0.10, 0.12, 0.15, 0.92)},
+		{"pos": Vector3(-6.0, 9.2, room_min.z - 28.0), "size": Vector2(62.0, 7.0), "col": Color(0.07, 0.08, 0.11, 0.88)},
+		{"pos": Vector3(4.0, 4.2, room_min.z - 12.0), "size": Vector2(36.0, 4.5), "col": Color(0.16, 0.18, 0.2, 0.8)},
+		{"pos": Vector3(0.0, 12.0, room_min.z - 40.0), "size": Vector2(80.0, 10.0), "col": Color(0.05, 0.06, 0.08, 0.95)},
+	]
+	for spec: Dictionary in cloud_specs:
+		var cloud := MeshInstance3D.new()
+		cloud.name = "StormBank"
+		var quad := QuadMesh.new()
+		quad.size = spec["size"] as Vector2
+		cloud.mesh = quad
+		cloud.position = spec["pos"] as Vector3
+		cloud.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		var mat := StandardMaterial3D.new()
+		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		mat.albedo_color = spec["col"] as Color
+		mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+		cloud.material_override = mat
+		add_child(cloud)
+	for i in 5:
+		var streak := MeshInstance3D.new()
+		streak.name = "RainStreak%d" % i
+		var quad := QuadMesh.new()
+		quad.size = Vector2(1.6, 2.8)
+		streak.mesh = quad
+		streak.position = Vector3(-3.2 + float(i) * 1.6, 1.7, room_min.z - 0.55)
+		streak.set_meta("rain_phase", float(i) * 0.17)
+		var img := Image.create(16, 96, false, Image.FORMAT_RGBA8)
+		img.fill(Color(0, 0, 0, 0))
+		for sx in [3, 8, 13]:
+			for sy in range(0, 96, 14):
+				for k in 7:
+					img.set_pixel(sx, mini(sy + k, 95), Color(0.72, 0.78, 0.82, 0.38))
+		var smat := StandardMaterial3D.new()
+		smat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		smat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		smat.albedo_texture = ImageTexture.create_from_image(img)
+		smat.cull_mode = BaseMaterial3D.CULL_DISABLED
+		smat.uv1_scale = Vector3(1.0, 1.0, 1.0)
+		streak.material_override = smat
+		streak.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		add_child(streak)
+		_rain_streaks.append(streak)
 

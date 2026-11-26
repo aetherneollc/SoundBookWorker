@@ -29,6 +29,9 @@ GENERIC_CLIPS = {"Idle_Talking_Loop", "Interact"}
 LOCOMOTION_TOKENS = ("walk", "jog", "sprint", "crouch_fwd", "roll", "pace", "halt", "turn_walk")
 HANDOFF_GAP_M = 0.14
 CONTACT_GAP_M = 0.18
+HANDOFF_CONTACT_M = 0.03
+SOCKET_INSERT_M = 0.03
+EMPTY_DOORWAY_DWELL_MAX = 6
 SFX_SYNC_S = 0.120
 STATIC_LIMIT = 0.45
 BACK_HEAD_FRACTION = 0.45
@@ -40,7 +43,7 @@ RECOVERY_EVENTS = {"array_restore", "device_operating", "power_restore"}
 
 
 def run_artistic_qc(stage: dict, telemetry=None, video_path: str | Path | None = None,
-                    stills: str | Path | None = None) -> dict:
+                    stills: str | Path | None = None, interaction_audit=None) -> dict:
     rows = _frame_rows(telemetry)
     checks = [
         _event_visibility(stage, rows),
@@ -51,6 +54,7 @@ def run_artistic_qc(stage: dict, telemetry=None, video_path: str | Path | None =
         _subject_dominance(stage, rows),
         _visual_exposure_balance(stills),
         _climax_visual_delta(stage, stills),
+        _causal_prop_chain(interaction_audit),
     ]
     status = "PASS"
     for check in checks:
@@ -186,6 +190,75 @@ def _static_standing_ratio(stage: dict) -> dict:
         ))
     return _result("static_standing_ratio", "Static face-to-face standing ratio", issues, {
         "ratio": round(ratio, 3), "limit": STATIC_LIMIT, "static_s": round(static, 3), "total_s": round(total, 3),
+    })
+
+
+def _audit_number(audit: dict, key: str):
+    if key not in audit or audit.get(key) is None:
+        return None
+    try:
+        return float(audit.get(key))
+    except (TypeError, ValueError):
+        return None
+
+
+def _causal_prop_chain(interaction_audit) -> dict:
+    """Strict causal, contact, and framing gates. Existing contact thresholds are unchanged."""
+    if not interaction_audit:
+        return _result("causal_prop_chain", "Causal prop chain and framing", [], {
+            "present": False,
+        })
+    audit = interaction_audit
+    if isinstance(audit, dict) and isinstance(audit.get("interaction_audit"), dict):
+        audit = audit["interaction_audit"]
+    if not isinstance(audit, dict):
+        return _result("causal_prop_chain", "Causal prop chain and framing", [
+            _issue("FAIL", None, "interaction_audit", "interaction_audit.json is not an object"),
+        ], {"present": True})
+    issues = []
+    contact = _audit_number(audit, "handoff_contact_error_m")
+    socket = _audit_number(audit, "socket_insert_error_m")
+    occlusion = _audit_number(audit, "prop_occlusion_frames")
+    cropped = _audit_number(audit, "head_cropped_frames")
+    dwell = _audit_number(audit, "empty_doorway_dwell_frames")
+    loops = _audit_number(audit, "one_shot_loop_violations")
+    if contact is None:
+        issues.append(_issue("FAIL", None, "handoff", "handoff_contact_error_m missing from interaction_audit"))
+    elif contact > HANDOFF_CONTACT_M:
+        issues.append(_issue("FAIL", None, "handoff", f"handoff contact error {contact:.3f}m exceeds {HANDOFF_CONTACT_M:.2f}m"))
+    if socket is None:
+        issues.append(_issue("FAIL", None, "socket", "socket_insert_error_m missing from interaction_audit"))
+    elif socket > SOCKET_INSERT_M:
+        issues.append(_issue("FAIL", None, "socket", f"socket insert error {socket:.3f}m exceeds {SOCKET_INSERT_M:.2f}m"))
+    if audit.get("causal_chain_valid") is not True:
+        issues.append(_issue("FAIL", None, "causal_chain", "causal_chain_valid is not true"))
+    if occlusion is None:
+        issues.append(_issue("FAIL", None, "camera", "prop_occlusion_frames missing from interaction_audit"))
+    elif int(occlusion) != 0:
+        issues.append(_issue("FAIL", None, "camera", f"prop occluded for {int(occlusion)} interaction frames"))
+    if cropped is None:
+        issues.append(_issue("FAIL", None, "camera", "head_cropped_frames missing from interaction_audit"))
+    elif int(cropped) != 0:
+        issues.append(_issue("FAIL", None, "camera", f"primary head cropped for {int(cropped)} frames"))
+    if dwell is None:
+        issues.append(_issue("FAIL", None, "camera", "empty_doorway_dwell_frames missing from interaction_audit"))
+    elif dwell > EMPTY_DOORWAY_DWELL_MAX:
+        issues.append(_issue("FAIL", None, "camera", f"empty doorway dwell {dwell:.0f} frames exceeds {EMPTY_DOORWAY_DWELL_MAX}"))
+    if loops is None:
+        issues.append(_issue("FAIL", None, "animation", "one_shot_loop_violations missing from interaction_audit"))
+    elif int(loops) != 0:
+        issues.append(_issue("FAIL", None, "animation", f"one-shot clips looped {int(loops)} times"))
+    return _result("causal_prop_chain", "Causal prop chain and framing", issues, {
+        "present": True,
+        "handoff_contact_error_m": contact,
+        "socket_insert_error_m": socket,
+        "causal_chain_valid": audit.get("causal_chain_valid"),
+        "prop_occlusion_frames": occlusion,
+        "head_cropped_frames": cropped,
+        "empty_doorway_dwell_frames": dwell,
+        "one_shot_loop_violations": loops,
+        "handoff_limit_m": HANDOFF_CONTACT_M,
+        "socket_limit_m": SOCKET_INSERT_M,
     })
 
 
@@ -922,12 +995,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--video", type=Path, default=None)
     parser.add_argument("--stills", type=Path, default=None)
     parser.add_argument("--out", type=Path, default=Path("artistic_qc_report.json"))
+    parser.add_argument("--interaction-audit", type=Path, default=None)
     args = parser.parse_args(argv)
     stage = json.loads(args.stage.read_text(encoding="utf-8"))
     telemetry = None
     if args.telemetry is not None and args.telemetry.is_file():
         telemetry = json.loads(args.telemetry.read_text(encoding="utf-8"))
-    report = run_artistic_qc(stage, telemetry, args.video, args.stills)
+    audit_path = args.interaction_audit
+    if audit_path is None and args.telemetry is not None:
+        sibling = args.telemetry.parent / "interaction_audit.json"
+        if sibling.is_file():
+            audit_path = sibling
+    interaction_audit = None
+    if audit_path is not None and audit_path.is_file():
+        interaction_audit = json.loads(audit_path.read_text(encoding="utf-8"))
+    report = run_artistic_qc(stage, telemetry, args.video, args.stills, interaction_audit)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(f"{report['status']}  {args.out}")
