@@ -2150,9 +2150,8 @@ func update_locomotion_state(
 	var eff_speed: float = anim_speed
 	var eff_blend: float = blend
 
-	var upright_sprint := clip == "Sprint_Urgent_Upright" or (
-		_clip_names.has("Sprint_Urgent_Upright") and current_gait in ["sprint", "urgent"] and clip in ["jog", "sprint"]
-	)
+	# Never substitute the procedural sprint. Its elbows fold through the upper arm.
+	var upright_sprint := false
 	var is_fast_clip: bool = upright_sprint or clip in ["jog", "sprint"]
 	var halt_ready: bool = _clip_names.has("Abrupt_Halt_Skid")
 	if moving_flag:
