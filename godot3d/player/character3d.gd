@@ -1429,7 +1429,7 @@ func _pose_safe_arms(reach_side: String, reach_weight: float) -> void:
 		return
 	var swing := 0.0
 	if _is_moving:
-		swing = sin(_loco_phase) * deg_to_rad(18.0)
+		swing = sin(_loco_phase) * deg_to_rad(8.0)
 	var skip := ""
 	if reach_weight > 0.35:
 		skip = "l" if reach_side == "left" else "r"
@@ -1452,9 +1452,29 @@ func _pose_one_arm(side: String, swing: float, elbow_sign: float, hang_deg: floa
 	# so it stays behind the forearm instead of folding through the biceps.
 	var hung := rest_u * Quaternion(Vector3.FORWARD, deg_to_rad(hang_deg)) * Quaternion(Vector3.RIGHT, swing)
 	_skeleton.set_bone_pose_rotation(upper, hung)
-	_skeleton.set_bone_pose_rotation(lower, rest_l * Quaternion(Vector3.RIGHT, elbow_sign * deg_to_rad(22.0)))
+	_skeleton.set_bone_pose_rotation(lower, rest_l * Quaternion(Vector3.RIGHT, elbow_sign * deg_to_rad(8.0)))
 	if hand >= 0:
 		_skeleton.set_bone_pose_rotation(hand, _skeleton.get_bone_rest(hand).basis.get_rotation_quaternion())
+	# A bend under 150 degrees lets the forearm mesh pass through the upper arm.
+	if _elbow_bend_deg(side) < 150.0:
+		_skeleton.set_bone_pose_rotation(lower, rest_l)
+
+
+func _elbow_bend_deg(side: String) -> float:
+	var human: Dictionary = _target.human
+	var upper: int = int(human.get("%s_upper_arm" % side, -1))
+	var lower: int = int(human.get("%s_lower_arm" % side, -1))
+	var hand: int = int(human.get("%s_hand" % side, -1))
+	if upper < 0 or lower < 0 or hand < 0 or _skeleton == null:
+		return 180.0
+	var shoulder: Vector3 = _skeleton.global_transform * _skeleton.get_bone_global_pose(upper).origin
+	var elbow: Vector3 = _skeleton.global_transform * _skeleton.get_bone_global_pose(lower).origin
+	var wrist: Vector3 = _skeleton.global_transform * _skeleton.get_bone_global_pose(hand).origin
+	var up: Vector3 = shoulder - elbow
+	var fore: Vector3 = wrist - elbow
+	if up.length() < 0.001 or fore.length() < 0.001:
+		return 180.0
+	return rad_to_deg(up.normalized().angle_to(fore.normalized()))
 
 
 func _bone_long_axis(bone: int) -> Vector3:
@@ -1851,8 +1871,8 @@ func resolve_locomotion_clip(gait: String = "") -> String:
 	var g: String = gait.strip_edges().to_lower() if gait != "" else current_gait
 	# Urgent and sprint stay upright. The dedicated clip keeps the spine tall
 	# and the arms in a running pump instead of a hunched box-carry.
-	if g in ["urgent", "sprint"] and _clip_names.has("Sprint_Urgent_Upright"):
-		return "Sprint_Urgent_Upright"
+	# Sprint_Urgent_Upright is a procedural clip whose elbows fold through the
+	# upper arm. Urgent travel uses the authored jog instead.
 	var prof: Dictionary = GAIT_PROFILES.get(g, GAIT_PROFILES["casual"])
 	var wanted: String = str(prof.get("clip", "walk"))
 	if _clip_names.has(wanted):
@@ -2414,6 +2434,7 @@ func _apply_overlay_body(
 			_apply_hand_fingers("r", true)
 		if holding_left and _current_clip != "Sprint_Urgent_Upright":
 			_apply_hand_fingers("l", true)
+		_pose_safe_arms(reach_side, reach_weight)
 		_ground_feet()
 		return
 
@@ -2428,6 +2449,7 @@ func _apply_overlay_body(
 			_reach_arm(side_prefix, _skeleton.global_transform.affine_inverse() * reach_target, clampf(reach_weight, 0.0, 1.0))
 		_apply_hand_fingers("r", holding)
 		_apply_hand_fingers("l", holding_left)
+		_pose_safe_arms(reach_side, reach_weight)
 		_ground_feet()
 		return
 
