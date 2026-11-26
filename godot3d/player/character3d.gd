@@ -1424,6 +1424,39 @@ func _calm_arm_rotation(bone: int, local_q: Quaternion) -> Quaternion:
 	return (rest_q * swing).normalized()
 
 
+func _pose_safe_arms(reach_side: String, reach_weight: float) -> void:
+	if _skeleton == null or _target.is_empty():
+		return
+	var swing := 0.0
+	if _is_moving:
+		swing = sin(_loco_phase) * deg_to_rad(18.0)
+	var skip := ""
+	if reach_weight > 0.35:
+		skip = "l" if reach_side == "left" else "r"
+	if skip != "r":
+		_pose_one_arm("r", swing, 1.0, -72.0)
+	if skip != "l":
+		_pose_one_arm("l", -swing, -1.0, 72.0)
+
+
+func _pose_one_arm(side: String, swing: float, elbow_sign: float, hang_deg: float) -> void:
+	var human: Dictionary = _target.human
+	var upper: int = int(human.get("%s_upper_arm" % side, -1))
+	var lower: int = int(human.get("%s_lower_arm" % side, -1))
+	var hand: int = int(human.get("%s_hand" % side, -1))
+	if upper < 0 or lower < 0:
+		return
+	var rest_u: Quaternion = _skeleton.get_bone_rest(upper).basis.get_rotation_quaternion()
+	var rest_l: Quaternion = _skeleton.get_bone_rest(lower).basis.get_rotation_quaternion()
+	# Local -Z drops the arm from the bind T-pose. Local X flexes the elbow
+	# so it stays behind the forearm instead of folding through the biceps.
+	var hung := rest_u * Quaternion(Vector3.FORWARD, deg_to_rad(hang_deg)) * Quaternion(Vector3.RIGHT, swing)
+	_skeleton.set_bone_pose_rotation(upper, hung)
+	_skeleton.set_bone_pose_rotation(lower, rest_l * Quaternion(Vector3.RIGHT, elbow_sign * deg_to_rad(22.0)))
+	if hand >= 0:
+		_skeleton.set_bone_pose_rotation(hand, _skeleton.get_bone_rest(hand).basis.get_rotation_quaternion())
+
+
 func _bone_long_axis(bone: int) -> Vector3:
 	var parents: PackedInt32Array = _target.parents
 	var rests: Array[Transform3D] = _target.rests
@@ -2432,6 +2465,10 @@ func _apply_overlay_body(
 		_pitch_bone(_head_bone, angle)
 		if _neck_bone >= 0 and _animated_bones.has(_neck_bone):
 			_pitch_bone(_neck_bone, angle * 0.45)
+
+	# The authored walk folds the forearm through the upper arm. Replace both
+	# arms with a hang that keeps the elbow behind the hand, plus a small swing.
+	_pose_safe_arms(reach_side, reach_weight)
 
 	# 6. Exact per-frame floor grounding so stance sole stays at y == 0.0.
 	_ground_feet()
