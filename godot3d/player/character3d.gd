@@ -1305,6 +1305,7 @@ func _bake_direct(src: Dictionary, anim: Animation, exact_pairs: Dictionary, loo
 			var t_idx: int = int(t_idx_v)
 			var s_tr: int = int(rot_tracks[t_idx])
 			var q: Quaternion = anim.rotation_track_interpolate(s_tr, time).normalized()
+			q = _calm_arm_rotation(t_idx, q)
 			out.rotation_track_insert_key(int(track_idx_by_bone[t_idx]), time, q)
 		if pos_track >= 0 and src_hips_pos_track >= 0:
 			var sp: Vector3 = anim.position_track_interpolate(src_hips_pos_track, time)
@@ -1386,7 +1387,7 @@ func _bake(src: Dictionary, anim: Animation, pairs: Dictionary, loop: bool, skel
 					global_rot = (arm_fix.get(upper, Quaternion.IDENTITY) as Quaternion) * global_rot
 					if (fixes.hand_axis as Dictionary).has(b):
 						global_rot = _wrist_fix(b, global_rot, parent_rot, fixes)
-				local_rot = (parent_rot.inverse() * global_rot).normalized()
+				local_rot = _calm_arm_rotation(b, (parent_rot.inverse() * global_rot).normalized())
 				out.rotation_track_insert_key(int(rot_tracks[b]), time, local_rot)
 			else:
 				local_rot = tgt_rests[b].basis.get_rotation_quaternion()
@@ -1405,6 +1406,25 @@ func _bake(src: Dictionary, anim: Animation, pairs: Dictionary, loop: bool, skel
 			var local_pos: Vector3 = target_pos if hp < 0 else g_full[hp].affine_inverse() * target_pos
 			out.position_track_insert_key(pos_track, time, local_pos)
 	return out
+
+
+## UAL idle and walk hold the elbows about 70 degrees off the bind, and on
+## these meshes that bend reads as the joint spinning. Keep a little of the
+## clip so the arm is not frozen, and leave the rest on the pose the mesh
+## was built in. Every baked clip goes through this, including extra packs.
+func _calm_arm_rotation(bone: int, local_q: Quaternion) -> Quaternion:
+	var bone_name := str((_target.names as PackedStringArray)[bone]).to_lower()
+	var keep := 1.0
+	if bone_name.contains("upperarm") or bone_name.contains("lowerarm") or bone_name.contains("forearm"):
+		keep = 0.12
+	elif bone_name.begins_with("hand"):
+		keep = 0.2
+	else:
+		return local_q
+	var rest_q: Quaternion = (_target.rests[bone] as Transform3D).basis.get_rotation_quaternion()
+	if local_q.dot(rest_q) < 0.0:
+		local_q = -local_q
+	return rest_q.slerp(local_q, keep)
 
 
 func _reference_rotations(src: Dictionary, pairs: Dictionary) -> Array[Quaternion]:
