@@ -2375,15 +2375,9 @@ func _apply_overlay_body(
 	# 1. Subtle breathing micro-motion + gait posture modulation + non-combat idle relaxation.
 	_apply_breathing_and_gait()
 
-	# 1b. Non-combat idle posture relaxation (BUG-006): replace wide clenched-fist
-	#     combat idle arms with calm relaxed/professional/conversation arm posture.
-	var perf_r_w: float = float(_perf_overlay.get("right_reach_weight", 0.0))
-	var perf_l_w: float = float(_perf_overlay.get("left_reach_weight", 0.0))
-	if not _is_moving and reach_weight <= 0.05 and idle_style != "combat_idle":
-		_apply_non_combat_idle_posture(perf_r_w, perf_l_w)
-
-	# 1c. Semantic performance overlay (BUG-007 / BUG-010): torso lean, weight shift,
-	#     conversational hand gestures & console interaction reaches.
+	# Dialogue used to run two-bone IK on both arms every line. On these meshes the
+	# elbow solution flips 180 degrees and the forearms spin. Spoken lines keep
+	# the clip's elbows. A real prop reach still goes through _reach_arm below.
 	if not _perf_overlay.is_empty():
 		_apply_performance_overlay(reach_weight, reach_side)
 
@@ -2511,17 +2505,8 @@ func _apply_performance_overlay(prop_reach_w: float, prop_reach_side: String) ->
 	if absf(twist_deg) > 0.05 and chest_bone >= 0:
 		_roll_bone(chest_bone, deg_to_rad(twist_deg))
 
-	var skel_inv: Transform3D = _skeleton.global_transform.affine_inverse()
-	var r_w: float = clampf(float(_perf_overlay.get("right_reach_weight", 0.0)), 0.0, 0.92)
-	if r_w > 0.02 and not (prop_reach_w > 0.05 and prop_reach_side == "right"):
-		var r_v: Variant = _perf_overlay.get("right_reach_world", null)
-		if r_v is Vector3:
-			_reach_arm("r", skel_inv * (r_v as Vector3), r_w)
-	var l_w: float = clampf(float(_perf_overlay.get("left_reach_weight", 0.0)), 0.0, 0.92)
-	if l_w > 0.02 and not (prop_reach_w > 0.05 and prop_reach_side == "left"):
-		var l_v: Variant = _perf_overlay.get("left_reach_world", null)
-		if l_v is Vector3:
-			_reach_arm("l", skel_inv * (l_v as Vector3), l_w)
+	# Arm reaches from the dialogue gesture table are intentionally not applied.
+	# They share the two-bone solver, and that solver was folding both elbows backward.
 
 
 func _apply_carry_arm_bias(side: String) -> void:
@@ -2781,6 +2766,13 @@ func _solve_two_bone(side: String, upper: int, lower: int, hand: int, target: Ve
 		v = Vector3.DOWN
 	var cos_a: float = clampf((a * a + d * d - b * b) / (2.0 * a * d), -1.0, 1.0)
 	var elbow: Vector3 = s + u * a * cos_a + v * a * sqrt(maxf(1.0 - cos_a * cos_a, 0.0))
+	var bend_now: Vector3 = (e - s).cross(w - e)
+	var bend_new: Vector3 = (elbow - s).cross(target - elbow)
+	# A negative bend means the elbow passed through straight and came out backward.
+	# Applying that pose spins the forearm like a windmill. Keep the clip instead.
+	if bend_now.length_squared() > 1e-6 and bend_new.length_squared() > 1e-6:
+		if bend_now.normalized().dot(bend_new.normalized()) < 0.05:
+			return
 	var upper_rot: Quaternion = gu.basis.get_rotation_quaternion()
 	var new_upper: Quaternion = (Quaternion((e - s).normalized(), (elbow - s).normalized()) * upper_rot).normalized()
 	var parent: int = _skeleton.get_bone_parent(upper)
@@ -2794,7 +2786,12 @@ func _solve_two_bone(side: String, upper: int, lower: int, hand: int, target: Ve
 	var new_lower: Quaternion = (Quaternion((wrist_now - elbow_now).normalized(), (target - elbow_now).normalized()) * lower_rot).normalized()
 	var upper_local_ik: Quaternion = (parent_rot.inverse() * new_upper).normalized()
 	var lower_local_ik: Quaternion = (new_upper.inverse() * new_lower).normalized()
-	_skeleton.set_bone_pose_rotation(upper, _skeleton.get_bone_pose_rotation(upper).slerp(upper_local_ik, weight))
+	var upper_now: Quaternion = _skeleton.get_bone_pose_rotation(upper)
+	if upper_local_ik.dot(upper_now) < 0.0:
+		upper_local_ik = -upper_local_ik
+	if lower_local_ik.dot(lower_local) < 0.0:
+		lower_local_ik = -lower_local_ik
+	_skeleton.set_bone_pose_rotation(upper, upper_now.slerp(upper_local_ik, weight))
 	_skeleton.set_bone_pose_rotation(lower, lower_local.slerp(lower_local_ik, weight))
 
 
