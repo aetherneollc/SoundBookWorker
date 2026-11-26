@@ -935,6 +935,11 @@ class SceneLayoutSystem:
         for item in extra_props:
             pos_raw = item.get("pos", [0.0, 0.0])
             size_raw = item.get("size")
+            extra: dict[str, Any] = {}
+            if item.get("emission_boost") is not None:
+                extra["emission_boost"] = float(item["emission_boost"])
+            if item.get("tint"):
+                extra["tint"] = str(item["tint"])
             prop = PlacedProp(
                 id=str(item.get("id", f"extra_{len(layout.props)}")),
                 kind=str(item.get("kind", "model" if "model" in item else "crate")),
@@ -945,6 +950,7 @@ class SceneLayoutSystem:
                 model=str(item.get("model", "")),
                 color=str(item.get("color", "")),
                 zone=str(item.get("zone", "center_stage")),
+                extra=extra,
             )
             obs = prop.build_obstacle_aabb(room_h)
             if (
@@ -1217,7 +1223,7 @@ class SceneLayoutSystem:
             backdrop={"mode": "none"},
             lighting_overrides={
                 "fills": [
-                    {"id": "TerminalGlow", "pos": _r3((left_wall + 0.75, 1.45, -2.0)), "range": 3.0, "energy": 0.45, "color": "#72d8ff"},
+                    {"id": "TerminalGlow", "pos": _r3((left_wall + 0.75, 1.45, -2.0)), "range": 2.4, "energy": 0.16, "color": "#c45a28"},
                 ]
             },
             kenney_dir=self.kenney_dir,

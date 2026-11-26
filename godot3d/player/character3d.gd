@@ -379,6 +379,15 @@ var _peak_move_speed_mps := 0.0
 var _perf_overlay: Dictionary = {}
 var ground_smoothing := 0.65
 var stride_report: Dictionary = {}
+## Actor-level switch. An action that sets raw_playback wins for its window.
+var _actor_raw_playback := false
+var _raw_playback := false
+var _raw_clip := ""
+var _raw_segment := ""
+var _raw_token := ""
+var _raw_time := 0.0
+## The stage keeps the actor on its mark. Clip root travel is not applied on top.
+const RAW_ROOT_POLICY := "planted_in_place"
 
 
 # ---------------------------------------------------------------- loading
@@ -493,6 +502,8 @@ func setup(config: Dictionary) -> bool:
 	if not GAIT_PROFILES.has(default_gait):
 		default_gait = "casual"
 	current_gait = default_gait
+	_actor_raw_playback = bool(config.get("raw_playback", false))
+	_raw_playback = _actor_raw_playback
 
 	var look_value: Variant = config.get("look", {})
 	_look = look_value as Dictionary if look_value is Dictionary else {}
@@ -1134,6 +1145,7 @@ func _build_animation_player(config: Dictionary, own_rig: Dictionary) -> void:
 		if clip == "walk":
 			natural_walk_speed = _walk_speed(chosen_rig, chosen_name, rm_library)
 	_register_extra_libraries(anim_cfg, anim_lib, skeleton_path)
+	_prefer_mocap_idle(anim_lib)
 	_player.add_animation_library("", anim_lib)
 
 
@@ -1177,6 +1189,25 @@ func _collect_extra_library_paths(anim_cfg: Dictionary) -> Array[String]:
 				break
 		paths.insert(insert_at, mocap)
 	return paths
+
+
+func _prefer_mocap_idle(anim_lib: AnimationLibrary) -> void:
+	# UAL1 Idle_Loop is a wide combat stance with half-closed fists. The ACCAD
+	# sway is a real standing idle on the same skeleton. Semantic "idle" must
+	# not snap back to the fighting pose after a mocap action ends.
+	var mocap_name := StringName("Mocap_Idle_Sway_Loop")
+	if not anim_lib.has_animation(mocap_name) or not anim_lib.has_animation("idle"):
+		return
+	var source: Animation = anim_lib.get_animation(mocap_name)
+	if source == null:
+		return
+	var standing: Animation = source.duplicate() as Animation
+	standing.loop_mode = Animation.LOOP_LINEAR
+	anim_lib.remove_animation("idle")
+	anim_lib.add_animation("idle", standing)
+	_clip_names["idle"] = "idle"
+	_clip_lengths["idle"] = standing.length
+	clip_report["idle"] = "extra:mocap_core10_pack.glb:Mocap_Idle_Sway_Loop"
 
 
 func _register_extra_libraries(anim_cfg: Dictionary, anim_lib: AnimationLibrary, skeleton_path: String) -> void:
@@ -1799,6 +1830,11 @@ func stride_speed_for(clip: String) -> float:
 
 
 func set_contact_target(world_point: Vector3, enabled: bool) -> void:
+	if _raw_playback:
+		_contact_point = Vector3.INF
+		_contact_enabled = false
+		_hand_contact_dist = -1.0
+		return
 	_contact_point = world_point
 	_contact_enabled = enabled
 	if not enabled:
@@ -1927,6 +1963,10 @@ func set_clip_one_shot(enabled: bool) -> void:
 
 
 func set_hand_finger_pose(side: String, pose: String) -> void:
+	if _raw_playback:
+		_finger_pose_l = ""
+		_finger_pose_r = ""
+		return
 	var key := pose.strip_edges().to_lower()
 	if side == "left":
 		_finger_pose_l = key
@@ -1970,13 +2010,63 @@ func pose_clip(clip: String, time: float) -> void:
 
 
 func set_idle_style(style: String) -> void:
+	if _raw_playback:
+		return
 	var s: String = style.strip_edges().to_lower()
 	if s in ["relaxed_idle", "professional_idle", "alert_idle", "combat_idle", "conversation_idle"]:
 		idle_style = s
 
 
 func set_performance_overlay(perf: Dictionary) -> void:
+	if _raw_playback:
+		_perf_overlay = {}
+		return
 	_perf_overlay = perf
+
+
+## Idle, walk, jog, and sprint cycles loop. Halts, turns, and reaches hold the last frame.
+func _raw_clip_loops(clip: String) -> bool:
+	var key := clip.strip_edges().to_lower()
+	for word: String in ["halt", "turn", "reach", "handoff", "confront", "pickup", "pick_up", "pickup_table", "offer", "slam", "jump_land", "jump_start", "land", "hit_", "death", "recoil", "flinch"]:
+		if key.contains(word):
+			return false
+	return key.contains("idle") or key.contains("walk") or key.contains("run") or key.contains("jog") or key.contains("sprint") or key.contains("loop")
+
+
+## Plays the authored clip on the stage mark. Does not add root travel.
+func _play_raw_clip(clip: String, delta: float) -> void:
+	_elapsed_s += maxf(delta, 0.0)
+	_is_moving = false
+	_halt_hold = false
+	_halt_u = 0.0
+	_sprint_carry_u = 0.0
+	loco_state = "idle"
+	_last_clip_requested = clip
+	if _player == null or clip == "" or not _clip_names.has(clip):
+		_last_clip_status = "missing"
+		_active_clip_name = ""
+		return
+	_last_clip_status = "ok"
+	var segment := _raw_segment if _raw_segment != "" else "actor"
+	var token := "%s|%s" % [clip, segment]
+	if token != _raw_token:
+		_raw_token = token
+		_raw_time = 0.0
+		_player.play(StringName(clip), 0.0)
+	var length: float = maxf(float(_clip_lengths.get(clip, 0.0)), 0.001)
+	var sample := _raw_time
+	if _raw_clip_loops(clip):
+		sample = fmod(sample, length)
+	else:
+		sample = minf(sample, maxf(length - 1.0 / SAMPLE_RATE, 0.0))
+	_player.speed_scale = 0.0
+	if _skeleton != null:
+		_skeleton.reset_bone_poses()
+	_player.seek(sample, true)
+	_raw_time += maxf(delta, 0.0)
+	_current_clip = clip
+	_current_key = "raw:%s" % token
+	_active_clip_name = clip
 
 
 ## Velocity-aware locomotion state machine implementing BUG-003:
@@ -1991,6 +2081,10 @@ func update_locomotion_state(
 	blend: float = 0.25,
 	moving_flag: bool = false
 ) -> void:
+	if _raw_playback:
+		var play_clip := _raw_clip if _raw_clip != "" else clip
+		_play_raw_clip(play_clip, delta)
+		return
 	var dt: float = maxf(delta, 0.001)
 	var eff_clip: String = clip
 	var eff_key: String = clip_key
@@ -2210,6 +2304,8 @@ func has_face_atlas() -> bool:
 func apply_look_at(world_target: Vector3, weight: float, dt: float = 1.0 / 24.0) -> void:
 	if _skeleton == null or _head_bone < 0:
 		return
+	if _raw_playback:
+		return
 	if _exhale_relief:
 		var glance := sin(_elapsed_s * 0.65) * 0.05
 		world_target += global_transform.basis * Vector3(0.14 + glance, -0.03, 0.06)
@@ -2246,6 +2342,18 @@ func _apply_overlay_body(
 	reach_weight: float,
 	reach_side: String
 ) -> void:
+	# The clip's bones, timing, and fingers stay as baked. No breath, hunch,
+	# idle rewrite, gesture, carry, arm IK, fist curl, dramatic pose, contact, or foot pin.
+	if _raw_playback:
+		_ground_offset = 0.0
+		_contact_enabled = false
+		_contact_point = Vector3.INF
+		_hand_contact_dist = -1.0
+		_sprint_carry_u = 0.0
+		if _model_root != null:
+			_model_root.position.y = _model_base_y
+		return
+
 	# Real GLB clips own the body. Do not stack idle reaches, gait hunch, or a
 	# two-arm box carry on top of Sprint_Urgent_Upright / Abrupt_Halt_Skid /
 	# a dedicated dramatic clip. Contact IK and grounding still run.
@@ -2933,6 +3041,8 @@ func get_qc_snapshot() -> Dictionary:
 		"dramatic_phase": _dramatic_phase,
 		"one_shot_loop_violations": one_shot_loop_violations,
 		"exhale_relief": _exhale_relief,
+		"raw_playback": _raw_playback,
+		"raw_root_policy": RAW_ROOT_POLICY if _raw_playback else "",
 	}
 
 
@@ -2982,6 +3092,8 @@ func set_dramatic_actions(value: Variant) -> void:
 			"target": str(source.get("target", "")),
 			"one_shot": bool(source.get("one_shot", false)),
 			"phases": phases,
+			"raw_playback": bool(source.get("raw_playback", false)),
+			"raw_playback_set": source.has("raw_playback"),
 		})
 
 
@@ -2995,6 +3107,9 @@ func update_dramatic_action(frame_index: int, fps: int) -> void:
 	_dramatic_phase_u = 0.0
 	_dramatic_dedicated = ""
 	_dramatic_pose = {}
+	_raw_playback = _actor_raw_playback
+	_raw_clip = ""
+	_raw_segment = ""
 	var chosen: Dictionary = {}
 	var chosen_from := -1
 	for action: Dictionary in _dramatic_actions:
@@ -3006,6 +3121,9 @@ func update_dramatic_action(frame_index: int, fps: int) -> void:
 			chosen = action
 			chosen_from = f0
 	if chosen.is_empty():
+		if not _raw_playback:
+			_raw_token = ""
+			_raw_time = 0.0
 		return
 	_dramatic_active = true
 	_dramatic_one_shot = bool(chosen.get("one_shot", false))
@@ -3038,6 +3156,27 @@ func update_dramatic_action(frame_index: int, fps: int) -> void:
 	_dramatic_pose = _reclamp_dramatic_pose(_dramatic_pose)
 	if fps < 1:
 		fps = 24
+	_apply_raw_from_action(chosen)
+
+
+func _apply_raw_from_action(chosen: Dictionary) -> void:
+	if bool(chosen.get("raw_playback_set", false)):
+		_raw_playback = bool(chosen.get("raw_playback", false))
+	if not _raw_playback:
+		_raw_clip = ""
+		_raw_segment = ""
+		_raw_token = ""
+		_raw_time = 0.0
+		return
+	var requested := str(chosen.get("dedicated_clip", "")).strip_edges()
+	if requested == "":
+		requested = str(chosen.get("base_clip", "")).strip_edges()
+	var exact := _exact_faithful_name(requested)
+	_raw_clip = exact if exact != "" else requested
+	_raw_segment = "%s@%d" % [_raw_clip, int(chosen.get("from", 0))]
+	if _clip_names.has(_raw_clip):
+		_dramatic_clip = _raw_clip
+		_dramatic_faithful = _exact_faithful_name(_raw_clip) != ""
 
 
 func is_dramatic_action_active() -> bool:

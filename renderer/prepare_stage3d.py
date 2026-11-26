@@ -1280,6 +1280,7 @@ def _apply_retro_layer(
             extra.extend(synth.entries_for_performance(planned, fps))
         stage['audio'].extend(extra)
     _append_chained_actions(stage, doc, planner)
+    _stamp_authored_playback(stage, doc, fps)
 
 
 def _append_chained_actions(stage: dict, doc: dict, planner) -> None:
@@ -1329,6 +1330,53 @@ def _append_chained_actions(stage: dict, doc: dict, planner) -> None:
         entries.sort(key=lambda item: (int(item.get('from', 0)), str(item.get('action_id') or '')))
 
 
+def _stamp_authored_playback(stage: dict, doc: dict, fps: int) -> None:
+    """Copy manifest raw_playback and exact clip names onto dramatic actions.
+
+    Manifests that omit the fields are unchanged. The player may not honor
+    raw_playback yet; the names are still written for that flag.
+    """
+    beats = [b for b in (doc.get('beats') or doc.get('shots') or []) if isinstance(b, dict)]
+    if not beats or not any(b.get('raw_playback') or b.get('dedicated_clip') for b in beats):
+        return
+    windows: list[tuple[int, int, dict]] = []
+    cursor = 0
+    for beat in beats:
+        frames = int(beat.get('frames') or shot_duration_frames(float(beat.get('duration') or 3.0), fps))
+        windows.append((cursor, cursor + frames, beat))
+        cursor += frames
+    actors = stage.get('actors') or {}
+    if not isinstance(actors, dict):
+        return
+    for actor in actors.values():
+        if not isinstance(actor, dict):
+            continue
+        for entry in actor.get('dramatic_actions') or []:
+            if not isinstance(entry, dict):
+                continue
+            start = int(entry.get('from', 0))
+            beat = next((item for lo, hi, item in windows if lo <= start < hi), None)
+            if beat is None:
+                continue
+            if not beat.get('raw_playback') and not beat.get('dedicated_clip'):
+                continue
+            chain_name = str(beat.get('chain_action') or '')
+            action_id = str(entry.get('action_id') or '')
+            if chain_name and action_id == chain_name:
+                clip = str(beat.get('chain_dedicated_clip') or '')
+                if 'chain_one_shot' in beat:
+                    entry['one_shot'] = bool(beat.get('chain_one_shot'))
+            else:
+                clip = str(beat.get('dedicated_clip') or '')
+                if 'one_shot' in beat:
+                    entry['one_shot'] = bool(beat.get('one_shot'))
+            if beat.get('raw_playback'):
+                entry['raw_playback'] = True
+            if clip:
+                entry['dedicated_clip'] = clip
+                entry['base_clip'] = clip
+
+
 def prepare_generic(doc: dict, manifest_path: Path, output_path: Path, check_files: bool = True) -> dict:
     """Reusable multi-scene compiler using SceneLayoutSystem + CinematicDirector.
 
@@ -1341,7 +1389,13 @@ def prepare_generic(doc: dict, manifest_path: Path, output_path: Path, check_fil
     scene_type = str(doc.get('scene_type') or 'observation_bay')
     lighting_profile = str(doc.get('lighting_profile') or '') or None
     solver = SceneLayoutSystem(kenney_dir=KENNEY, textures_dir=TEXTURES)
-    layout = solver.solve(scene_type, lighting_profile=lighting_profile, validate=True)
+    extra_props = doc.get('extra_props') if isinstance(doc.get('extra_props'), list) else None
+    layout = solver.solve(
+        scene_type,
+        lighting_profile=lighting_profile,
+        extra_props=extra_props,
+        validate=True,
+    )
     set_doc = layout.to_stage3d_set(resolve_asset_paths=True)
     door_start = str(doc.get('door_start') or '').strip().lower()
     if door_start in ('open', 'closed'):
@@ -1399,6 +1453,11 @@ def prepare_generic(doc: dict, manifest_path: Path, output_path: Path, check_fil
             'reaches': list(raw_spec.get('reaches') or []),
             'nods': list(raw_spec.get('nods') or []),
         })
+        if 'raw_playback' in raw_spec:
+            cfg['raw_playback'] = bool(raw_spec.get('raw_playback'))
+        authored_actions = raw_spec.get('dramatic_actions')
+        if isinstance(authored_actions, list):
+            cfg['dramatic_actions'] = [dict(item) for item in authored_actions if isinstance(item, dict)]
         actors[actor_id] = cfg
         actor_heights[actor_id] = float(cfg['height_m'])
         actor_tiers[actor_id] = {
@@ -1481,8 +1540,15 @@ def prepare_generic(doc: dict, manifest_path: Path, output_path: Path, check_fil
 
         speaker = str(b.get('speaker') or '')
         listener = str(b.get('listener') or '')
-        text = str(b.get('text') or b.get('caption_text') or '')
-        if text:
+        text = str(b.get('text') or b.get('caption_text') or b.get('caption') or '')
+        speak = b.get('speak', True)
+        if isinstance(speak, str):
+            speak = speak.strip().lower() not in {'0', 'false', 'no', 'off'}
+        else:
+            speak = bool(speak)
+        if text and not speak:
+            captions.append({'from': cursor, 'to': cursor + b_frames, 'text': text})
+        elif text:
             lead_f = min(frame(float(b.get('voice_lead', 0.25)), fps), max(0, b_frames - 12))
             line_from = cursor + lead_f
             line_to = max(line_from + 12, cursor + b_frames - 4)
@@ -1601,6 +1667,26 @@ def prepare_generic(doc: dict, manifest_path: Path, output_path: Path, check_fil
         enable_cutaways=bool(doc.get('enable_cutaways', True)),
         reset=True,
     )
+    locked = doc.get('locked_camera') if isinstance(doc.get('locked_camera'), dict) else None
+    if locked and isinstance(locked.get('pos'), (list, tuple)) and isinstance(locked.get('look_at'), (list, tuple)):
+        pos = [round(float(v), 3) for v in list(locked['pos'])[:3]]
+        look = [round(float(v), 3) for v in list(locked['look_at'])[:3]]
+        fov = float(locked.get('fov') or 40.0)
+        for shot in shots:
+            n = int(shot['frames'])
+            shot['cameras'] = [{
+                'from': 0,
+                'to': n,
+                'mode': 'static',
+                'pos': pos,
+                'pos_to': list(pos),
+                'look_at': look,
+                'look_to': list(look),
+                'fov': fov,
+                'fov_to': fov,
+                'dof_enabled': False,
+            }]
+            shot['first_person'] = ''
     total_frames = sum(int(s['frames']) for s in shots)
 
     # Interactive props
@@ -1617,8 +1703,17 @@ def prepare_generic(doc: dict, manifest_path: Path, output_path: Path, check_fil
         props_out[pid] = p_copy
 
     review = {}
-    for idx, sh in enumerate(shots, 1):
-        review[f"shot{idx}_{sh['type']}"] = int(sh['from'] + sh['frames'] // 2)
+    if isinstance(doc.get('review_frames'), dict):
+        for key, value in doc['review_frames'].items():
+            try:
+                frame_index = int(value)
+            except (TypeError, ValueError):
+                continue
+            if frame_index >= 0:
+                review[str(key)] = frame_index
+    else:
+        for idx, sh in enumerate(shots, 1):
+            review[f"shot{idx}_{sh['type']}"] = int(sh['from'] + sh['frames'] // 2)
 
     stage = {
         'version': STAGE_VERSION,

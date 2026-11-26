@@ -140,6 +140,14 @@ var _array_fault_now := false
 var _lightning_light: OmniLight3D
 var _lightning_flash: MeshInstance3D
 var _lightning_energy := 0.0
+var _blast_far: OmniLight3D
+var _blast_north: OmniLight3D
+var _spark_light: OmniLight3D
+var _threat_light: OmniLight3D
+var _blast_glow: MeshInstance3D
+var _blast_glow_north: MeshInstance3D
+var _blast_glow_mat: StandardMaterial3D
+var _blast_glow_north_mat: StandardMaterial3D
 var _dressing_count := 0
 var _sky_backdrop_mats: Array[StandardMaterial3D] = []
 var _planet_mat: ShaderMaterial
@@ -191,6 +199,14 @@ func build(set_cfg: Dictionary, character_script: Script) -> void:
 	_lightning_light = null
 	_lightning_flash = null
 	_lightning_energy = 0.0
+	_blast_far = null
+	_blast_north = null
+	_spark_light = null
+	_threat_light = null
+	_blast_glow = null
+	_blast_glow_north = null
+	_blast_glow_mat = null
+	_blast_glow_north_mat = null
 	_dressing_count = 0
 	_sky_backdrop_mats.clear()
 	_planet_mat = null
@@ -525,23 +541,23 @@ func _build_materials() -> void:
 			_materials["light_bar"] = _mat(Color("#eaf7ff"), 0.35, 1.55)
 			_materials["trim"] = _mat(Color("#1fa89e"), 0.48, 0.28)
 		"corridor":
-			# BUG-013: Mid-slate ribbed bulkhead panels with brighter trim so dark uniforms
-			# separate cleanly from walls without washing out moody corridor lighting.
+			# Stained industrial hall. Darker than the observation bay, with worn metal
+			# and a dull emergency trim. The bay match below is left alone.
 			if _materials["floor"] == null:
-				_materials["floor"] = _tile_material(Color("#627082"), Color("#434f5e"), 1.0)
+				_materials["floor"] = _tile_material(Color("#4a453c"), Color("#2c2924"), 0.96)
 			if _materials["wall"] == null:
-				_materials["wall"] = _panel_material(Color("#445870"), Color("#2c3c4f"), 0.76, 0.12)
+				_materials["wall"] = _panel_material(Color("#3a403f"), Color("#222624"), 0.84, 0.16)
 			if _materials["wall_low"] == null:
-				_materials["wall_low"] = _panel_material(Color("#34465c"), Color("#223040"), 0.80, 0.14)
+				_materials["wall_low"] = _panel_material(Color("#2a2e2c"), Color("#171a18"), 0.88, 0.18)
 			if _materials["corridor"] == null:
-				_materials["corridor"] = _panel_material(Color("#3c4e64"), Color("#273647"), 0.78, 0.12)
-			_materials["panel_line"] = _mat(Color("#1f2c3c"), 0.72)
-			_materials["ledge"] = _mat(Color("#6c829b"), 0.58, 0.0, 0.18)
-			_materials["frame"] = _mat(Color("#2a3748"), 0.52, 0.0, 0.28)
-			_materials["ceiling"] = _mat(Color("#1d2633"), 0.85)
-			_materials["beam"] = _mat(Color("#374659"), 0.60, 0.0, 0.22)
-			_materials["light_bar"] = _mat(Color("#e4f0ff"), 0.35, 2.0)
-			_materials["trim"] = _mat(Color("#e6933a"), 0.52, 0.24)
+				_materials["corridor"] = _panel_material(Color("#343a38"), Color("#1c201e"), 0.86, 0.16)
+			_materials["panel_line"] = _mat(Color("#141816"), 0.8)
+			_materials["ledge"] = _mat(Color("#5c5348"), 0.7, 0.0, 0.12)
+			_materials["frame"] = _mat(Color("#2a2c2a"), 0.62, 0.0, 0.22)
+			_materials["ceiling"] = _mat(Color("#121416"), 0.9)
+			_materials["beam"] = _mat(Color("#3e3830"), 0.72, 0.0, 0.18)
+			_materials["light_bar"] = _mat(Color("#c5ced6"), 0.55, 0.28)
+			_materials["trim"] = _mat(Color("#7a3018"), 0.62, 0.18)
 		"command_deck":
 			if _materials["floor"] == null:
 				_materials["floor"] = _tile_material(Color("#4c5868"), Color("#303a48"), 1.0)
@@ -585,7 +601,16 @@ func _build_materials() -> void:
 	_materials["crate"] = _panel_material(Color("#cf782c"), Color("#9a5318"), 0.74, 0.08)
 	_materials["crate_dark"] = _panel_material(Color("#3b4657"), Color("#262f3c"), 0.76, 0.16)
 	_materials["metal_dark"] = _panel_material(Color("#2f3b4a"), Color("#1e2733"), 0.54, 0.28)
-	_materials["metal_light"] = _panel_material(Color("#8ca0b0") if scene_type == "med_lab" else Color("#9aa9b8"), Color("#6b7f90"), 0.50, 0.24)
+	if scene_type == "corridor":
+		_materials["metal_dark"] = _panel_material(Color("#322c26"), Color("#1a1612"), 0.78, 0.2)
+		_materials["crate"] = _panel_material(Color("#6a4e34"), Color("#3c2c1c"), 0.84, 0.05)
+		_materials["crate_dark"] = _panel_material(Color("#3a342c"), Color("#221c16"), 0.86, 0.1)
+	if scene_type == "corridor":
+		_materials["metal_light"] = _panel_material(Color("#6a6258"), Color("#3e3832"), 0.7, 0.16)
+	elif scene_type == "med_lab":
+		_materials["metal_light"] = _panel_material(Color("#8ca0b0"), Color("#6b7f90"), 0.50, 0.24)
+	else:
+		_materials["metal_light"] = _panel_material(Color("#9aa9b8"), Color("#6b7f90"), 0.50, 0.24)
 	_materials["medical_white"] = _panel_material(Color("#d9e3ea"), Color("#b2c4d0"), 0.60, 0.06)
 	_materials["medical_pad"] = _panel_material(Color("#4f8396"), Color("#396678"), 0.78, 0.02)
 	_materials["teal_glow"] = _mat(Color("#2fd1c4"), 0.38, 1.05)
@@ -732,6 +757,138 @@ func _build_corridor_template() -> void:
 	_build_back_wall_with_door()
 	if corridor_depth > 0.2:
 		_build_corridor_stub()
+		var stub_light := get_node_or_null("CorridorLight") as OmniLight3D
+		if stub_light != null:
+			stub_light.light_energy = 0.12
+			stub_light.light_color = Color("#6a3018")
+	_build_corridor_industrial()
+
+
+func _build_corridor_industrial() -> void:
+	var h: float = room_max.y
+	var z0: float = room_min.z + 0.45
+	var z1: float = room_max.z - 0.45
+	# Cable tray and stained pipes. Kenney pieces stay at the far bulkhead.
+	_box_between("CableTray", Vector3(-0.58, h - 0.36, z0), Vector3(0.58, h - 0.24, z1), "beam")
+	_box_between("CableTrayLipL", Vector3(-0.62, h - 0.4, z0), Vector3(-0.54, h - 0.2, z1), "metal_dark")
+	_box_between("CableTrayLipR", Vector3(0.54, h - 0.4, z0), Vector3(0.62, h - 0.2, z1), "metal_dark")
+	_box_between("PipeHighL", Vector3(room_min.x + 0.06, h - 0.62, z0), Vector3(room_min.x + 0.18, h - 0.48, z1), "metal_dark")
+	_box_between("PipeHighR", Vector3(room_max.x - 0.18, h - 0.58, z0), Vector3(room_max.x - 0.06, h - 0.46, z1), "metal_light")
+	_box_between("PipeMidL", Vector3(room_min.x + 0.04, 1.72, z0), Vector3(room_min.x + 0.1, 1.82, z1), "metal_dark")
+	var drop_z: float = room_min.z + 1.8
+	while drop_z < room_max.z - 1.2:
+		_box_between("PipeDropL_%d" % int(drop_z * 10.0), Vector3(room_min.x + 0.05, 0.35, drop_z), Vector3(room_min.x + 0.12, h - 0.48, drop_z + 0.07), "metal_dark")
+		_box_between("Hanger_%d" % int(drop_z * 10.0), Vector3(-0.08, h - 0.48, drop_z), Vector3(0.08, h - 0.24, drop_z + 0.05), "metal_dark")
+		drop_z += 2.8
+	# Worn floor plates. They sit a few millimetres off the deck so they do not z-fight.
+	_box_between("WearPlateA", Vector3(-0.85, 0.004, 1.2), Vector3(0.35, 0.012, 3.4), "metal_dark", false)
+	_box_between("WearPlateB", Vector3(-0.2, 0.004, -4.6), Vector3(1.15, 0.012, -2.4), "crate_dark", false)
+	_box_between("WearPlateC", Vector3(-1.3, 0.004, -1.1), Vector3(-0.4, 0.01, 0.6), "metal_dark", false)
+	if _character_script != null:
+		_spawn_kenney(self, "structure_detailed.glb", Vector3(-1.72, 0.0, 6.15), 90.0, 2.15, false)
+		_spawn_kenney(self, "structure.glb", Vector3(1.78, 0.0, 5.35), -80.0, 1.7, false)
+		_spawn_kenney(self, "pipe_straight.glb", Vector3(-1.55, 2.35, 4.2), 0.0, 0.28, false)
+		_spawn_kenney(self, "pipe_corner.glb", Vector3(1.62, 2.28, 3.4), 180.0, 0.42, false)
+	_blast_glow_mat = _make_blast_material()
+	_blast_glow = _make_blast_card("FarBlastGlow", Vector3(0.0, 1.55, room_max.z - 0.2), Vector3(1.05, 1.45, 0.08), _blast_glow_mat)
+	_blast_glow_north_mat = _make_blast_material()
+	_blast_glow_north = _make_blast_card("NorthBlastGlow", Vector3(0.0, 1.45, room_min.z - 0.95), Vector3(1.15, 1.7, 0.08), _blast_glow_north_mat)
+	_blast_far = _make_action_omni("FarBlastLight", Vector3(0.0, 1.7, room_max.z - 0.55), 5.5, Color("#ff6418"))
+	_blast_north = _make_action_omni("NorthBlastLight", Vector3(0.0, 1.45, room_min.z - 1.15), 4.4, Color("#ff5c1c"))
+	_spark_light = _make_action_omni("MachineSpark", Vector3(0.45, 1.15, -4.2), 2.2, Color("#ffd0a0"))
+	_threat_light = _make_action_omni("ThreatLamp", Vector3(0.15, 1.7, room_min.z - 1.35), 3.6, Color("#ff2418"))
+	var machine_glow := _make_action_omni("MachineRed", Vector3(0.82, 1.05, -4.55), 2.6, Color("#ff2a18"))
+	machine_glow.light_energy = 0.55
+
+
+func _make_blast_material() -> StandardMaterial3D:
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color(0.28, 0.07, 0.02)
+	mat.roughness = 0.8
+	mat.emission_enabled = true
+	mat.emission = Color("#ff5a16")
+	mat.emission_energy_multiplier = 0.0
+	return mat
+
+
+func _make_blast_card(label: String, pos: Vector3, size: Vector3, mat: StandardMaterial3D) -> MeshInstance3D:
+	var mi := MeshInstance3D.new()
+	mi.name = label
+	var mesh := BoxMesh.new()
+	mesh.size = size
+	mi.mesh = mesh
+	mi.position = pos
+	mi.material_override = mat
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	mi.visible = false
+	add_child(mi)
+	return mi
+
+
+func _make_action_omni(label: String, pos: Vector3, range_m: float, color: Color) -> OmniLight3D:
+	var light := OmniLight3D.new()
+	light.name = label
+	light.position = pos
+	light.omni_range = range_m
+	light.omni_attenuation = 1.85
+	light.light_color = color
+	light.light_energy = 0.0
+	light.shadow_enabled = false
+	add_child(light)
+	return light
+
+
+func _set_action_omni(light: OmniLight3D, energy: float) -> void:
+	if light != null and is_instance_valid(light):
+		light.light_energy = maxf(energy, 0.0)
+
+
+func _drive_corridor_action_lights(state: Dictionary) -> void:
+	if scene_type != "corridor":
+		return
+	var t_s: float = float(state.get("time_s", 0.0))
+	var impact: float = float(state.get("table_impact", 0.0))
+	var age: float = float(state.get("table_impact_age_s", 0.0))
+	var pulse: float = exp(-age * 0.8) if impact > 0.02 else 0.0
+	_set_action_omni(_blast_far, 0.0)
+	_set_action_omni(_blast_north, 0.0)
+	_set_action_omni(_spark_light, 0.0)
+	if _blast_glow != null and is_instance_valid(_blast_glow):
+		_blast_glow.visible = false
+	if _blast_glow_north != null and is_instance_valid(_blast_glow_north):
+		_blast_glow_north.visible = false
+	if _blast_glow_mat != null:
+		_blast_glow_mat.emission_energy_multiplier = 0.0
+	if _blast_glow_north_mat != null:
+		_blast_glow_north_mat.emission_energy_multiplier = 0.0
+	if impact > 0.02 and t_s < 8.0:
+		var energy: float = (0.55 + 1.7 * pulse) * impact
+		_set_action_omni(_blast_far, energy * 2.2)
+		if _blast_glow != null and is_instance_valid(_blast_glow):
+			_blast_glow.visible = true
+		if _blast_glow_mat != null:
+			_blast_glow_mat.emission = Color("#ff6418")
+			_blast_glow_mat.emission_energy_multiplier = 0.45 + 1.05 * pulse
+	elif impact > 0.02 and t_s < 19.0:
+		var spark: float = exp(-age * 7.0) * impact
+		_set_action_omni(_spark_light, 0.8 + 4.2 * spark)
+	elif impact > 0.02:
+		var north_energy: float = (0.4 + 1.35 * pulse) * impact
+		_set_action_omni(_blast_north, north_energy * 1.8)
+		if _blast_glow_north != null and is_instance_valid(_blast_glow_north):
+			_blast_glow_north.visible = true
+		if _blast_glow_north_mat != null:
+			_blast_glow_north_mat.emission = Color("#ff5c1c")
+			_blast_glow_north_mat.emission_energy_multiplier = 0.7 + 1.5 * pulse
+	var radio := false
+	var active: Variant = state.get("active_events", [])
+	if active is Array:
+		for item: Variant in active as Array:
+			if str(item) == "robot_speaking":
+				radio = true
+	if _threat_light != null and is_instance_valid(_threat_light):
+		_threat_light.light_energy = 2.1 if radio else 0.0
+		_threat_light.light_color = Color("#ff2418")
 
 
 func _build_med_lab_template() -> void:
@@ -1402,7 +1559,11 @@ func _place_prop(cfg: Dictionary, ground_y: float, track_obstacle: bool = true) 
 	if kind in ["console", "workstation", "bio_monitor", "command_table", "screen"] or label.to_lower().contains("console"):
 		_register_interactive_device(label, "console", holder3, box.size * scale_value)
 	var tint_value: Variant = cfg.get("emission_boost", 0.0)
-	if float(tint_value) > 0.0:
+	var tint_name := str(cfg.get("tint", "")).strip_edges()
+	if float(tint_value) > 0.0 or tint_name != "":
+		var tint := Color.WHITE
+		if tint_name != "":
+			tint = Color(tint_name)
 		for node: Node in _descendants(model):
 			if node is MeshInstance3D:
 				var mi := node as MeshInstance3D
@@ -1410,9 +1571,12 @@ func _place_prop(cfg: Dictionary, ground_y: float, track_obstacle: bool = true) 
 					var material: Material = mi.get_active_material(s)
 					if material is StandardMaterial3D:
 						var copy := (material as StandardMaterial3D).duplicate() as StandardMaterial3D
-						copy.emission_enabled = true
-						copy.emission = copy.albedo_color
-						copy.emission_energy_multiplier = float(tint_value)
+						if tint_name != "":
+							copy.albedo_color = copy.albedo_color.lerp(tint, 0.78)
+						if float(tint_value) > 0.0:
+							copy.emission_enabled = true
+							copy.emission = tint if tint_name != "" else copy.albedo_color
+							copy.emission_energy_multiplier = float(tint_value)
 						mi.set_surface_override_material(s, copy)
 	props_loaded += 1
 
@@ -1556,14 +1720,23 @@ func _build_lighting(profile_name: String, cfg: Dictionary) -> void:
 					merged["fills"] = over["fills"]
 			elif key != "practicals":
 				merged[key] = over[key_v]
-	var backdrop_opts := {
-		"cyclorama": _cyclorama,
-		"sky_color": Color("#1a222c") if _storm_exterior else _sky_color,
-		"palette": {
+	var sky_palette: Dictionary = _palette
+	if scene_type == "corridor":
+		sky_palette = {
+			"sky_top": "#07080c",
+			"horizon": "#12141a",
+			"rock": "#0a0c10",
+		}
+	elif _storm_exterior:
+		sky_palette = {
 			"sky_top": "#1a222c",
 			"horizon": "#3a4652",
 			"rock": "#141a16",
-		} if _storm_exterior else _palette,
+		}
+	var backdrop_opts := {
+		"cyclorama": _cyclorama,
+		"sky_color": Color("#07080c") if scene_type == "corridor" else (Color("#1a222c") if _storm_exterior else _sky_color),
+		"palette": sky_palette,
 	}
 	_lighting_rig = LightingProfileScript.apply_profile(
 		self,
@@ -1964,10 +2137,14 @@ func apply_scene_events(state: Dictionary) -> void:
 		var mat3: StandardMaterial3D = entry3["material"] as StandardMaterial3D
 		mat3.emission_energy_multiplier = scr_energy * stutter
 
+	if scene_type == "corridor" and flicker > 0.01:
+		for emerg_rail: StandardMaterial3D in _emergency_mats:
+			emerg_rail.emission_energy_multiplier = maxf(emerg_rail.emission_energy_multiplier, 1.35)
 	_advance_doors(state, t_s)
 	_advance_array(state, t_s)
 	_advance_impact(state)
 	_advance_storm(storm_intensity, t_s)
+	_drive_corridor_action_lights(state)
 
 
 func get_event_visual_state() -> Dictionary:
@@ -2211,6 +2388,24 @@ func _build_emergency_power_strips() -> void:
 		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		add_child(mi)
 	_emergency_mats.append(mat)
+	if scene_type != "corridor":
+		return
+	var rail := _mat(Color("#a32014"), 0.55, 0.0)
+	rail.emission_enabled = true
+	rail.emission = Color("#c42816")
+	rail.emission_energy_multiplier = 0.0
+	for side: float in [-1.0, 1.0]:
+		var rail_x: float = room_min.x + 0.05 if side < 0.0 else room_max.x - 0.05
+		var rail_mi := MeshInstance3D.new()
+		rail_mi.name = "EmergencyRail%d" % int(side)
+		var rail_mesh := BoxMesh.new()
+		rail_mesh.size = Vector3(0.045, 0.055, z1 - z0)
+		rail_mi.mesh = rail_mesh
+		rail_mi.position = Vector3(rail_x, 1.38, (z0 + z1) * 0.5)
+		rail_mi.material_override = rail
+		rail_mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		add_child(rail_mi)
+	_emergency_mats.append(rail)
 
 
 func _build_exterior_array() -> void:
