@@ -1408,23 +1408,29 @@ func _bake(src: Dictionary, anim: Animation, pairs: Dictionary, loop: bool, skel
 	return out
 
 
-## UAL idle and walk hold the elbows about 70 degrees off the bind, and on
-## these meshes that bend reads as the joint spinning. Keep a little of the
-## clip so the arm is not frozen, and leave the rest on the pose the mesh
-## was built in. Every baked clip goes through this, including extra packs.
+## The clip may roll the forearm around its own length. That roll is what
+## sends the elbow all the way around. Keep the swing that raises and lowers
+## the arm, and drop the roll so the elbow stays on the side it was modeled.
 func _calm_arm_rotation(bone: int, local_q: Quaternion) -> Quaternion:
 	var bone_name := str((_target.names as PackedStringArray)[bone]).to_lower()
-	var keep := 1.0
-	if bone_name.contains("upperarm") or bone_name.contains("lowerarm") or bone_name.contains("forearm"):
-		keep = 0.12
-	elif bone_name.begins_with("hand"):
-		keep = 0.2
-	else:
+	if not (bone_name.contains("upperarm") or bone_name.contains("lowerarm") or bone_name.contains("forearm") or bone_name.begins_with("hand")):
 		return local_q
 	var rest_q: Quaternion = (_target.rests[bone] as Transform3D).basis.get_rotation_quaternion()
-	if local_q.dot(rest_q) < 0.0:
-		local_q = -local_q
-	return rest_q.slerp(local_q, keep)
+	var axis := _bone_long_axis(bone)
+	var delta: Quaternion = (rest_q.inverse() * local_q).normalized()
+	var along: float = delta.x * axis.x + delta.y * axis.y + delta.z * axis.z
+	var twist := Quaternion(axis.x * along, axis.y * along, axis.z * along, delta.w).normalized()
+	var swing: Quaternion = (delta * twist.inverse()).normalized()
+	return (rest_q * swing).normalized()
+
+
+func _bone_long_axis(bone: int) -> Vector3:
+	var parents: PackedInt32Array = _target.parents
+	var rests: Array[Transform3D] = _target.rests
+	for child in rests.size():
+		if parents[child] == bone and rests[child].origin.length() > 0.02:
+			return rests[child].origin.normalized()
+	return Vector3.UP
 
 
 func _reference_rotations(src: Dictionary, pairs: Dictionary) -> Array[Quaternion]:
