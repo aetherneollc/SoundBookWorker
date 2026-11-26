@@ -1424,40 +1424,58 @@ func _calm_arm_rotation(bone: int, local_q: Quaternion) -> Quaternion:
 	return (rest_q * swing).normalized()
 
 
-func _pose_safe_arms(reach_side: String, reach_weight: float) -> void:
-	if _skeleton == null or _target.is_empty():
+## Leaves the sprint, the walk, and a handoff reach alone. Only opens an elbow
+## that has folded far enough for the forearm mesh to pass through the upper arm.
+func _pose_safe_arms(_reach_side: String, _reach_weight: float) -> void:
+	_limit_elbow("r")
+	_limit_elbow("l")
+
+
+func _limit_elbow(side: String) -> void:
+	const MIN_DEG := 75.0
+	var theta := _elbow_bend_deg(side)
+	if theta >= MIN_DEG:
 		return
-	var swing := 0.0
-	if _is_moving:
-		swing = sin(_loco_phase) * deg_to_rad(8.0)
-	var skip := ""
-	if reach_weight > 0.35:
-		skip = "l" if reach_side == "left" else "r"
-	if skip != "r":
-		_pose_one_arm("r", swing, 1.0, -72.0)
-	if skip != "l":
-		_pose_one_arm("l", -swing, -1.0, 72.0)
-
-
-func _pose_one_arm(side: String, swing: float, elbow_sign: float, hang_deg: float) -> void:
 	var human: Dictionary = _target.human
-	var upper: int = int(human.get("%s_upper_arm" % side, -1))
 	var lower: int = int(human.get("%s_lower_arm" % side, -1))
+	var upper: int = int(human.get("%s_upper_arm" % side, -1))
 	var hand: int = int(human.get("%s_hand" % side, -1))
-	if upper < 0 or lower < 0:
+	if lower < 0 or upper < 0 or hand < 0:
 		return
-	var rest_u: Quaternion = _skeleton.get_bone_rest(upper).basis.get_rotation_quaternion()
-	var rest_l: Quaternion = _skeleton.get_bone_rest(lower).basis.get_rotation_quaternion()
-	# Local -Z drops the arm from the bind T-pose. Local X flexes the elbow
-	# so it stays behind the forearm instead of folding through the biceps.
-	var hung := rest_u * Quaternion(Vector3.FORWARD, deg_to_rad(hang_deg)) * Quaternion(Vector3.RIGHT, swing)
-	_skeleton.set_bone_pose_rotation(upper, hung)
-	_skeleton.set_bone_pose_rotation(lower, rest_l * Quaternion(Vector3.RIGHT, elbow_sign * deg_to_rad(8.0)))
-	if hand >= 0:
-		_skeleton.set_bone_pose_rotation(hand, _skeleton.get_bone_rest(hand).basis.get_rotation_quaternion())
-	# A bend under 150 degrees lets the forearm mesh pass through the upper arm.
-	if _elbow_bend_deg(side) < 150.0:
-		_skeleton.set_bone_pose_rotation(lower, rest_l)
+	var shoulder: Vector3 = _skeleton.global_transform * _skeleton.get_bone_global_pose(upper).origin
+	var elbow: Vector3 = _skeleton.global_transform * _skeleton.get_bone_global_pose(lower).origin
+	var wrist: Vector3 = _skeleton.global_transform * _skeleton.get_bone_global_pose(hand).origin
+	var upper_dir: Vector3 = elbow - shoulder
+	var fore_dir: Vector3 = wrist - elbow
+	if upper_dir.length() < 0.001 or fore_dir.length() < 0.001:
+		return
+	var hinge: Vector3 = upper_dir.cross(fore_dir)
+	if hinge.length() < 0.02:
+		hinge = _skeleton.global_transform.basis.x
+	hinge = hinge.normalized()
+	var open_sign := 1.0
+	if _bend_after_hinge(side, lower, hinge, deg_to_rad(12.0)) <= theta:
+		open_sign = -1.0
+	_spin_forearm(lower, hinge, open_sign * deg_to_rad(MIN_DEG - theta + 6.0))
+
+
+func _bend_after_hinge(side: String, lower: int, world_hinge: Vector3, angle: float) -> float:
+	var before: Quaternion = _skeleton.get_bone_pose_rotation(lower)
+	_spin_forearm(lower, world_hinge, angle)
+	var bent := _elbow_bend_deg(side)
+	_skeleton.set_bone_pose_rotation(lower, before)
+	return bent
+
+
+func _spin_forearm(lower: int, world_hinge: Vector3, angle: float) -> void:
+	var axis: Vector3 = (_skeleton.global_transform.basis.inverse() * world_hinge).normalized()
+	var pose: Transform3D = _skeleton.get_bone_global_pose(lower)
+	var spun: Quaternion = (Quaternion(axis, angle) * pose.basis.get_rotation_quaternion()).normalized()
+	var parent: int = _skeleton.get_bone_parent(lower)
+	var parent_rot := Quaternion.IDENTITY
+	if parent >= 0:
+		parent_rot = _skeleton.get_bone_global_pose(parent).basis.get_rotation_quaternion()
+	_skeleton.set_bone_pose_rotation(lower, (parent_rot.inverse() * spun).normalized())
 
 
 func _elbow_bend_deg(side: String) -> float:
@@ -1869,10 +1887,10 @@ func get_gait_profile() -> String:
 
 func resolve_locomotion_clip(gait: String = "") -> String:
 	var g: String = gait.strip_edges().to_lower() if gait != "" else current_gait
-	# Urgent and sprint stay upright. The dedicated clip keeps the spine tall
-	# and the arms in a running pump instead of a hunched box-carry.
-	# Sprint_Urgent_Upright is a procedural clip whose elbows fold through the
-	# upper arm. Urgent travel uses the authored jog instead.
+	# Urgent and sprint keep a real sprint. The elbow limiter, not a different
+	# clip, stops the forearm folding through the upper arm.
+	if g in ["urgent", "sprint"] and _clip_names.has("Sprint_Urgent_Upright"):
+		return "Sprint_Urgent_Upright"
 	var prof: Dictionary = GAIT_PROFILES.get(g, GAIT_PROFILES["casual"])
 	var wanted: String = str(prof.get("clip", "walk"))
 	if _clip_names.has(wanted):
@@ -2150,8 +2168,9 @@ func update_locomotion_state(
 	var eff_speed: float = anim_speed
 	var eff_blend: float = blend
 
-	# Never substitute the procedural sprint. Its elbows fold through the upper arm.
-	var upright_sprint := false
+	var upright_sprint := clip == "Sprint_Urgent_Upright" or (
+		_clip_names.has("Sprint_Urgent_Upright") and current_gait in ["sprint", "urgent"] and clip in ["jog", "sprint"]
+	)
 	var is_fast_clip: bool = upright_sprint or clip in ["jog", "sprint"]
 	var halt_ready: bool = _clip_names.has("Abrupt_Halt_Skid")
 	if moving_flag:
@@ -2852,11 +2871,12 @@ func _solve_two_bone(side: String, upper: int, lower: int, hand: int, target: Ve
 	var elbow: Vector3 = s + u * a * cos_a + v * a * sqrt(maxf(1.0 - cos_a * cos_a, 0.0))
 	var bend_now: Vector3 = (e - s).cross(w - e)
 	var bend_new: Vector3 = (elbow - s).cross(target - elbow)
-	# A negative bend means the elbow passed through straight and came out backward.
-	# Applying that pose spins the forearm like a windmill. Keep the clip instead.
+	# If this pole folds the elbow through the arm, try the other side once.
+	# The elbow limiter still opens whatever remains.
 	if bend_now.length_squared() > 1e-6 and bend_new.length_squared() > 1e-6:
 		if bend_now.normalized().dot(bend_new.normalized()) < 0.05:
-			return
+			v = -v
+			elbow = s + u * a * cos_a + v * a * sqrt(maxf(1.0 - cos_a * cos_a, 0.0))
 	var upper_rot: Quaternion = gu.basis.get_rotation_quaternion()
 	var new_upper: Quaternion = (Quaternion((e - s).normalized(), (elbow - s).normalized()) * upper_rot).normalized()
 	var parent: int = _skeleton.get_bone_parent(upper)
