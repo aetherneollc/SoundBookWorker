@@ -1145,7 +1145,6 @@ func _build_animation_player(config: Dictionary, own_rig: Dictionary) -> void:
 		if clip == "walk":
 			natural_walk_speed = _walk_speed(chosen_rig, chosen_name, rm_library)
 	_register_extra_libraries(anim_cfg, anim_lib, skeleton_path)
-	_prefer_mocap_idle(anim_lib)
 	_player.add_animation_library("", anim_lib)
 
 
@@ -1189,25 +1188,6 @@ func _collect_extra_library_paths(anim_cfg: Dictionary) -> Array[String]:
 				break
 		paths.insert(insert_at, mocap)
 	return paths
-
-
-func _prefer_mocap_idle(anim_lib: AnimationLibrary) -> void:
-	# UAL1 Idle_Loop is a wide combat stance with half-closed fists. The ACCAD
-	# sway is a real standing idle on the same skeleton. Semantic "idle" must
-	# not snap back to the fighting pose after a mocap action ends.
-	var mocap_name := StringName("Mocap_Idle_Sway_Loop")
-	if not anim_lib.has_animation(mocap_name) or not anim_lib.has_animation("idle"):
-		return
-	var source: Animation = anim_lib.get_animation(mocap_name)
-	if source == null:
-		return
-	var standing: Animation = source.duplicate() as Animation
-	standing.loop_mode = Animation.LOOP_LINEAR
-	anim_lib.remove_animation("idle")
-	anim_lib.add_animation("idle", standing)
-	_clip_names["idle"] = "idle"
-	_clip_lengths["idle"] = standing.length
-	clip_report["idle"] = "extra:mocap_core10_pack.glb:Mocap_Idle_Sway_Loop"
 
 
 func _register_extra_libraries(anim_cfg: Dictionary, anim_lib: AnimationLibrary, skeleton_path: String) -> void:
